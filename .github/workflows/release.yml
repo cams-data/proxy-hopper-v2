@@ -10,7 +10,8 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Test suite — runs on every push to main and on every PR targeting main.
+  # Test suite — runs on every push to main and on every PR targeting main
+  # (including the release-please PR, so the merge button lights up cleanly).
   # ---------------------------------------------------------------------------
   test:
     name: Test / Python ${{ matrix.python-version }}
@@ -51,8 +52,14 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # release-please — runs only on push to main (not on PRs).
-  # Creates/updates the Release PR. When the Release PR is merged, tags the
-  # commit and creates the GitHub Release, triggering the build job below.
+  #
+  # Uses the PR flow (default behaviour) because a human should consciously
+  # decide to cut a production release. The release-please PR is opened
+  # targeting main; a developer merges it when ready. Branch protection on
+  # main requires the test suite to pass on the PR before it can be merged.
+  #
+  # When the PR is merged, release-please creates the tag and GitHub Release
+  # (releases_created=true), triggering the build job below.
   # ---------------------------------------------------------------------------
   release-please:
     name: Release Please
@@ -73,41 +80,6 @@ jobs:
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
           target-branch: main
-
-  # ---------------------------------------------------------------------------
-  # Enable auto-merge on the Release PR so it merges automatically once CI
-  # passes — no manual intervention needed.
-  # ---------------------------------------------------------------------------
-  automerge-release-pr:
-    name: Auto-merge Release PR
-    needs: release-please
-    if: >
-      github.event_name == 'push' &&
-      needs.release-please.outputs.releases_created != 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: write
-
-    steps:
-      - name: Enable auto-merge on Release PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR=$(gh pr list \
-            --repo "${{ github.repository }}" \
-            --label "autorelease: pending" \
-            --json number \
-            --jq '.[0].number')
-          if [ -n "$PR" ] && [ "$PR" != "null" ]; then
-            gh pr merge "$PR" \
-              --repo "${{ github.repository }}" \
-              --auto \
-              --merge
-            echo "Auto-merge enabled for PR #$PR"
-          else
-            echo "No pending release PR found"
-          fi
 
   # ---------------------------------------------------------------------------
   # Build wheels and attach to the GitHub Release.

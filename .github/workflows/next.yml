@@ -10,8 +10,7 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Test suite — runs on every push to next and on every PR targeting next
-  # (including the release-please PR, so it can be auto-merged cleanly).
+  # Test suite — runs on every push to next and on every PR targeting next.
   # ---------------------------------------------------------------------------
   test:
     name: Test / Python ${{ matrix.python-version }}
@@ -52,14 +51,22 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # release-please — runs only on push to next (not on PRs).
-  # Creates/updates the Release PR. When the Release PR is merged, tags the
-  # commit, creates the GitHub Release, and sets releases_created=true to
-  # trigger the build job below.
-  # Auto-merges the Release PR once CI passes via --auto flag.
+  #
+  # skip-github-pull-request: true means release-please commits version bumps
+  # directly to next rather than opening a PR. This avoids needing branch
+  # protection bypass, bot self-approval, or "Actions can approve PRs".
+  #
+  # The trade-off is intentional: next is a staging branch. Feature commits
+  # are already reviewed before landing here. The version bump commit itself
+  # (pyproject.toml, CHANGELOG, manifest) needs no human review.
+  #
+  # When the release-please commit lands on next, it immediately creates the
+  # tag and GitHub Release (releases_created=true), which triggers the build.
   # ---------------------------------------------------------------------------
   release-please:
     name: Release Please (pre-release)
     if: github.event_name == 'push'
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -76,45 +83,11 @@ jobs:
           config-file: .github/release-please-config.json
           manifest-file: .github/.release-please-manifest.json
           target-branch: next
-
-  # ---------------------------------------------------------------------------
-  # Enable auto-merge on the Release PR so it merges automatically once CI
-  # passes — no manual intervention needed.
-  # ---------------------------------------------------------------------------
-  automerge-release-pr:
-    name: Auto-merge Release PR
-    needs: release-please
-    if: >
-      github.event_name == 'push' &&
-      needs.release-please.outputs.releases_created != 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: write
-
-    steps:
-      - name: Enable auto-merge on Release PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR=$(gh pr list \
-            --repo "${{ github.repository }}" \
-            --label "autorelease: pending" \
-            --json number \
-            --jq '.[0].number')
-          if [ -n "$PR" ] && [ "$PR" != "null" ]; then
-            gh pr merge "$PR" \
-              --repo "${{ github.repository }}" \
-              --auto \
-              --merge
-            echo "Auto-merge enabled for PR #$PR"
-          else
-            echo "No pending release PR found"
-          fi
+          skip-github-pull-request: true
 
   # ---------------------------------------------------------------------------
   # Build wheels and publish to the GitHub Release.
-  # Only runs when release-please has just created a new release tag.
+  # Fires immediately after release-please creates the tag — no PR wait.
   # ---------------------------------------------------------------------------
   build-and-release:
     name: Build & publish pre-release
