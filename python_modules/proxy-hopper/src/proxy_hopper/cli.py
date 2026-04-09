@@ -1,27 +1,31 @@
 """CLI entry point for Proxy Hopper.
 
-All server-level settings are available as both CLI flags and environment
-variables (PROXY_HOPPER_* prefix), following the 12-factor app convention.
-Only the targets configuration (which changes per deployment) stays in a YAML
-file.
+Config priority (highest → lowest):
+  1. CLI arguments
+  2. YAML config file  (server: block)
+  3. Environment variables (PROXY_HOPPER_*)
+
+Only settings that are operationally useful to override at the command line
+have explicit CLI flags.  Everything else can be set in the YAML ``server:``
+block or via environment variables.
 
 Usage examples
 --------------
-# Minimal
+# Minimal — all settings from env vars or YAML server: block
 proxy-hopper run --config config.yaml
 
-# All options via flags
-proxy-hopper run --config config.yaml --host 0.0.0.0 --port 8080 \\
-    --log-level DEBUG --log-format json --metrics --metrics-port 9090
+# Override specific settings at the command line
+proxy-hopper run --config config.yaml --port 9000 --log-level DEBUG
 
-# All options via environment variables (Docker / Kubernetes)
+# All server settings via environment variables (Docker / Kubernetes)
 PROXY_HOPPER_CONFIG=/etc/proxy-hopper/config.yaml \\
 PROXY_HOPPER_PORT=8080 \\
 PROXY_HOPPER_LOG_LEVEL=INFO \\
 PROXY_HOPPER_LOG_FORMAT=json \\
-PROXY_HOPPER_LOG_FILE=/var/log/proxy-hopper.log \\
+PROXY_HOPPER_BACKEND=redis \\
+PROXY_HOPPER_REDIS_URL=redis://redis:6379/0 \\
 PROXY_HOPPER_METRICS=true \\
-PROXY_HOPPER_METRICS_PORT=9090 \\
+PROXY_HOPPER_PROBE=true \\
 proxy-hopper run
 
 # Validate config only
@@ -41,78 +45,136 @@ import click
 from .config import load_config
 from .logging_config import configure_logging
 
-# auto_envvar_prefix causes Click to read PROXY_HOPPER_<OPTION_NAME> for every
-# option, providing the Docker / K8s-friendly env-var interface for free.
-_CTX = {"auto_envvar_prefix": "PROXY_HOPPER"}
+# Note: we do NOT use auto_envvar_prefix here — env vars are read inside
+# ServerConfig.from_yaml_and_env() so the priority chain is preserved.
+_CTX: dict = {}
 
 
-@click.group(context_settings=_CTX)
+@click.group()
 def main() -> None:
     """Proxy Hopper — rotating proxy server."""
 
 
-@main.command(context_settings=_CTX)
-@click.option("--config", "-c", required=True, envvar="PROXY_HOPPER_CONFIG",
+@main.command()
+@click.option("--config", "-c", required=False, default=None,
+              envvar="PROXY_HOPPER_CONFIG",
               type=click.Path(exists=True, path_type=Path),
               help="Path to targets YAML config file.")
-@click.option("--host", default="0.0.0.0", show_default=True,
-              help="Interface to bind the proxy server.")
-@click.option("--port", default=8080, show_default=True, type=int,
-              help="Port for the proxy server.")
-@click.option("--log-level", default="INFO", show_default=True,
+@click.option("--host", default=None,
+              help="Interface to bind the proxy server. [default: 0.0.0.0]")
+@click.option("--port", default=None, type=int,
+              help="Port for the proxy server. [default: 8080]")
+@click.option("--log-level", default=None,
               type=click.Choice(["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"],
                                 case_sensitive=False),
-              help="Log verbosity level. TRACE is extremely verbose.")
-@click.option("--log-format", default="text", show_default=True,
+              help="Log verbosity level. [default: INFO]")
+@click.option("--log-format", default=None,
               type=click.Choice(["text", "json"], case_sensitive=False),
-              help="Log output format. Use 'json' for log aggregators (Fluentd, Datadog, etc.).")
+              help="Log output format. [default: text]")
 @click.option("--log-file", default=None, metavar="PATH",
               help="Write logs to this file instead of stderr.")
-@click.option("--metrics/--no-metrics", default=False, show_default=True,
+@click.option("--metrics/--no-metrics", default=None,
               help="Enable Prometheus /metrics endpoint.")
-@click.option("--metrics-port", default=9090, show_default=True, type=int,
-              help="Port for the Prometheus metrics HTTP server.")
-@click.option("--backend", default="memory",
+@click.option("--metrics-port", default=None, type=int,
+              help="Port for the Prometheus metrics HTTP server. [default: 9090]")
+@click.option("--backend", default=None,
               type=click.Choice(["memory", "redis"], case_sensitive=False),
-              show_default=True,
-              help="IP pool backend. Use 'redis' for HA multi-instance deployments.")
-@click.option("--redis-url", default="redis://localhost:6379/0", show_default=True,
+              help="IP pool backend. [default: memory]")
+@click.option("--redis-url", default=None,
               envvar="PROXY_HOPPER_REDIS_URL",
-              help="Redis connection URL (required when --backend=redis).")
+              help="Redis connection URL. [default: redis://localhost:6379/0]")
+@click.option("--probe/--no-probe", default=None,
+              help="Enable background IP health prober.")
+@click.option("--probe-interval", default=None, type=float,
+              help="Seconds between probe rounds. [default: 60]")
+@click.option("--probe-timeout", default=None, type=float,
+              help="Per-probe HTTP timeout in seconds. [default: 10]")
+@click.option("--probe-urls", default=None, metavar="URL[,URL...]",
+              help="Comma-separated probe endpoints.")
 def run(
-    config: Path,
-    host: str,
-    port: int,
-    log_level: str,
-    log_format: str,
+    config: Optional[Path],
+    host: Optional[str],
+    port: Optional[int],
+    log_level: Optional[str],
+    log_format: Optional[str],
     log_file: Optional[str],
-    metrics: bool,
-    metrics_port: int,
-    backend: str,
-    redis_url: str,
+    metrics: Optional[bool],
+    metrics_port: Optional[int],
+    backend: Optional[str],
+    redis_url: Optional[str],
+    probe: Optional[bool],
+    probe_interval: Optional[float],
+    probe_timeout: Optional[float],
+    probe_urls: Optional[str],
 ) -> None:
     """Start the proxy server."""
-    configure_logging(level=log_level, log_file=log_file, log_format=log_format)
+    # --- Load config (YAML > env vars) ---
+    if config is None:
+        click.echo(
+            "Error: --config / PROXY_HOPPER_CONFIG is required.", err=True
+        )
+        sys.exit(1)
 
-    if metrics:
+    cfg = load_config(config)
+    server = cfg.server
+
+    # --- Apply CLI overrides (highest priority) ---
+    if host is not None:
+        server.host = host
+    if port is not None:
+        server.port = port
+    if log_level is not None:
+        server.log_level = log_level
+    if log_format is not None:
+        server.log_format = log_format
+    if log_file is not None:
+        server.log_file = log_file
+    if metrics is not None:
+        server.metrics = metrics
+    if metrics_port is not None:
+        server.metrics_port = metrics_port
+    if backend is not None:
+        server.backend = backend
+    if redis_url is not None:
+        server.redis_url = redis_url
+    if probe is not None:
+        server.probe = probe
+    if probe_interval is not None:
+        server.probe_interval = probe_interval
+    if probe_timeout is not None:
+        server.probe_timeout = probe_timeout
+    if probe_urls is not None:
+        server.probe_urls = [u.strip() for u in probe_urls.split(",") if u.strip()]
+
+    # --- Start logging ---
+    configure_logging(
+        level=server.log_level,
+        log_file=server.log_file,
+        log_format=server.log_format,
+    )
+
+    # --- Start metrics server ---
+    if server.metrics:
         from .metrics import start_metrics_server
-        start_metrics_server(metrics_port)
+        start_metrics_server(server.metrics_port)
 
-    targets = load_config(config)
-    asyncio.run(_run(targets, host, port, backend, redis_url))
+    # --- Run ---
+    asyncio.run(_run(cfg.targets, server))
 
 
-@main.command(context_settings=_CTX)
+@main.command()
 @click.option("--config", "-c", required=True, envvar="PROXY_HOPPER_CONFIG",
               type=click.Path(exists=True, path_type=Path))
 def validate(config: Path) -> None:
     """Validate a configuration file and exit."""
     try:
-        targets = load_config(config)
-        click.echo(f"Config OK — {len(targets)} target(s) defined.")
-        for t in targets:
+        cfg = load_config(config)
+        click.echo(f"Config OK — {len(cfg.targets)} target(s) defined.")
+        for t in cfg.targets:
             ips = t.resolved_ip_list()
             click.echo(f"  {t.name!r}: {len(ips)} IP(s), regex={t.regex!r}")
+        click.echo(f"Server defaults: host={cfg.server.host}, port={cfg.server.port}, "
+                   f"backend={cfg.server.backend}")
     except Exception as exc:
         click.echo(f"Config error: {exc}", err=True)
         sys.exit(1)
@@ -122,14 +184,13 @@ def validate(config: Path) -> None:
 # Async run helper
 # ---------------------------------------------------------------------------
 
-async def _run(targets, host: str, port: int, backend_type: str, redis_url: str) -> None:
-    from .backend.memory import MemoryIPPoolBackend
+async def _run(targets, server) -> None:
     from .server import ProxyServer
     from .target_manager import TargetManager
 
     log = logging.getLogger(__name__)
 
-    if backend_type == "redis":
+    if server.backend == "redis":
         try:
             from proxy_hopper_redis import RedisIPPoolBackend
         except ImportError:
@@ -138,21 +199,38 @@ async def _run(targets, host: str, port: int, backend_type: str, redis_url: str)
                 "Run: pip install proxy-hopper-redis"
             )
             return
-        pool_backend = RedisIPPoolBackend(redis_url)
+        pool_backend = RedisIPPoolBackend(server.redis_url)
     else:
+        from .backend.memory import MemoryIPPoolBackend
         pool_backend = MemoryIPPoolBackend()
 
     await pool_backend.start()
 
     managers = [TargetManager(t, pool_backend) for t in targets]
-    proxy = ProxyServer(managers, host=host, port=port)
+    proxy = ProxyServer(managers, host=server.host, port=server.port)
+
+    prober = None
+    if server.probe:
+        from .prober import IPProber
+        prober = IPProber(
+            targets,
+            probe_urls=server.probe_urls,
+            interval=server.probe_interval,
+            timeout=server.probe_timeout,
+        )
+        await prober.start()
 
     try:
         await proxy.start()
-        log.info("Proxy Hopper running on %s:%d (backend=%s)", host, port, backend_type)
+        log.info(
+            "Proxy Hopper running on %s:%d (backend=%s)",
+            server.host, server.port, server.backend,
+        )
         await proxy.serve_forever()
     except (KeyboardInterrupt, asyncio.CancelledError):
         log.info("Shutting down…")
     finally:
         await proxy.stop()
+        if prober:
+            await prober.stop()
         await pool_backend.stop()
