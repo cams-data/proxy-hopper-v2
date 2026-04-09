@@ -9,7 +9,6 @@ on:
     branches:
       - main
       - next
-      - next
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -26,6 +25,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4

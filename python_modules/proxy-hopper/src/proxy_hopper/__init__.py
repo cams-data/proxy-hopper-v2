@@ -1,8 +1,12 @@
 """Proxy Hopper — rotating proxy server."""
 
 import logging
+from importlib.metadata import PackageNotFoundError, version
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("proxy-hopper")
+except PackageNotFoundError:
+    __version__ = "unknown"
 
 # Registers the TRACE level (5) on logging.Logger so that logger.trace()
 # is available throughout the package.  Must be imported here so the level

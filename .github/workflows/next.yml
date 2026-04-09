@@ -4,13 +4,10 @@ on:
   push:
     branches:
       - next
-  pull_request:
-    branches:
-      - next
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Test suite — runs on every push to next and on every PR targeting next.
+  # Test suite — must pass before a tag is created.
   # ---------------------------------------------------------------------------
   test:
     name: Test / Python ${{ matrix.python-version }}
@@ -22,6 +19,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -50,49 +49,43 @@ jobs:
           uv run pytest --tb=short -q
 
   # ---------------------------------------------------------------------------
-  # release-please — runs only on push to next (not on PRs).
-  #
-  # skip-github-pull-request: true means release-please commits version bumps
-  # directly to next rather than opening a PR. This avoids needing branch
-  # protection bypass, bot self-approval, or "Actions can approve PRs".
-  #
-  # The trade-off is intentional: next is a staging branch. Feature commits
-  # are already reviewed before landing here. The version bump commit itself
-  # (pyproject.toml, CHANGELOG, manifest) needs no human review.
-  #
-  # When the release-please commit lands on next, it immediately creates the
-  # tag and GitHub Release (releases_created=true), which triggers the build.
+  # Tag — reads conventional commits since the last tag and pushes a new one.
+  # Pre-release tags are suffixed with '-pre.N' (e.g. v0.1.1-pre.1).
+  # If no bump-worthy commits exist the step is a no-op (new_tag is empty).
   # ---------------------------------------------------------------------------
-  release-please:
-    name: Release Please (pre-release)
-    if: github.event_name == 'push'
+  tag:
+    name: Tag pre-release
     needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
-
     outputs:
-      releases_created: ${{ steps.rp.outputs.releases_created }}
-      tag_name: ${{ steps.rp.outputs.tag_name }}
+      new_tag: ${{ steps.tag.outputs.new_tag }}
 
     steps:
-      - uses: googleapis/release-please-action@v4
-        id: rp
+      - uses: actions/checkout@v4
         with:
-          config-file: .github/release-please-config.json
-          manifest-file: .github/.release-please-manifest.json
-          target-branch: next
-          skip-github-pull-request: true
+          fetch-depth: 0
+
+      - name: Bump version and push tag
+        id: tag
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          release_branches: main
+          pre_release_branches: next
+          append_to_pre_release_tag: pre
+          default_bump: patch
+          tag_prefix: v
 
   # ---------------------------------------------------------------------------
-  # Build wheels and publish to the GitHub Release.
-  # Fires immediately after release-please creates the tag — no PR wait.
+  # Build — only runs when a new tag was created above.
+  # Checks out at the exact tag so hatch-vcs reads a clean version number.
   # ---------------------------------------------------------------------------
   build-and-release:
     name: Build & publish pre-release
-    needs: release-please
-    if: needs.release-please.outputs.releases_created == 'true'
+    needs: tag
+    if: needs.tag.outputs.new_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -100,7 +93,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.release-please.outputs.tag_name }}
+          ref: ${{ needs.tag.outputs.new_tag }}
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -109,13 +103,15 @@ jobs:
 
       - name: Build wheels and sdists
         run: |
-          uv build --wheel --sdist --out-dir dist \
-            python_modules/proxy-hopper \
-            python_modules/proxy-hopper-redis
+          uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper
+          uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper-redis
 
-      - name: Upload assets to GitHub Release
+      - name: Create GitHub pre-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* \
+          gh release create "${{ needs.tag.outputs.new_tag }}" dist/* \
+            --prerelease \
+            --title "${{ needs.tag.outputs.new_tag }}" \
+            --generate-notes \
             --repo "${{ github.repository }}"
