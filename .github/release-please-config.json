@@ -1,6 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "release-type": "python",
+  "bootstrap-sha": "3abda705fe047ae9fa0c7b4018f9b43ba1e7b74f",
   "packages": {
     "python_modules/proxy-hopper": {
       "package-name": "proxy-hopper",
