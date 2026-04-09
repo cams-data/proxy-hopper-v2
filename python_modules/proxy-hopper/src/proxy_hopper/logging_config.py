@@ -6,7 +6,7 @@ themselves via the standard logging module; this file does nothing until
 configure_logging() is explicitly called.
 
 Environment variables (all honoured by the CLI via auto_envvar_prefix):
-    PROXY_HOPPER_LOG_LEVEL   — TRACE | DEBUG | INFO | WARNING | ERROR
+    PROXY_HOPPER_LOG_LEVEL   — TRACE | DEBUG | INFO | WARNING | ERROR  (default: INFO)
     PROXY_HOPPER_LOG_FILE    — path to write log output (default: stderr)
     PROXY_HOPPER_LOG_FORMAT  — text | json  (default: text)
 """
@@ -85,7 +85,7 @@ def configure_logging(
         Filesystem path to write logs to.  ``None`` (default) writes to
         stderr, which is the correct target for Docker / Kubernetes.
     log_format:
-        ``"text"`` — human-readable colum-aligned lines.
+        ``"text"`` — human-readable column-aligned lines.
         ``"json"`` — one JSON object per line for log aggregators.
     """
     numeric = logging.getLevelName(level.upper())
