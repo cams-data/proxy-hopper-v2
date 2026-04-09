@@ -1,0 +1,60 @@
+services:
+
+  # -------------------------------------------------------------------------
+  # Redis — shared IP pool state
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # -------------------------------------------------------------------------
+  # Proxy Hopper — scale this service for horizontal throughput
+  # -------------------------------------------------------------------------
+  proxy-hopper:
+    build:
+      context: ../../..       # repo root — gives Docker access to python_modules/
+      dockerfile: examples/docker-compose/local-redis/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-8080}:8080"     # proxy — point your HTTP clients here
+      - "${METRICS_PORT:-9090}:9090"   # Prometheus /metrics  (only if metrics enabled)
+    volumes:
+      - ./config.yaml:/etc/proxy-hopper/config.yaml:ro
+    environment:
+      PROXY_HOPPER_HOST: "0.0.0.0"
+      PROXY_HOPPER_PORT: "8080"
+      PROXY_HOPPER_BACKEND: "redis"
+      PROXY_HOPPER_REDIS_URL: "redis://redis:6379/0"
+      PROXY_HOPPER_LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      PROXY_HOPPER_LOG_FORMAT: "${LOG_FORMAT:-json}"
+      # Uncomment to enable Prometheus metrics:
+      # PROXY_HOPPER_METRICS: "true"
+      # PROXY_HOPPER_METRICS_PORT: "9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket; s=socket.create_connection(('localhost',8080),2); s.close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redis-data:
+    driver: local

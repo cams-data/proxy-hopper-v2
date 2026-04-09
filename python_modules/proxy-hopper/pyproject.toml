@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proxy-hopper"
+version = "0.1.0"
+description = "Rotating proxy server that routes requests through a pool of external proxy IP addresses"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "click>=8.1",
+    "prometheus-client>=0.20",
+    "pydantic>=2.6",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
+    "aioresponses>=0.7",
+]
+
+[project.scripts]
+proxy-hopper = "proxy_hopper.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proxy_hopper"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

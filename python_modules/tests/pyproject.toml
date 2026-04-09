@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "proxy-hopper-tests"
+version = "0.1.0"
+description = "Backend-contract and pool-contract tests — run against every backend implementation"
+requires-python = ">=3.11"
+# No package source — this is a test-only workspace member.
+dependencies = [
+    "proxy-hopper",
+    "proxy-hopper-redis",
+    "fakeredis>=2.20",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "aioresponses>=0.7",
+]
+
+[tool.uv.sources]
+proxy-hopper = { path = "../proxy-hopper", editable = true }
+proxy-hopper-redis = { path = "../proxy-hopper-redis", editable = true }
+
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

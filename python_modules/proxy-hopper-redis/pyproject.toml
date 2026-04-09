@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proxy-hopper-redis"
+version = "0.1.0"
+description = "Redis-backed IP pool backend for Proxy Hopper — enables HA multi-instance deployments"
+requires-python = ">=3.11"
+dependencies = [
+    "proxy-hopper>=0.1.0",
+    "redis[hiredis]>=5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
+    "fakeredis>=2.20",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proxy_hopper_redis"]
+
+[tool.uv.sources]
+proxy-hopper = { path = "../proxy-hopper", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

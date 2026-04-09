@@ -1,0 +1,105 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-hopper
+  namespace: proxy-hopper
+  labels:
+    app.kubernetes.io/name: proxy-hopper
+    app.kubernetes.io/component: proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: proxy-hopper
+  # Rolling update — always keep at least one pod available during deploys
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: proxy-hopper
+        app.kubernetes.io/component: proxy
+      annotations:
+        # Prometheus pod annotation scraping — remove if you use a ServiceMonitor instead
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+        # Force a rolling restart when the ConfigMap changes
+        checksum/config: "placeholder"   # replaced by Helm / kustomize hash annotation
+    spec:
+      # Spread replicas across nodes for resilience
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: proxy-hopper
+
+      containers:
+        - name: proxy-hopper
+          # Replace with your registry and tag
+          image: your-registry/proxy-hopper:latest
+          imagePullPolicy: Always
+          ports:
+            - name: proxy
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: PROXY_HOPPER_HOST
+              value: "0.0.0.0"
+            - name: PROXY_HOPPER_PORT
+              value: "8080"
+            - name: PROXY_HOPPER_BACKEND
+              value: "redis"
+            - name: PROXY_HOPPER_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-hopper-redis
+                  key: redis-url
+            - name: PROXY_HOPPER_CONFIG
+              value: /etc/proxy-hopper/config.yaml
+            - name: PROXY_HOPPER_LOG_LEVEL
+              value: "INFO"
+            - name: PROXY_HOPPER_LOG_FORMAT
+              value: "json"
+            - name: PROXY_HOPPER_METRICS
+              value: "true"
+            - name: PROXY_HOPPER_METRICS_PORT
+              value: "9090"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/proxy-hopper
+              readOnly: true
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "256Mi"
+          # Liveness — restart the container if the proxy port stops accepting connections
+          livenessProbe:
+            tcpSocket:
+              port: proxy
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          # Readiness — only send traffic once the proxy is accepting connections
+          readinessProbe:
+            tcpSocket:
+              port: proxy
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 2
+
+      volumes:
+        - name: config
+          configMap:
+            name: proxy-hopper-config

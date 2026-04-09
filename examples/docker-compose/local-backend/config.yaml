@@ -1,0 +1,20 @@
+# Example targets configuration for the in-memory backend example.
+#
+# Each target matches inbound requests by URL regex and routes them through
+# the listed proxy IPs.  Replace the IP addresses below with your real
+# external proxy addresses.
+#
+# Targets are evaluated in order — the first match wins.
+
+targets:
+  - name: general
+    regex: '.*'
+    ipList:
+      - "203.0.113.10:3128"   # replace with real proxy IPs
+      - "203.0.113.11:3128"
+      - "203.0.113.12:3128"
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m

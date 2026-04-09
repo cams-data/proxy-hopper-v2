@@ -1,0 +1,38 @@
+# Proxy Hopper — targets configuration
+#
+# Server settings (host, port, log level, metrics) are configured via
+# environment variables or CLI flags, not this file.  This file contains
+# only the targets list because it tends to be deployment-specific and
+# secrets-free, making it safe to version-control separately.
+#
+# Environment variables (all optional, shown with defaults):
+#   PROXY_HOPPER_HOST=0.0.0.0
+#   PROXY_HOPPER_PORT=8080
+#   PROXY_HOPPER_LOG_LEVEL=INFO
+#   PROXY_HOPPER_METRICS=false
+#   PROXY_HOPPER_METRICS_PORT=9090
+
+targets:
+  - name: google-maps
+    # Regex matched against the full URL for HTTP, or "hostname:port" for HTTPS CONNECT.
+    regex: '.*google\.com.*'
+    ip_list:
+      - "123.123.123.123"        # plain IP — uses default_proxy_port
+      - "124.124.124.124:3128"   # explicit port
+    min_request_interval: 2s     # minimum gap between reuses of the same IP
+    max_queue_wait: 30s          # drop request if it waits longer than this
+    num_retries: 5
+    ip_failures_until_quarantine: 5
+    quarantine_time: 120s
+    default_proxy_port: 8080
+
+  - name: example-api
+    regex: '.*example\.com/api/.*'
+    ip_list:
+      - "200.200.200.200:8080"
+    min_request_interval: 1s
+    max_queue_wait: 15s
+    num_retries: 3
+    ip_failures_until_quarantine: 3
+    quarantine_time: 60s
+    default_proxy_port: 8080
