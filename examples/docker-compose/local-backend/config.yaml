@@ -1,20 +1,114 @@
-# Example targets configuration for the in-memory backend example.
+# =============================================================================
+# Proxy Hopper — in-memory backend example config
+# =============================================================================
 #
-# Each target matches inbound requests by URL regex and routes them through
-# the listed proxy IPs.  Replace the IP addresses below with your real
-# external proxy addresses.
+# Replace the placeholder IP addresses with your real proxy IPs, then start
+# with: docker compose up --build
 #
-# Targets are evaluated in order — the first match wins.
+# Config priority (highest → lowest):
+#   1. CLI flags (--port, --log-level, etc.)
+#   2. This file  (server: block + targets)
+#   3. PROXY_HOPPER_* environment variables
+#
+# =============================================================================
+# IP POOLS  (optional)
+# =============================================================================
+# Define a named list of IPs once and reference it from multiple targets.
+# Useful when several targets share the same proxy fleet.
+#
+# ipPools:
+#   - name: shared-pool
+#     ipList:
+#       - "proxy-1.example.com:3128"
+#       - "proxy-2.example.com:3128"
+
+# =============================================================================
+# TARGETS  (required)
+# =============================================================================
+# Targets are evaluated top-to-bottom — the first regex match handles the
+# request.  At least one target is required.
 
 targets:
+
+  # ---------------------------------------------------------------------------
+  # Example: a more strictly rate-limited target for a specific API
+  # ---------------------------------------------------------------------------
+  # - name: strict-api
+  #   regex: 'api\.example\.com'
+  #   ipList:
+  #     - "203.0.113.20:3128"
+  #     - "203.0.113.21:3128"
+  #   minRequestInterval: 10s   # only one request per IP per 10 seconds
+  #   maxQueueWait: 60s         # wait up to 60s for a free IP
+  #   numRetries: 1
+  #   ipFailuresUntilQuarantine: 2
+  #   quarantineTime: 30m
+  #   defaultProxyPort: 3128
+
+  # ---------------------------------------------------------------------------
+  # General catch-all target
+  # ---------------------------------------------------------------------------
   - name: general
     regex: '.*'
     ipList:
-      - "203.0.113.10:3128"   # replace with real proxy IPs
+      - "203.0.113.10:3128"         # replace with your real proxy IPs
       - "203.0.113.11:3128"
       - "203.0.113.12:3128"
+
+    # --- Rate limiting -------------------------------------------------------
+    # minRequestInterval: how long an IP is held off the pool after any request
+    # before it can be reused.  This is the primary knob for respecting per-IP
+    # API rate limits.  The IP is unavailable to ALL requests during this window.
+    # Duration format: plain number = seconds, or suffix s / m / h.
     minRequestInterval: 1s
+
+    # How long a request will wait in the queue for a free IP before failing.
     maxQueueWait: 30s
+
+    # --- Retries -------------------------------------------------------------
+    # How many times to retry the request using a different IP before giving up.
     numRetries: 3
+
+    # --- Quarantine ----------------------------------------------------------
+    # An IP is quarantined after this many consecutive failures.
     ipFailuresUntilQuarantine: 5
+
+    # How long the IP sits out before being returned to the pool.
     quarantineTime: 2m
+
+    # Port used for IPs listed without an explicit port number.
+    defaultProxyPort: 3128
+
+# =============================================================================
+# SERVER SETTINGS  (optional — all have defaults)
+# =============================================================================
+# Settings here are overridden by PROXY_HOPPER_* env vars set in
+# docker-compose.yml, and those are overridden again by CLI flags.
+#
+# Uncomment and edit any values you want to bake into this config file.
+# In the Docker Compose example most of these are set via environment: instead.
+
+# server:
+#   host: 0.0.0.0              # PROXY_HOPPER_HOST
+#   port: 8080                 # PROXY_HOPPER_PORT
+#
+#   # Logging
+#   logLevel: INFO             # PROXY_HOPPER_LOG_LEVEL  — TRACE/DEBUG/INFO/WARNING/ERROR
+#   logFormat: text            # PROXY_HOPPER_LOG_FORMAT — text or json
+#   logFile: null              # PROXY_HOPPER_LOG_FILE   — path, or omit for stderr
+#
+#   # Backend
+#   backend: memory            # PROXY_HOPPER_BACKEND    — memory (default) or redis
+#   redisUrl: redis://localhost:6379/0  # PROXY_HOPPER_REDIS_URL (redis backend only)
+#
+#   # Prometheus metrics
+#   metrics: false             # PROXY_HOPPER_METRICS
+#   metricsPort: 9090          # PROXY_HOPPER_METRICS_PORT
+#
+#   # Background IP health prober (writes to Prometheus metrics, no pool side-effects)
+#   probe: false               # PROXY_HOPPER_PROBE
+#   probeInterval: 60          # PROXY_HOPPER_PROBE_INTERVAL  — seconds between probe rounds
+#   probeTimeout: 10           # PROXY_HOPPER_PROBE_TIMEOUT   — per-probe HTTP timeout
+#   probeUrls:                 # PROXY_HOPPER_PROBE_URLS      — comma-separated as env var
+#     - https://1.1.1.1
+#     - https://www.google.com

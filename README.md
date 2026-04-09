@@ -26,23 +26,29 @@ Your app  ──HTTP/CONNECT──►  Proxy Hopper  ──►  external proxy I
 
 ```bash
 pip install proxy-hopper
+```
 
-# Write a targets config
-cat > config.yaml << 'EOF'
-targets:
-  - name: general
-    regex: '.*'
+```yaml
+# config.yaml
+ipPools:
+  - name: my-pool
     ipList:
       - "10.0.0.1:3128"
       - "10.0.0.2:3128"
       - "10.0.0.3:3128"
-    minRequestInterval: 1s
-    maxQueueWait: 30s
+
+targets:
+  - name: general
+    regex: '.*'
+    ipPool: my-pool
+    minRequestInterval: 1s   # hold each IP off the pool for 1s between uses
+    maxQueueWait: 30s        # fail if no IP free within 30s
     numRetries: 3
     ipFailuresUntilQuarantine: 5
-    quarantineTime: 120s
-EOF
+    quarantineTime: 2m
+```
 
+```bash
 proxy-hopper run --config config.yaml
 ```
 

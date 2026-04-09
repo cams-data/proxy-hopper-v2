@@ -8,18 +8,90 @@ metadata:
     app.kubernetes.io/component: config
 data:
   config.yaml: |
-    # Replace the IP addresses below with your real external proxy addresses.
-    # Targets are evaluated in order — the first match wins.
-    targets:
-      - name: general
-        regex: '.*'
+    # =========================================================================
+    # Proxy Hopper — Kubernetes config
+    # =========================================================================
+    # Replace the placeholder IPs with your real proxy addresses.
+    # Edit this ConfigMap and rollout restart to apply changes:
+    #   kubectl edit configmap proxy-hopper-config -n proxy-hopper
+    #   kubectl rollout restart deployment/proxy-hopper -n proxy-hopper
+    #
+    # Config priority (highest → lowest):
+    #   1. CLI flags in the Deployment args
+    #   2. This file (server: block + targets)
+    #   3. PROXY_HOPPER_* env vars in the Deployment manifest
+    #
+    # =========================================================================
+    # IP POOLS  (optional)
+    # =========================================================================
+    # Define a named IP list once and reference it from multiple targets.
+
+    ipPools:
+      - name: general-pool
         ipList:
-          - "203.0.113.10:3128"
+          - "203.0.113.10:3128"       # replace with your real proxy IPs
           - "203.0.113.11:3128"
           - "203.0.113.12:3128"
           - "203.0.113.13:3128"
+
+    # =========================================================================
+    # TARGETS  (required)
+    # =========================================================================
+    # Evaluated top-to-bottom — first regex match wins.
+
+    targets:
+
+      # -----------------------------------------------------------------------
+      # Example: strict target for a rate-limited API (uncomment to enable)
+      # -----------------------------------------------------------------------
+      # - name: strict-api
+      #   regex: 'api\.example\.com'
+      #   ipPool: general-pool
+      #   minRequestInterval: 10s
+      #   maxQueueWait: 60s
+      #   numRetries: 1
+      #   ipFailuresUntilQuarantine: 2
+      #   quarantineTime: 30m
+
+      # -----------------------------------------------------------------------
+      # General catch-all
+      # -----------------------------------------------------------------------
+      - name: general
+        regex: '.*'
+        ipPool: general-pool
+
+        # minRequestInterval: how long an IP is held off the pool after any
+        # request — the primary knob for respecting per-IP API rate limits.
         minRequestInterval: 1s
+
+        # How long a request waits for a free IP before failing.
         maxQueueWait: 30s
+
+        # Retry attempts using a different IP before giving up.
         numRetries: 3
+
+        # Quarantine after this many consecutive failures.
         ipFailuresUntilQuarantine: 5
+
+        # How long a quarantined IP sits out before being retried.
         quarantineTime: 2m
+
+        defaultProxyPort: 3128
+
+    # =========================================================================
+    # SERVER SETTINGS  (optional)
+    # =========================================================================
+    # Most server settings are provided as env vars in deployment.yaml so they
+    # can vary per environment without editing this ConfigMap.  Uncomment any
+    # you want to bake directly into the config.
+    #
+    # server:
+    #   logLevel: INFO           # TRACE/DEBUG/INFO/WARNING/ERROR
+    #   logFormat: json          # json recommended for log aggregators
+    #   metrics: true            # expose /metrics on metricsPort
+    #   metricsPort: 9090
+    #   probe: true              # background IP health prober
+    #   probeInterval: 60
+    #   probeUrls:
+    #     - https://1.1.1.1
+    #     - https://www.google.com
