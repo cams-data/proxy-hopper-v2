@@ -149,8 +149,16 @@ activemq-data/
 
 # Environments
 .env
+.env.*
 .envrc
 .venv
+
+# Secrets / tokens — never commit these
+*.token
+*.secret
+.secrets
+secrets.yaml
+secrets.yml
 env/
 venv/
 ENV/
