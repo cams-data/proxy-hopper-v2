@@ -4,11 +4,14 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
-  # -------------------------------------------------------------------------
-  # 1. Test suite — full matrix, must pass before release
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Test suite — runs on every push to main and on every PR targeting main.
+  # ---------------------------------------------------------------------------
   test:
     name: Test / Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -46,13 +49,14 @@ jobs:
           uv sync --python ${{ matrix.python-version }}
           uv run pytest --tb=short -q
 
-  # -------------------------------------------------------------------------
-  # 2. release-please — maintains the Release PR and creates the tag + GitHub
-  #    Release when that PR is merged into main
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # release-please — runs only on push to main (not on PRs).
+  # Creates/updates the Release PR. When the Release PR is merged, tags the
+  # commit and creates the GitHub Release, triggering the build job below.
+  # ---------------------------------------------------------------------------
   release-please:
     name: Release Please
-    needs: test
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -70,10 +74,45 @@ jobs:
           manifest-file: .github/.release-please-manifest.json
           target-branch: main
 
-  # -------------------------------------------------------------------------
-  # 3. Build wheels and attach to the GitHub Release
-  #    Only runs once release-please has created a new release tag.
-  # -------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Enable auto-merge on the Release PR so it merges automatically once CI
+  # passes — no manual intervention needed.
+  # ---------------------------------------------------------------------------
+  automerge-release-pr:
+    name: Auto-merge Release PR
+    needs: release-please
+    if: >
+      github.event_name == 'push' &&
+      needs.release-please.outputs.releases_created != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+
+    steps:
+      - name: Enable auto-merge on Release PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR=$(gh pr list \
+            --repo "${{ github.repository }}" \
+            --label "autorelease: pending" \
+            --json number \
+            --jq '.[0].number')
+          if [ -n "$PR" ] && [ "$PR" != "null" ]; then
+            gh pr merge "$PR" \
+              --repo "${{ github.repository }}" \
+              --auto \
+              --merge
+            echo "Auto-merge enabled for PR #$PR"
+          else
+            echo "No pending release PR found"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Build wheels and attach to the GitHub Release.
+  # Only runs when release-please has just created a new release tag.
+  # ---------------------------------------------------------------------------
   build-and-release:
     name: Build & publish release
     needs: release-please
@@ -92,21 +131,11 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Build proxy-hopper wheel
-        working-directory: python_modules/proxy-hopper
-        run: uv build --wheel --out-dir ../../dist
-
-      - name: Build proxy-hopper-redis wheel
-        working-directory: python_modules/proxy-hopper-redis
-        run: uv build --wheel --out-dir ../../dist
-
-      - name: Build proxy-hopper sdist
-        working-directory: python_modules/proxy-hopper
-        run: uv build --sdist --out-dir ../../dist
-
-      - name: Build proxy-hopper-redis sdist
-        working-directory: python_modules/proxy-hopper-redis
-        run: uv build --sdist --out-dir ../../dist
+      - name: Build wheels and sdists
+        run: |
+          uv build --wheel --sdist --out-dir dist \
+            python_modules/proxy-hopper \
+            python_modules/proxy-hopper-redis
 
       - name: Upload assets to GitHub Release
         env:
