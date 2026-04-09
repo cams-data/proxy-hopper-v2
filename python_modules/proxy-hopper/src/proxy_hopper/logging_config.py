@@ -85,7 +85,7 @@ def configure_logging(
         Filesystem path to write logs to.  ``None`` (default) writes to
         stderr, which is the correct target for Docker / Kubernetes.
     log_format:
-        ``"text"`` — human-readable colum-aligned lines.
+        ``"text"`` — human-readable column-aligned lines.
         ``"json"`` — one JSON object per line for log aggregators.
     """
     numeric = logging.getLevelName(level.upper())
