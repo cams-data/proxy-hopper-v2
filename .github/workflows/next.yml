@@ -1,0 +1,111 @@
+name: Next (pre-release)
+
+on:
+  push:
+    branches:
+      - next
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Test suite — must pass before anything else runs
+  # -------------------------------------------------------------------------
+  test:
+    name: Test / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Run proxy-hopper tests
+        working-directory: python_modules/proxy-hopper
+        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+
+      - name: Run proxy-hopper-redis tests
+        working-directory: python_modules/proxy-hopper-redis
+        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+
+      - name: Run contract tests (all backends)
+        working-directory: python_modules/tests
+        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+
+  # -------------------------------------------------------------------------
+  # 2. release-please — maintains the pre-release PR and tags on merge
+  # -------------------------------------------------------------------------
+  release-please:
+    name: Release Please (pre-release)
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    outputs:
+      # True when release-please has just merged a release PR (i.e. a new
+      # version tag was created).  Used to gate the build step below.
+      releases_created: ${{ steps.rp.outputs.releases_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+        with:
+          config-file: .github/release-please-config.json
+          manifest-file: .github/.release-please-manifest.json
+          target-branch: next
+
+  # -------------------------------------------------------------------------
+  # 3. Build wheels and publish a pre-release to GitHub Releases
+  #    Only runs when release-please actually cuts a new version.
+  # -------------------------------------------------------------------------
+  build-and-release:
+    name: Build & publish pre-release
+    needs: release-please
+    if: needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Build proxy-hopper wheel
+        working-directory: python_modules/proxy-hopper
+        run: uv build --wheel --out-dir ../../dist
+
+      - name: Build proxy-hopper-redis wheel
+        working-directory: python_modules/proxy-hopper-redis
+        run: uv build --wheel --out-dir ../../dist
+
+      - name: Build proxy-hopper sdist
+        working-directory: python_modules/proxy-hopper
+        run: uv build --sdist --out-dir ../../dist
+
+      - name: Build proxy-hopper-redis sdist
+        working-directory: python_modules/proxy-hopper-redis
+        run: uv build --sdist --out-dir ../../dist
+
+      - name: Upload assets to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.release-please.outputs.tag_name }}" dist/* \
+            --repo "${{ github.repository }}"
