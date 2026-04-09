@@ -2,7 +2,7 @@
 
 import logging
 
-__version__ = "0.1.1"
+__version__ = "0.1.0"
 
 # Registers the TRACE level (5) on logging.Logger so that logger.trace()
 # is available throughout the package.  Must be imported here so the level

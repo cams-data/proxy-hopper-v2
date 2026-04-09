@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "proxy-hopper"
-version = "0.1.1"
+version = "0.1.0"
 description = "Rotating proxy server that routes requests through a pool of external proxy IP addresses"
 requires-python = ">=3.11"
 dependencies = [
