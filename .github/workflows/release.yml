@@ -30,15 +30,21 @@ jobs:
 
       - name: Run proxy-hopper tests
         working-directory: python_modules/proxy-hopper
-        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+        run: |
+          uv sync --python ${{ matrix.python-version }} --all-extras
+          uv run pytest --tb=short -q
 
       - name: Run proxy-hopper-redis tests
         working-directory: python_modules/proxy-hopper-redis
-        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+        run: |
+          uv sync --python ${{ matrix.python-version }} --all-extras
+          uv run pytest --tb=short -q
 
       - name: Run contract tests (all backends)
         working-directory: python_modules/tests
-        run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+        run: |
+          uv sync --python ${{ matrix.python-version }}
+          uv run pytest --tb=short -q
 
   # -------------------------------------------------------------------------
   # 2. release-please — maintains the Release PR and creates the tag + GitHub
