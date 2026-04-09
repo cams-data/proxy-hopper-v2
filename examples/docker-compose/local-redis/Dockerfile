@@ -1,18 +1,12 @@
 FROM python:3.12-slim
 
-# Install uv for fast dependency installation
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ARG VERSION=0.1.0
+ARG GITHUB_REPO=cams-data/proxy-hopper-v2
 
-WORKDIR /app
+RUN pip install --no-cache-dir \
+    "https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/proxy_hopper-${VERSION}-py3-none-any.whl" \
+    "https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/proxy_hopper_redis-${VERSION}-py3-none-any.whl"
 
-# Copy both packages — redis backend depends on core
-COPY python_modules/proxy-hopper ./proxy-hopper
-COPY python_modules/proxy-hopper-redis ./proxy-hopper-redis
-
-# Install core first (local), then redis add-on (also local)
-RUN uv pip install --system --no-cache ./proxy-hopper ./proxy-hopper-redis
-
-# Config is mounted at runtime
 VOLUME ["/etc/proxy-hopper"]
 
 EXPOSE 8080

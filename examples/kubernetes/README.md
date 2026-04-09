@@ -24,14 +24,19 @@ kubernetes/
 
 ## Building and pushing the image
 
-From the repo root:
+The Dockerfile in `examples/docker-compose/local-redis/` installs directly from the
+GitHub Release, so no local checkout is needed:
 
 ```bash
+cd examples/docker-compose/local-redis
+
 docker build \
-  -f examples/docker-compose/local-redis/Dockerfile \
+  --build-arg VERSION=0.1.0 \
+  -t your-registry/proxy-hopper:0.1.0 \
   -t your-registry/proxy-hopper:latest \
   .
 
+docker push your-registry/proxy-hopper:0.1.0
 docker push your-registry/proxy-hopper:latest
 ```
 

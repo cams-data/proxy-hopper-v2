@@ -29,17 +29,15 @@ targets:
 
 **2. Build and start**
 
-Run from the repo root (the build context is the whole repo):
-
-```bash
-docker compose -f examples/docker-compose/local-backend/docker-compose.yml up --build
-```
-
-Or change into this directory first:
-
 ```bash
 cd examples/docker-compose/local-backend
 docker compose up --build
+```
+
+By default this installs `v0.1.0`. To use a different release, set `PROXY_HOPPER_VERSION`:
+
+```bash
+PROXY_HOPPER_VERSION=0.2.0 docker compose up --build
 ```
 
 **3. Send a request through the proxy**
