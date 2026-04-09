@@ -10,6 +10,11 @@ Metrics exposed:
   proxy_hopper_queue_depth{target}                     Gauge
   proxy_hopper_available_ips{target}                   Gauge
   proxy_hopper_quarantined_ips{target}                 Gauge
+
+  proxy_hopper_probe_success_total{address}            Counter
+  proxy_hopper_probe_failure_total{address, reason}    Counter
+  proxy_hopper_probe_duration_seconds{address}         Histogram
+  proxy_hopper_ip_reachable{address}                   Gauge  (1=up, 0=down)
 """
 
 from __future__ import annotations
@@ -45,6 +50,10 @@ class _NoopMetrics:
         pass
     def set_quarantined_ips(self, target: str, count: int) -> None:
         pass
+    def record_probe_success(self, address: str, duration: float) -> None:
+        pass
+    def record_probe_failure(self, address: str, reason: str, duration: float) -> None:
+        pass
 
 
 class PrometheusMetrics:
@@ -77,6 +86,27 @@ class PrometheusMetrics:
             "Number of IPs currently quarantined",
             ["target"],
         )
+        self._probe_success = Counter(
+            "proxy_hopper_probe_success_total",
+            "Total number of successful background IP probes",
+            ["address"],
+        )
+        self._probe_failure = Counter(
+            "proxy_hopper_probe_failure_total",
+            "Total number of failed background IP probes",
+            ["address", "reason"],
+        )
+        self._probe_duration = Histogram(
+            "proxy_hopper_probe_duration_seconds",
+            "Duration of background IP probe requests",
+            ["address"],
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+        )
+        self._ip_reachable = Gauge(
+            "proxy_hopper_ip_reachable",
+            "Whether the proxy IP is reachable (1=up, 0=down)",
+            ["address"],
+        )
 
     def record_request(self, target: str, outcome: str, duration: float) -> None:
         self._requests.labels(target=target, outcome=outcome).inc()
@@ -90,6 +120,16 @@ class PrometheusMetrics:
 
     def set_quarantined_ips(self, target: str, count: int) -> None:
         self._quarantined_ips.labels(target=target).set(count)
+
+    def record_probe_success(self, address: str, duration: float) -> None:
+        self._probe_success.labels(address=address).inc()
+        self._probe_duration.labels(address=address).observe(duration)
+        self._ip_reachable.labels(address=address).set(1)
+
+    def record_probe_failure(self, address: str, reason: str, duration: float) -> None:
+        self._probe_failure.labels(address=address, reason=reason).inc()
+        self._probe_duration.labels(address=address).observe(duration)
+        self._ip_reachable.labels(address=address).set(0)
 
 
 # Singleton — created once at startup
