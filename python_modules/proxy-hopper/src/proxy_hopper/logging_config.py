@@ -6,7 +6,7 @@ themselves via the standard logging module; this file does nothing until
 configure_logging() is explicitly called.
 
 Environment variables (all honoured by the CLI via auto_envvar_prefix):
-    PROXY_HOPPER_LOG_LEVEL   — TRACE | DEBUG | INFO | WARNING | ERROR
+    PROXY_HOPPER_LOG_LEVEL   — TRACE | DEBUG | INFO | WARNING | ERROR  (default: INFO)
     PROXY_HOPPER_LOG_FILE    — path to write log output (default: stderr)
     PROXY_HOPPER_LOG_FORMAT  — text | json  (default: text)
 """
