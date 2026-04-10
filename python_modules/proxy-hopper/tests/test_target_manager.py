@@ -197,6 +197,72 @@ class TestExecuteRequest:
             assert mgr._request_queue.qsize() == 1
 
 
+class TestShutdown:
+    async def test_queued_requests_get_503_on_shutdown(self):
+        cfg = make_config(max_queue_wait=30.0)
+        backend = MemoryIPPoolBackend()
+        await backend.start()
+        mgr = TargetManager(cfg, backend)
+        await mgr.start()
+
+        # Drain the pool so requests sit in queue waiting for an IP
+        await mgr._pool.acquire(timeout=1.0)
+
+        req = make_request(max_queue_wait=30.0)
+        await mgr.submit(req)
+
+        await mgr.stop()
+        await backend.stop()
+
+        assert req.future.done()
+        result = req.future.result()
+        assert result.status == 503
+
+    async def test_inflight_requests_are_awaited_on_shutdown(self):
+        cfg = make_config()
+        backend = MemoryIPPoolBackend()
+        await backend.start()
+        mgr = TargetManager(cfg, backend)
+        await mgr.start()
+
+        completed = asyncio.Event()
+
+        async def slow_execute(address, request):
+            await asyncio.sleep(0.1)
+            request.future.set_result(ProxyResponse(status=200, headers={}, body=b"ok"))
+            completed.set()
+
+        with patch.object(mgr, "_execute_request", side_effect=slow_execute):
+            req = make_request()
+            await mgr.submit(req)
+            await asyncio.sleep(0.05)  # let dispatcher pick it up
+            await mgr.stop(drain_timeout=2.0)
+            await backend.stop()
+
+        assert completed.is_set()
+        assert req.future.result().status == 200
+
+    async def test_inflight_requests_cancelled_after_drain_timeout(self):
+        cfg = make_config()
+        backend = MemoryIPPoolBackend()
+        await backend.start()
+        mgr = TargetManager(cfg, backend)
+        await mgr.start()
+
+        async def hanging_execute(address, request):
+            await asyncio.sleep(999)
+
+        with patch.object(mgr, "_execute_request", side_effect=hanging_execute):
+            req = make_request()
+            await mgr.submit(req)
+            await asyncio.sleep(0.05)  # let dispatcher pick it up
+            await mgr.stop(drain_timeout=0.1)
+            await backend.stop()
+
+        # Shutdown should complete without hanging
+        assert len(mgr._inflight) == 0
+
+
 class TestPendingRequest:
     def test_is_expired(self):
         req = PendingRequest(

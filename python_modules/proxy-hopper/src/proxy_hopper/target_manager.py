@@ -49,6 +49,7 @@ class TargetManager:
         self._regex = config.compiled_regex()
         self._request_queue: asyncio.Queue[PendingRequest] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
+        self._inflight: set[asyncio.Task] = set()
         self._running = False
         self._session: aiohttp.ClientSession | None = None
         self._proxy_read_timeout = proxy_read_timeout
@@ -81,11 +82,48 @@ class TargetManager:
         ]
         logger.info("TargetManager '%s' started", self._config.name)
 
-    async def stop(self) -> None:
+    async def stop(self, drain_timeout: float = 30.0) -> None:
         self._running = False
+
+        # Stop accepting new work
         for task in self._tasks:
             task.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        # Drain in-flight requests — give them a chance to complete cleanly
+        if self._inflight:
+            logger.info(
+                "TargetManager '%s': waiting for %d in-flight request(s) to complete (timeout=%.0fs)",
+                self._config.name, len(self._inflight), drain_timeout,
+            )
+            await asyncio.wait(set(self._inflight), timeout=drain_timeout)
+            if self._inflight:
+                logger.warning(
+                    "TargetManager '%s': %d in-flight request(s) did not complete within %.0fs — cancelling",
+                    self._config.name, len(self._inflight), drain_timeout,
+                )
+                for task in list(self._inflight):
+                    task.cancel()
+                await asyncio.gather(*list(self._inflight), return_exceptions=True)
+
+        # Reject any requests still sitting in the queue
+        rejected = 0
+        while not self._request_queue.empty():
+            try:
+                pending = self._request_queue.get_nowait()
+                if not pending.future.done():
+                    pending.future.set_result(
+                        self._error_response(503, "server_shutdown", pending, "Server is shutting down")
+                    )
+                rejected += 1
+            except asyncio.QueueEmpty:
+                break
+        if rejected:
+            logger.warning(
+                "TargetManager '%s': rejected %d queued request(s) due to shutdown",
+                self._config.name, rejected,
+            )
+
         await self._pool.stop()
         if self._session is not None:
             await self._session.close()
@@ -153,10 +191,12 @@ class TargetManager:
                 "TargetManager '%s': dispatching %s %s via %s",
                 self._config.name, request.method, request.url, address,
             )
-            asyncio.create_task(
+            task = asyncio.create_task(
                 self._execute_request(address, request),
                 name=f"ph:execute:{self._config.name}",
             )
+            self._inflight.add(task)
+            task.add_done_callback(self._inflight.discard)
             self._request_queue.task_done()
 
     # ------------------------------------------------------------------
