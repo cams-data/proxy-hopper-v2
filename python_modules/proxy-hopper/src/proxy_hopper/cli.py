@@ -153,13 +153,24 @@ def run(
         log_format=server.log_format,
     )
 
+    # Suppress backend storage-level logs unless explicitly requested.
+    # INFO and above always pass through; DEBUG/TRACE are suppressed by default
+    # because they are only useful when diagnosing backend implementation issues.
+    if not server.debug_backend:
+        for _backend_logger in ("proxy_hopper.backend.memory", "proxy_hopper_redis.backend"):
+            logging.getLogger(_backend_logger).setLevel(logging.WARNING)
+
     # --- Start metrics server ---
     if server.metrics:
         from .metrics import start_metrics_server
         start_metrics_server(server.metrics_port)
 
     # --- Run ---
-    asyncio.run(_run(cfg.targets, server))
+    try:
+        import uvloop
+        uvloop.run(_run(cfg.targets, server))
+    except ImportError:
+        asyncio.run(_run(cfg.targets, server))
 
 
 @main.command()
@@ -206,8 +217,11 @@ async def _run(targets, server) -> None:
 
     await pool_backend.start()
 
-    managers = [TargetManager(t, pool_backend) for t in targets]
-    proxy = ProxyServer(managers, host=server.host, port=server.port)
+    managers = [
+        TargetManager(t, pool_backend, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
+        for t in targets
+    ]
+    proxy = ProxyServer(managers, host=server.host, port=server.port, enabled_modes=server.modes)
 
     prober = None
     if server.probe:
@@ -217,6 +231,7 @@ async def _run(targets, server) -> None:
             probe_urls=server.probe_urls,
             interval=server.probe_interval,
             timeout=server.probe_timeout,
+            debug=server.debug_probes,
         )
         await prober.start()
 

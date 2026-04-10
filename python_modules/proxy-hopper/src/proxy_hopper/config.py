@@ -49,6 +49,10 @@ Full config file reference
     # ipList                    (required*) List of proxy addresses ("host:port" or "host").
     # ipPool                    (required*) Name of a shared ipPool — alternative to ipList.
     #   * Exactly one of ipList or ipPool must be provided.
+    # proxyUsername             Username for HTTP Basic auth sent to the external proxy.
+    # proxyPassword             Password for HTTP Basic auth sent to the external proxy.
+    #   If the external proxy uses IP whitelisting but still requires a Basic auth header
+    #   (common with Squid), provide these credentials.  Leave unset for open proxies.
     # defaultProxyPort          Port applied to IPs listed without an explicit port. [default: 8080]
     # minRequestInterval        How long (seconds / duration string) an IP is held off
     #                           the pool after any request before being reused.
@@ -102,12 +106,19 @@ Full config file reference
       redisUrl: redis://localhost:6379/0  # PROXY_HOPPER_REDIS_URL
       metrics: false             # PROXY_HOPPER_METRICS
       metricsPort: 9090          # PROXY_HOPPER_METRICS_PORT
-      probe: false               # PROXY_HOPPER_PROBE
+      debugProbes: false         # PROXY_HOPPER_DEBUG_PROBES     — emit probe DEBUG/TRACE logs (requires logLevel: DEBUG)
+      debugQuarantine: false     # PROXY_HOPPER_DEBUG_QUARANTINE — emit quarantine/pool DEBUG/TRACE logs (requires logLevel: DEBUG)
+      debugBackend: false        # PROXY_HOPPER_DEBUG_BACKEND    — emit backend storage DEBUG/TRACE logs (requires logLevel: DEBUG)
+      probe: true                # PROXY_HOPPER_PROBE
       probeInterval: 60          # PROXY_HOPPER_PROBE_INTERVAL  (seconds)
       probeTimeout: 10           # PROXY_HOPPER_PROBE_TIMEOUT   (seconds)
       probeUrls:                 # PROXY_HOPPER_PROBE_URLS      (comma-separated as env var)
         - https://1.1.1.1
         - https://www.google.com
+      modes:                     # PROXY_HOPPER_MODES           (comma-separated as env var)
+        - connect_tunnel         # HTTPS CONNECT tunnel (blind byte relay)
+        - http_proxy             # Traditional HTTP proxy (absolute-form URLs)
+        - forwarding             # URL-rewriting forwarding (/https/host/path)
 """
 
 from __future__ import annotations
@@ -120,6 +131,8 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
+
+from .handlers import VALID_MODES
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +171,8 @@ class TargetConfig(BaseModel):
     name: str
     regex: str
     ip_list: list[str] = Field(min_length=1)
+    proxy_username: Optional[str] = None
+    proxy_password: Optional[str] = None
     min_request_interval: float = Field(default=1.0)
     max_queue_wait: float = Field(default=30.0)
     num_retries: int = Field(default=3, ge=0)
@@ -217,12 +232,27 @@ class ServerConfig(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     metrics: bool = False
     metrics_port: int = 9090
-    probe: bool = False
+    proxy_read_timeout: Optional[float] = None
+    debug_probes: bool = False
+    debug_quarantine: bool = False
+    debug_backend: bool = False
+    probe: bool = True
     probe_interval: float = 60.0
     probe_timeout: float = 10.0
     probe_urls: list[str] = Field(
         default_factory=lambda: ["https://1.1.1.1", "https://www.google.com"]
     )
+    modes: set[str] = Field(default_factory=lambda: set(VALID_MODES))
+
+    @field_validator("modes")
+    @classmethod
+    def validate_modes(cls, v: set[str]) -> set[str]:
+        unknown = v - VALID_MODES
+        if unknown:
+            raise ValueError(
+                f"Unknown mode(s): {unknown!r}. Valid modes: {sorted(VALID_MODES)}"
+            )
+        return v
 
     @classmethod
     def settings_customise_sources(
@@ -237,7 +267,7 @@ class ServerConfig(BaseSettings):
         # list[str] env vars (e.g. PROXY_HOPPER_PROBE_URLS=a,b,c) instead of
         # requiring JSON array syntax (["a","b","c"]).
         class _CommaSplitEnvSource(EnvSettingsSource):
-            _COMMA_FIELDS = {"probe_urls"}
+            _COMMA_FIELDS = {"probe_urls", "modes"}
 
             def prepare_field_value(self, field_name, field, value, value_is_complex):
                 if field_name in self._COMMA_FIELDS and isinstance(value, str):
@@ -259,6 +289,8 @@ class ServerConfig(BaseSettings):
 _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipList": "ip_list",
     "ipPool": "ip_pool",
+    "proxyUsername": "proxy_username",
+    "proxyPassword": "proxy_password",
     "minRequestInterval": "min_request_interval",
     "maxRequestTimeInQueue": "max_queue_wait",
     "maxQueueWait": "max_queue_wait",
@@ -278,6 +310,10 @@ _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
     "logFile": "log_file",
     "redisUrl": "redis_url",
     "metricsPort": "metrics_port",
+    "proxyReadTimeout": "proxy_read_timeout",
+    "debugProbes": "debug_probes",
+    "debugQuarantine": "debug_quarantine",
+    "debugBackend": "debug_backend",
     "probeInterval": "probe_interval",
     "probeTimeout": "probe_timeout",
     "probeUrls": "probe_urls",
