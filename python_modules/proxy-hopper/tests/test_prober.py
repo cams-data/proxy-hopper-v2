@@ -131,10 +131,8 @@ class TestProbeMetrics:
         mock_metrics.record_probe_success = lambda addr, dur: recorded_successes.append((addr, dur))
         mock_metrics.record_probe_failure = lambda *a: recorded_failures.append(a)
 
-        with (
-            patch("proxy_hopper.prober.aiohttp.ClientSession", return_value=mock_session),
-            patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics),
-        ):
+        prober._session = mock_session
+        with patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics):
             await prober._probe_address("1.1.1.1:80")
 
         assert len(recorded_successes) == 1
@@ -148,18 +146,14 @@ class TestProbeMetrics:
 
         mock_session = AsyncMock()
         mock_session.get = MagicMock(side_effect=asyncio.TimeoutError)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
 
         recorded_failures: list[tuple] = []
         mock_metrics = MagicMock()
         mock_metrics.record_probe_success = MagicMock()
         mock_metrics.record_probe_failure = lambda addr, reason, dur: recorded_failures.append((addr, reason))
 
-        with (
-            patch("proxy_hopper.prober.aiohttp.ClientSession", return_value=mock_session),
-            patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics),
-        ):
+        prober._session = mock_session
+        with patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics):
             await prober._probe_address("1.1.1.1:80")
 
         assert len(recorded_failures) == 1
@@ -178,18 +172,14 @@ class TestProbeMetrics:
 
         mock_session = AsyncMock()
         mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
 
         recorded_failures: list[tuple] = []
         mock_metrics = MagicMock()
         mock_metrics.record_probe_success = MagicMock()
         mock_metrics.record_probe_failure = lambda addr, reason, dur: recorded_failures.append((addr, reason))
 
-        with (
-            patch("proxy_hopper.prober.aiohttp.ClientSession", return_value=mock_session),
-            patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics),
-        ):
+        prober._session = mock_session
+        with patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics):
             await prober._probe_address("1.1.1.1:80")
 
         assert len(recorded_failures) == 1
@@ -209,18 +199,14 @@ class TestProbeMetrics:
 
         mock_session = AsyncMock()
         mock_session.get = MagicMock(return_value=mock_resp)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
 
         recorded_successes: list[Any] = []
         mock_metrics = MagicMock()
         mock_metrics.record_probe_success = lambda addr, dur: recorded_successes.append(addr)
         mock_metrics.record_probe_failure = MagicMock()
 
-        with (
-            patch("proxy_hopper.prober.aiohttp.ClientSession", return_value=mock_session),
-            patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics),
-        ):
+        prober._session = mock_session
+        with patch("proxy_hopper.prober.get_metrics", return_value=mock_metrics):
             await prober._probe_address("1.1.1.1:80")
 
         assert "1.1.1.1:80" in recorded_successes

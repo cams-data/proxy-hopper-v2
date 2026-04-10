@@ -115,3 +115,24 @@ class IPPoolBackend(ABC):
     @abstractmethod
     async def quarantine_list(self, target: str) -> list[str]:
         """Return all currently quarantined addresses (for status / metrics)."""
+
+    async def pool_size_and_quarantine(self, target: str) -> tuple[int, list[str]]:
+        """Return (pool_size, quarantine_list) in one operation.
+
+        Default implementation calls both methods sequentially.
+        Backends may override to fetch both in a single round trip.
+        """
+        return await self.pool_size(target), await self.quarantine_list(target)
+
+    # ------------------------------------------------------------------
+    # Bulk operations
+    # ------------------------------------------------------------------
+
+    async def push_ips(self, target: str, addresses: list[str]) -> None:
+        """Add multiple addresses to the pool in one operation.
+
+        Default implementation calls push_ip sequentially.
+        Backends may override for a single-round-trip bulk insert.
+        """
+        for address in addresses:
+            await self.push_ip(target, address)

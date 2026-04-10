@@ -54,13 +54,39 @@ Proxy Hopper will wait for Redis to pass its healthcheck before starting.
 **3. Send a request through the proxy**
 
 ```bash
-curl --proxy http://localhost:8080 http://example.com
+# HTTP proxy mode
+curl --proxy http://localhost:8080 https://example.com
+
+# Forwarding mode (full retry support for HTTPS APIs)
+curl -H "X-Proxy-Hopper-Target: https://example.com" \
+     http://localhost:8080/api/endpoint
 ```
 
 ```python
 import requests
-resp = requests.get("http://example.com", proxies={"http": "http://localhost:8080"})
+
+# HTTP proxy mode
+resp = requests.get("https://example.com", proxies={"https": "http://localhost:8080"})
+
+# Forwarding mode — set a session header, use normal paths
+session = requests.Session()
+session.headers["X-Proxy-Hopper-Target"] = "https://example.com"
+resp = session.get("http://localhost:8080/api/endpoint")
 ```
+
+---
+
+## Performance — uvloop
+
+By default the Dockerfile installs [uvloop](https://github.com/MagicStack/uvloop), a fast drop-in replacement for asyncio's event loop. Proxy Hopper detects it automatically at startup — no config change needed.
+
+To opt out:
+
+```bash
+docker compose build --build-arg UVLOOP=false
+```
+
+uvloop is Linux-only and has no effect on Windows or macOS.
 
 ---
 
@@ -97,6 +123,8 @@ Multiple targets can share a pool definition. Each target still maintains its ow
 | `regex` | required | Python regex matched against the full request URL |
 | `ipList` | required* | Proxy addresses — `host:port` or bare host |
 | `ipPool` | required* | Name of a shared `ipPools` entry |
+| `proxyUsername` | — | Username for HTTP Basic auth sent to the external proxy |
+| `proxyPassword` | — | Password for HTTP Basic auth sent to the external proxy |
 | `defaultProxyPort` | `8080` | Port applied to bare IPs without an explicit port |
 | `minRequestInterval` | `1s` | **Primary rate-limit knob.** How long an IP is unavailable after any request. |
 | `maxQueueWait` | `30s` | How long a request waits for a free IP before failing |
@@ -120,12 +148,16 @@ server:
   # backend and redisUrl set via PROXY_HOPPER_* in docker-compose.yml
   metrics: false        # set true to expose /metrics
   metricsPort: 9090
-  probe: false          # background IP health prober
+  probe: true           # background IP health prober — on by default
   probeInterval: 60
   probeTimeout: 10
   probeUrls:
     - https://1.1.1.1
     - https://www.google.com
+  modes:                # interaction modes to enable (default: all three)
+    - connect_tunnel    # HTTPS CONNECT tunnel
+    - http_proxy        # traditional HTTP proxy
+    - forwarding        # URL-rewriting: /https/host/path
 ```
 
 ### Environment variables

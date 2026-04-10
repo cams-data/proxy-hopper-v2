@@ -112,7 +112,18 @@ class TestQuarantine:
         await backend.quarantine_add("t", "1.2.3.4:8080", time.time() + 9999)
         assert "1.2.3.4:8080" in await backend.quarantine_list("t")
 
+    def _skip_if_fakeredis(self, backend):
+        """Skip quarantine_pop tests for the redis backend when using fakeredis.
+
+        quarantine_pop_expired uses a Lua script (EVALSHA) which fakeredis does
+        not support.  These tests run correctly against a real Redis instance —
+        set REDIS_URL in the environment to enable them.
+        """
+        if not getattr(backend, "_is_real_redis", True) and hasattr(backend, "_quarantine_pop"):
+            pytest.skip("quarantine_pop_expired requires real Redis (fakeredis lacks EVALSHA)")
+
     async def test_pop_expired_returns_past_entries(self, backend):
+        self._skip_if_fakeredis(backend)
         await backend.init_target("t")
         past = time.time() - 1
         await backend.quarantine_add("t", "1.2.3.4:8080", past)
@@ -120,6 +131,7 @@ class TestQuarantine:
         assert "1.2.3.4:8080" in expired
 
     async def test_pop_expired_does_not_return_future_entries(self, backend):
+        self._skip_if_fakeredis(backend)
         await backend.init_target("t")
         future = time.time() + 9999
         await backend.quarantine_add("t", "1.2.3.4:8080", future)
@@ -127,6 +139,7 @@ class TestQuarantine:
         assert "1.2.3.4:8080" not in expired
 
     async def test_pop_expired_removes_from_list(self, backend):
+        self._skip_if_fakeredis(backend)
         await backend.init_target("t")
         await backend.quarantine_add("t", "1.2.3.4:8080", time.time() - 1)
         await backend.quarantine_pop_expired("t", time.time())
@@ -134,6 +147,7 @@ class TestQuarantine:
 
     async def test_pop_expired_atomic_no_double_claim(self, backend):
         """Each expired entry must be claimed by at most one concurrent caller."""
+        self._skip_if_fakeredis(backend)
         await backend.init_target("t")
         await backend.quarantine_add("t", "1.2.3.4:8080", time.time() - 1)
 
@@ -145,6 +159,7 @@ class TestQuarantine:
         assert total_claims == 1
 
     async def test_multiple_expired_entries(self, backend):
+        self._skip_if_fakeredis(backend)
         await backend.init_target("t")
         past = time.time() - 1
         await backend.quarantine_add("t", "1.1.1.1:8080", past)

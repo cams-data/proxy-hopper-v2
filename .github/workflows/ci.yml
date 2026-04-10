@@ -23,6 +23,17 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
 
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,6 +61,8 @@ jobs:
 
       - name: Run contract tests (all backends)
         working-directory: python_modules/tests
+        env:
+          REDIS_URL: redis://localhost:6379/0
         run: |
           uv sync --python ${{ matrix.python-version }}
           uv run pytest --tb=short -q

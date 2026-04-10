@@ -40,9 +40,10 @@ _QUARANTINE_SWEEP_INTERVAL = 5.0  # seconds between quarantine expiry checks
 class IPPool:
     """Manages the IP rotation policy for a single target."""
 
-    def __init__(self, config: TargetConfig, backend: IPPoolBackend) -> None:
+    def __init__(self, config: TargetConfig, backend: IPPoolBackend, debug: bool = False) -> None:
         self._config = config
         self._backend = backend
+        self._debug = debug
         self._addresses = [
             f"{host}:{port}" for host, port in config.resolved_ip_list()
         ]
@@ -57,31 +58,34 @@ class IPPool:
         """Seed the pool (if we win the init race) and start the sweep task."""
         first = await self._backend.init_target(self._config.name)
         if first:
-            for address in self._addresses:
-                await self._backend.push_ip(self._config.name, address)
-            logger.debug(
-                "IPPool '%s': seeded %d IPs: %s",
-                self._config.name, len(self._addresses), self._addresses,
-            )
+            await self._backend.push_ips(self._config.name, self._addresses)
+            if self._debug:
+                logger.debug(
+                    "IPPool '%s': seeded %d IPs: %s",
+                    self._config.name, len(self._addresses), self._addresses,
+                )
         else:
-            logger.debug(
-                "IPPool '%s': skipping seed — another instance already initialised this target",
-                self._config.name,
-            )
+            if self._debug:
+                logger.debug(
+                    "IPPool '%s': skipping seed — another instance already initialised this target",
+                    self._config.name,
+                )
 
         self._running = True
         self._sweep_task = asyncio.create_task(
             self._quarantine_sweep_loop(),
             name=f"ph:pool:sweep:{self._config.name}",
         )
-        logger.debug("IPPool '%s': quarantine sweep task started", self._config.name)
+        if self._debug:
+            logger.debug("IPPool '%s': quarantine sweep task started", self._config.name)
 
     async def stop(self) -> None:
         self._running = False
         if self._sweep_task:
             self._sweep_task.cancel()
             await asyncio.gather(self._sweep_task, return_exceptions=True)
-        logger.debug("IPPool '%s': stopped", self._config.name)
+        if self._debug:
+            logger.debug("IPPool '%s': stopped", self._config.name)
 
     # ------------------------------------------------------------------
     # Public interface (used by TargetManager)
@@ -89,39 +93,53 @@ class IPPool:
 
     async def acquire(self, timeout: float) -> Optional[str]:
         """Return the next available IP address, or None on timeout."""
-        logger.trace(  # type: ignore[attr-defined]
-            "IPPool '%s': waiting for IP (timeout=%.2fs)", self._config.name, timeout
-        )
-        address = await self._backend.pop_ip(self._config.name, timeout)
-        if address is not None:
-            logger.debug("IPPool '%s': acquired %s", self._config.name, address)
-        else:
-            logger.debug(
-                "IPPool '%s': no IP available within %.2fs", self._config.name, timeout
+        if self._debug:
+            logger.trace(  # type: ignore[attr-defined]
+                "IPPool '%s': waiting for IP (timeout=%.2fs)", self._config.name, timeout
             )
+        address = await self._backend.pop_ip(self._config.name, timeout)
+        if self._debug:
+            if address is not None:
+                logger.debug("IPPool '%s': acquired %s", self._config.name, address)
+            else:
+                logger.debug(
+                    "IPPool '%s': no IP available within %.2fs", self._config.name, timeout
+                )
         return address
 
-    async def record_success(self, address: str) -> None:
-        """Reset failure state and schedule the IP's return after the cooldown."""
+    async def record_success(self, address: str, elapsed: float = 0.0) -> None:
+        """Reset failure state and schedule the IP's return after the cooldown.
+
+        *elapsed* is the time already spent on the request.  The cooldown delay
+        is reduced by that amount (floored at 0) so that ``min_request_interval``
+        is measured from when the request was *sent*, not when it *returned*.
+        """
         await self._backend.reset_failures(self._config.name, address)
-        delay = self._config.min_request_interval
-        logger.debug(
-            "IPPool '%s': %s — success, failures reset, returning to pool in %.2fs",
-            self._config.name, address, delay,
-        )
+        delay = max(0.0, self._config.min_request_interval - elapsed)
+        if self._debug:
+            logger.debug(
+                "IPPool '%s': %s — success, failures reset, returning to pool in %.2fs",
+                self._config.name, address, delay,
+            )
         asyncio.create_task(
             self._return_after_cooldown(address, delay),
             name=f"ph:pool:cooldown:{self._config.name}:{address}",
         )
 
-    async def record_failure(self, address: str) -> None:
-        """Increment failure count; quarantine IP if threshold is reached."""
+    async def record_failure(self, address: str, elapsed: float = 0.0) -> None:
+        """Increment failure count; quarantine IP if threshold is reached.
+
+        *elapsed* is the time already spent on the request — used to adjust the
+        cooldown delay so that ``min_request_interval`` is measured from request
+        send time rather than response receipt time.
+        """
         threshold = self._config.ip_failures_until_quarantine
         failures = await self._backend.increment_failures(self._config.name, address)
-        logger.debug(
-            "IPPool '%s': %s — failure %d/%d",
-            self._config.name, address, failures, threshold,
-        )
+        if self._debug:
+            logger.debug(
+                "IPPool '%s': %s — failure %d/%d",
+                self._config.name, address, failures, threshold,
+            )
         if failures >= threshold:
             release_at = time.time() + self._config.quarantine_time
             await self._backend.quarantine_add(self._config.name, address, release_at)
@@ -130,16 +148,18 @@ class IPPool:
                 self._config.name, address, self._config.quarantine_time, failures,
             )
         else:
+            delay = max(0.0, self._config.min_request_interval - elapsed)
             asyncio.create_task(
-                self._return_after_cooldown(address, self._config.min_request_interval),
+                self._return_after_cooldown(address, delay),
                 name=f"ph:pool:cooldown:{self._config.name}:{address}",
             )
 
     async def get_status(self) -> dict:
+        size, quarantined = await self._backend.pool_size_and_quarantine(self._config.name)
         return {
             "name": self._config.name,
-            "available_ips": await self._backend.pool_size(self._config.name),
-            "quarantined_ips": await self._backend.quarantine_list(self._config.name),
+            "available_ips": size,
+            "quarantined_ips": quarantined,
         }
 
     # ------------------------------------------------------------------
@@ -150,10 +170,11 @@ class IPPool:
         if delay > 0:
             await asyncio.sleep(delay)
         await self._backend.push_ip(self._config.name, address)
-        logger.trace(  # type: ignore[attr-defined]
-            "IPPool '%s': %s returned to pool (after %.2fs cooldown)",
-            self._config.name, address, delay,
-        )
+        if self._debug:
+            logger.trace(  # type: ignore[attr-defined]
+                "IPPool '%s': %s returned to pool (after %.2fs cooldown)",
+                self._config.name, address, delay,
+            )
 
     async def _quarantine_sweep_loop(self) -> None:
         while self._running:
@@ -165,14 +186,15 @@ class IPPool:
         expired = await self._backend.quarantine_pop_expired(
             self._config.name, time.time()
         )
-        logger.debug(
-            "IPPool '%s': quarantine sweep — %d expired entr%s",
-            self._config.name, len(expired), "y" if len(expired) == 1 else "ies",
-        )
-        for address in expired:
-            await self._backend.reset_failures(self._config.name, address)
-            await self._backend.push_ip(self._config.name, address)
-            logger.info(
-                "IPPool '%s': %s released from quarantine and returned to pool",
-                self._config.name, address,
+        if self._debug:
+            logger.debug(
+                "IPPool '%s': quarantine sweep — %d expired entr%s",
+                self._config.name, len(expired), "y" if len(expired) == 1 else "ies",
             )
+        if expired:
+            await self._backend.push_ips(self._config.name, expired)
+            for address in expired:
+                logger.info(
+                    "IPPool '%s': %s released from quarantine and returned to pool",
+                    self._config.name, address,
+                )

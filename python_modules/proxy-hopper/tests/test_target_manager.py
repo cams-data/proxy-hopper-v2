@@ -143,7 +143,9 @@ class TestExecuteRequest:
                 m.get("http://example.com/", status=200, body=b"hello")
                 await mgr._execute_request(address, req)
 
-            record_success.assert_called_once_with(address)
+            args, _ = record_success.call_args
+            assert args[0] == address
+            assert isinstance(args[1], float)
             assert req.future.result().status == 200
 
     async def test_rate_limit_calls_pool_record_failure_and_requeues(self):
@@ -168,7 +170,9 @@ class TestExecuteRequest:
                 m.get("http://example.com/", status=429, body=b"rate limited")
                 await mgr._execute_request(address, req)
 
-            record_failure.assert_called_once_with(address)
+            args, _ = record_failure.call_args
+            assert args[0] == address
+            assert isinstance(args[1], float)
             assert not req.future.done()
             retry = mgr._request_queue.get_nowait()
             assert retry.failure_count == 1

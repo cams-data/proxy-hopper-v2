@@ -5,15 +5,27 @@ A rotating HTTP/HTTPS proxy server that routes outbound requests through a pool 
 ## How it works
 
 ```
-Your app  ──HTTP/CONNECT──►  Proxy Hopper  ──►  external proxy IP  ──►  target site
-                               (rotating)          (from your pool)
+Your app  ──────────────────►  Proxy Hopper  ──►  external proxy IP  ──►  target site
+          HTTP proxy / CONNECT   (rotating)          (from your pool)
+          or URL-forwarding
 ```
 
-- Clients configure Proxy Hopper as their HTTP proxy using standard proxy settings
 - Inbound requests are matched against a list of targets using regular expressions
 - Each target has its own pool of external proxy IPs managed as a FIFO queue
 - IPs that accumulate failures are quarantined for a configurable period, then released back
 - All pool state can be held in-memory (single instance) or Redis (multi-instance HA)
+
+### Interaction modes
+
+Proxy Hopper supports three ways for clients to send requests. All three use the same IP rotation and retry logic.
+
+| Mode | How to use | Best for |
+|---|---|---|
+| **HTTP proxy** | Set `http_proxy=http://proxy-hopper:8080` | Any HTTP client with proxy support |
+| **CONNECT tunnel** | Set `https_proxy=http://proxy-hopper:8080` | HTTPS via standard proxy settings |
+| **URL forwarding** | Change base URL to `http://proxy-hopper:8080/https/api.example.com` | Full retry on HTTPS requests; one-line integration change |
+
+> **Why forwarding mode?** CONNECT tunnels are opaque byte relays — Proxy Hopper cannot retry a mid-flight HTTPS failure. Forwarding mode lets Proxy Hopper own the full HTTPS request, enabling retries and IP rotation even on 429/5xx responses from the target API.
 
 ## Packages
 
@@ -52,11 +64,26 @@ targets:
 proxy-hopper run --config config.yaml
 ```
 
-Then point your HTTP client at `http://localhost:8080`:
+Then use one of the three integration modes:
 
 ```python
+# HTTP/HTTPS proxy mode (standard)
 import requests
-resp = requests.get("http://example.com", proxies={"http": "http://localhost:8080"})
+resp = requests.get("https://example.com", proxies={"https": "http://localhost:8080"})
+
+# Forwarding mode (full retry support — set a header, use normal URLs)
+session = requests.Session()
+session.headers["X-Proxy-Hopper-Target"] = "https://example.com"
+resp = session.get("http://localhost:8080/api/endpoint")
+```
+
+```bash
+# HTTP proxy mode
+curl --proxy http://localhost:8080 https://example.com
+
+# Forwarding mode
+curl -H "X-Proxy-Hopper-Target: https://example.com" \
+     http://localhost:8080/api/endpoint
 ```
 
 ## Repository layout

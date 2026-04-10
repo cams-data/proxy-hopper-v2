@@ -4,11 +4,19 @@ The ``backend`` and ``pool`` fixtures are parametrized over every registered
 backend type.  Adding a new backend implementation requires only adding an
 entry to ``_BACKEND_FACTORIES`` — every existing contract test then runs
 against it automatically.
+
+Redis backend tests
+-------------------
+When ``REDIS_URL`` is set in the environment (e.g. in CI via a service
+container), the redis backend uses a real Redis instance.  Without it, a
+fakeredis stub is used instead.  Tests that require real Redis features not
+supported by fakeredis (e.g. Lua scripting) are marked ``real_redis`` and
+are automatically skipped when running against fakeredis.
 """
 
 from __future__ import annotations
 
-import asyncio
+import os
 from typing import AsyncIterator
 
 import fakeredis.aioredis as fakeredis
@@ -21,22 +29,28 @@ from proxy_hopper.config import TargetConfig
 from proxy_hopper.pool import IPPool
 from proxy_hopper_redis.backend import RedisIPPoolBackend
 
+_REDIS_URL = os.environ.get("REDIS_URL", "")
+
 # ---------------------------------------------------------------------------
 # Backend factory registry
 # ---------------------------------------------------------------------------
-# To register a new backend, add an entry here.  All contract tests will
-# run against it automatically.
 
-def _make_memory_backend() -> MemoryIPPoolBackend:
-    return MemoryIPPoolBackend()
+def _make_memory_backend() -> tuple[MemoryIPPoolBackend, bool]:
+    """Returns (backend, is_real_redis)."""
+    return MemoryIPPoolBackend(), False
 
 
-def _make_redis_backend() -> RedisIPPoolBackend:
-    fake_server = fakeredis.FakeServer()
-    backend = RedisIPPoolBackend()
-    # Inject a fakeredis client so tests run without a real Redis server
-    backend._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
-    return backend
+def _make_redis_backend() -> tuple[RedisIPPoolBackend, bool]:
+    """Returns (backend, is_real_redis).
+
+    Uses a real Redis when REDIS_URL is set, otherwise fakeredis.
+    """
+    backend = RedisIPPoolBackend(_REDIS_URL if _REDIS_URL else "redis://localhost:6379/0")
+    if not _REDIS_URL:
+        fake_server = fakeredis.FakeServer()
+        backend._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
+        return backend, False
+    return backend, True
 
 
 _BACKEND_FACTORIES = {
@@ -56,7 +70,9 @@ def backend_name(request) -> str:
 @pytest_asyncio.fixture
 async def backend(backend_name) -> AsyncIterator[IPPoolBackend]:
     """A fully started backend of each registered type."""
-    b = _BACKEND_FACTORIES[backend_name]()
+    b, is_real_redis = _BACKEND_FACTORIES[backend_name]()
+    # Stash on the backend so tests can inspect it
+    b._is_real_redis = is_real_redis  # type: ignore[attr-defined]
     await b.start()
     yield b
     await b.stop()
@@ -83,3 +99,24 @@ async def pool(backend, target_config) -> AsyncIterator[IPPool]:
     await p.start()
     yield p
     await p.stop()
+
+
+# ---------------------------------------------------------------------------
+# real_redis marker — auto-skip tests that require real Redis (e.g. Lua)
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_redis: mark test as requiring a real Redis instance (skipped with fakeredis)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip real_redis tests when REDIS_URL is not set (i.e. using fakeredis)."""
+    if _REDIS_URL:
+        return
+    skip = pytest.mark.skip(reason="requires real Redis — set REDIS_URL to enable")
+    for item in items:
+        if item.get_closest_marker("real_redis"):
+            item.add_marker(skip)

@@ -44,6 +44,12 @@ targets:
   #   ipFailuresUntilQuarantine: 2
   #   quarantineTime: 30m
   #   defaultProxyPort: 3128
+  #
+  #   # Proxy credentials — required if the external proxy uses HTTP Basic auth
+  #   # (e.g. Squid with both IP whitelisting and credential fallback).
+  #   # Leave unset for open or IP-whitelisted-only proxies.
+  #   proxyUsername: myuser
+  #   proxyPassword: mypassword
 
   # ---------------------------------------------------------------------------
   # General catch-all target
@@ -106,9 +112,18 @@ targets:
 #   metricsPort: 9090          # PROXY_HOPPER_METRICS_PORT
 #
 #   # Background IP health prober (writes to Prometheus metrics, no pool side-effects)
-#   probe: false               # PROXY_HOPPER_PROBE
+#   probe: true                # PROXY_HOPPER_PROBE           — on by default
 #   probeInterval: 60          # PROXY_HOPPER_PROBE_INTERVAL  — seconds between probe rounds
 #   probeTimeout: 10           # PROXY_HOPPER_PROBE_TIMEOUT   — per-probe HTTP timeout
 #   probeUrls:                 # PROXY_HOPPER_PROBE_URLS      — comma-separated as env var
 #     - https://1.1.1.1
 #     - https://www.google.com
+#
+#   # Interaction modes — disable any you don't want to expose.
+#   # Valid values: connect_tunnel, http_proxy, forwarding
+#   # Default: all three enabled.
+#   # PROXY_HOPPER_MODES=connect_tunnel,http_proxy,forwarding
+#   modes:
+#     - connect_tunnel   # HTTPS CONNECT tunnel (blind byte relay, limited retry)
+#     - http_proxy       # traditional HTTP proxy (absolute-form URLs)
+#     - forwarding       # header-based forwarding (X-Proxy-Hopper-Target) — full retry support

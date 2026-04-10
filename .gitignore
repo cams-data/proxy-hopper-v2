@@ -212,6 +212,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
+# Local test environment — never commit
+docker-test/
+
 # PyPI configuration file
 .pypirc
 

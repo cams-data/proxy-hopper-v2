@@ -1,6 +1,6 @@
 # proxy-hopper
 
-Rotating HTTP/HTTPS proxy server. Run it as a local proxy, point your HTTP clients at it, and it automatically distributes outbound traffic across a pool of external proxy IP addresses — with retries, failure tracking, and automatic quarantine of broken IPs.
+Rotating HTTP/HTTPS proxy server. Route outbound traffic through a pool of external proxy IP addresses — with retries, failure tracking, and automatic quarantine of broken IPs. Supports three client integration modes: standard HTTP proxy, HTTPS CONNECT tunnel, and URL-forwarding (full retry support for HTTPS).
 
 ## Installation
 
@@ -80,6 +80,12 @@ proxy-hopper run --config config.yaml
 
 ### 3. Configure your HTTP client
 
+Proxy Hopper supports three integration modes. All three use the same IP rotation and retry logic.
+
+#### HTTP proxy / CONNECT tunnel (standard)
+
+Configure your client to use `http://localhost:8080` as its proxy. Works with any HTTP library that supports proxy settings.
+
 ```python
 # requests
 import requests
@@ -97,6 +103,37 @@ async with aiohttp.ClientSession() as session:
 ```bash
 curl --proxy http://localhost:8080 https://example.com
 ```
+
+#### URL-forwarding mode (recommended for HTTPS APIs)
+
+Set the `X-Proxy-Hopper-Target` header to the target scheme and host, then send requests to proxy-hopper as if it were the target server. No proxy settings needed — path, query string, method, and body pass through unchanged.
+
+```python
+# requests — set a session-level header, then use normal URLs
+import requests
+session = requests.Session()
+session.headers["X-Proxy-Hopper-Target"] = "https://api.example.com"
+
+resp = session.get("http://localhost:8080/v1/endpoint", params={"q": "search"})
+# → forwards to https://api.example.com/v1/endpoint?q=search
+
+# aiohttp
+import aiohttp
+async with aiohttp.ClientSession(
+    headers={"X-Proxy-Hopper-Target": "https://api.example.com"}
+) as session:
+    async with session.get("http://localhost:8080/v1/endpoint") as resp:
+        print(resp.status)
+```
+
+```bash
+curl -H "X-Proxy-Hopper-Target: https://api.example.com" \
+     http://localhost:8080/v1/endpoint
+```
+
+The header value may include a base path (`https://api.example.com/v2`) which is prepended to the request path. `urljoin` and all standard URL-building tools work normally — the header is never affected by URL manipulation.
+
+> **Why forwarding mode?** HTTPS CONNECT tunnels are opaque byte relays — Proxy Hopper cannot intercept or retry a mid-flight failure. In forwarding mode, Proxy Hopper owns the full HTTPS request, enabling retries across different IPs on 429 or 5xx responses from the target API.
 
 ### 4. Validate a config file
 
@@ -131,6 +168,8 @@ Settings are resolved in this order (highest wins):
 | `regex` | string | required | Python regex matched against the full request URL |
 | `ipList` | list | required* | Proxy addresses — `host:port` or bare host (uses `defaultProxyPort`) |
 | `ipPool` | string | required* | Name of a shared `ipPools` entry — alternative to `ipList` |
+| `proxyUsername` | string | — | Username for HTTP Basic auth sent to the external proxy |
+| `proxyPassword` | string | — | Password for HTTP Basic auth sent to the external proxy |
 | `defaultProxyPort` | int | `8080` | Port applied to bare IPs in `ipList` |
 | `minRequestInterval` | duration | `1s` | **Primary rate-limit knob.** How long an IP is held off the pool after any request before it can be reused. |
 | `maxQueueWait` | duration | `30s` | How long a request waits for a free IP before failing |
@@ -139,6 +178,8 @@ Settings are resolved in this order (highest wins):
 | `quarantineTime` | duration | `120s` | How long a quarantined IP sits out before returning to the pool |
 
 \* Exactly one of `ipList` or `ipPool` must be provided per target.
+
+`proxyUsername` / `proxyPassword` are needed when the external proxy requires HTTP Basic auth on CONNECT or forwarded requests (common with Squid-based providers that use both IP whitelisting and credential auth as fallback). Leave unset for open or IP-only proxies.
 
 Duration values accept a suffix (`1s`, `5m`, `2h`) or a bare number (seconds).
 
@@ -169,10 +210,11 @@ All server fields can also be set as `PROXY_HOPPER_*` env vars (e.g. `PROXY_HOPP
 | `redisUrl` | `PROXY_HOPPER_REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL |
 | `metrics` | `PROXY_HOPPER_METRICS` | `false` | Enable Prometheus `/metrics` |
 | `metricsPort` | `PROXY_HOPPER_METRICS_PORT` | `9090` | Metrics server port |
-| `probe` | `PROXY_HOPPER_PROBE` | `false` | Enable background IP health prober |
+| `probe` | `PROXY_HOPPER_PROBE` | `true` | Enable background IP health prober |
 | `probeInterval` | `PROXY_HOPPER_PROBE_INTERVAL` | `60` | Seconds between probe rounds |
 | `probeTimeout` | `PROXY_HOPPER_PROBE_TIMEOUT` | `10` | Per-probe HTTP timeout (seconds) |
 | `probeUrls` | `PROXY_HOPPER_PROBE_URLS` | Cloudflare + Google | Endpoints to probe through each IP. Comma-separated as env var. |
+| `modes` | `PROXY_HOPPER_MODES` | all | Enabled interaction modes. Comma-separated as env var. Valid values: `connect_tunnel`, `http_proxy`, `forwarding`. |
 
 ### CLI flags
 
@@ -202,31 +244,39 @@ proxy-hopper run --config config.yaml [OPTIONS]
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  ProxyServer  (raw asyncio TCP — handles CONNECT)   │
-└──────────────────────┬──────────────────────────────┘
-                       │ regex match → one manager per target
-          ┌────────────▼────────────┐
-          │    TargetManager        │  asyncio request queue + dispatcher
-          │    (one per target)     │  aiohttp outbound requests + retries
-          └────────────┬────────────┘
-                       │ acquire / record_success / record_failure
-          ┌────────────▼────────────┐
-          │       IPPool            │  business logic: quarantine policy,
-          │    (one per target)     │  cooldown scheduling, sweep loop
-          └────────────┬────────────┘
-                       │ push_ip / pop_ip / increment_failures / …
-          ┌────────────▼────────────┐
-          │   IPPoolBackend         │  pure storage primitives
-          │   Memory | Redis        │  shared across all targets
-          └─────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  ProxyServer  (raw asyncio TCP)                              │
+│                                                              │
+│  _dispatch → RequestHandler (ABC)                           │
+│    ├── ConnectTunnelHandler   CONNECT method → blind relay   │
+│    ├── ForwardingHandler      /https/host/path → full retry  │
+│    └── HttpProxyHandler       http://... → full retry        │
+└──────────────────────────────┬───────────────────────────────┘
+                               │ submit(PendingRequest)
+          ┌────────────────────▼────────────────────┐
+          │    TargetManager  (one per target)       │
+          │    asyncio queue + dispatcher            │
+          │    aiohttp outbound requests + retries   │
+          └────────────────────┬────────────────────┘
+                               │ acquire / record_success / record_failure
+          ┌────────────────────▼────────────────────┐
+          │    IPPool  (one per target)              │
+          │    quarantine policy, cooldown sweeps    │
+          └────────────────────┬────────────────────┘
+                               │ push / pop / counters
+          ┌────────────────────▼────────────────────┐
+          │    IPPoolBackend                         │
+          │    Memory | Redis                        │
+          └─────────────────────────────────────────┘
 ```
 
-**Three-layer separation:**
+**Key design points:**
 
-- **`IPPoolBackend`** — pure storage interface (queue push/pop, atomic counters, sorted sets). No business logic. Two implementations: in-memory and Redis.
-- **`IPPool`** — all policy decisions: when to quarantine, how long to wait, when to return an IP. Calls the backend exclusively through primitives.
-- **`TargetManager`** — dispatches requests, runs the aiohttp forwarding, handles retries. Never touches the backend directly.
+- **`RequestHandler` ABC** — each interaction mode is a self-contained class. Adding a new mode (GraphQL gateway, gRPC, etc.) requires only a new subclass registered in `handlers.py` — `ProxyServer` needs no changes.
+- **`ConnectTunnelHandler`** is the only mode that cannot retry mid-flight failures, because the client has already committed its TLS state once the tunnel is established. Use forwarding mode for full retry support over HTTPS.
+- **`IPPoolBackend`** — pure storage interface. Two implementations: in-memory and Redis.
+- **`IPPool`** — all quarantine and cooldown policy. Never touches the backend directly.
+- **`TargetManager`** — dispatches requests, runs aiohttp forwarding, handles retries. Never touches the backend directly.
 
 ---
 

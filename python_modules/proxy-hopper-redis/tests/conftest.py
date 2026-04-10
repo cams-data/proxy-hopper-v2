@@ -31,6 +31,8 @@ async def redis_backend(target_config) -> RedisIPPoolBackend:
     fake_server = fakeredis.FakeServer()
     backend = RedisIPPoolBackend()
     backend._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
+    from proxy_hopper_redis.backend import _QUARANTINE_POP_SCRIPT
+    backend._quarantine_pop = backend._redis.register_script(_QUARANTINE_POP_SCRIPT)
 
     await backend.init_target(target_config.name)
     for host, port in target_config.resolved_ip_list():

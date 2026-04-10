@@ -46,12 +46,26 @@ except ImportError as exc:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+# Atomically pop all quarantine entries whose release time has passed.
+# KEYS[1] = quarantine zset key
+# ARGV[1] = current epoch (float string)
+# Returns the list of claimed addresses.
+_QUARANTINE_POP_SCRIPT = """
+local expired = redis.call('ZRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+for _, addr in ipairs(expired) do
+    redis.call('ZREM', KEYS[1], addr)
+end
+return expired
+"""
+
+
 class RedisIPPoolBackend(IPPoolBackend):
     """Pure Redis storage backend — all operations map 1-to-1 with Redis commands."""
 
     def __init__(self, redis_url: str = "redis://localhost:6379/0") -> None:
         self._redis_url = redis_url
         self._redis: aioredis.Redis | None = None
+        self._quarantine_pop: aioredis.client.Script | None = None
 
     # ------------------------------------------------------------------
     # Redis key helpers
@@ -86,6 +100,7 @@ class RedisIPPoolBackend(IPPoolBackend):
                 decode_responses=True,
             )
         await self._redis.ping()
+        self._quarantine_pop = self._redis.register_script(_QUARANTINE_POP_SCRIPT)
         logger.info("RedisIPPoolBackend: connected to %s", self._redis_url)
 
     async def stop(self) -> None:
@@ -98,13 +113,16 @@ class RedisIPPoolBackend(IPPoolBackend):
     # ------------------------------------------------------------------
 
     async def init_target(self, target: str) -> bool:
-        """SETNX — returns True only for the first caller across all instances."""
-        acquired = await self._redis.setnx(self._init_key(target), "1")
-        if acquired:
-            # Short TTL so the pool can be re-seeded after a full Redis flush
-            await self._redis.expire(self._init_key(target), 86_400)
+        """SET NX EX — atomic acquire + TTL in one round trip.
+
+        Returns True only for the first caller across all instances.
+        Short TTL allows re-seeding after a full Redis flush.
+        """
+        acquired = await self._redis.set(
+            self._init_key(target), "1", nx=True, ex=86_400
+        )
         logger.trace(  # type: ignore[attr-defined]
-            "RedisIPPoolBackend: SETNX %s → %s",
+            "RedisIPPoolBackend: SET NX EX %s → %s",
             self._init_key(target), "acquired" if acquired else "already exists",
         )
         return bool(acquired)
@@ -121,10 +139,24 @@ class RedisIPPoolBackend(IPPoolBackend):
             self._pool_key(target), address, length,
         )
 
+    async def push_ips(self, target: str, addresses: list[str]) -> None:
+        """RPUSH with multiple values — single round trip for bulk insert."""
+        if not addresses:
+            return
+        length = await self._redis.rpush(self._pool_key(target), *addresses)
+        logger.trace(  # type: ignore[attr-defined]
+            "RedisIPPoolBackend: RPUSH %s [%d addresses] (list length: %d)",
+            self._pool_key(target), len(addresses), length,
+        )
+
     async def pop_ip(self, target: str, timeout: float) -> Optional[str]:
-        """BLPOP — atomically pop from the head; returns None on timeout."""
+        """BLPOP — atomically pop from the head; returns None on timeout.
+
+        Passes timeout as a float — supported since Redis 6.0, giving
+        sub-second precision instead of truncating to whole seconds.
+        """
         result = await self._redis.blpop(
-            self._pool_key(target), timeout=max(1, int(timeout))
+            self._pool_key(target), timeout=max(0.1, timeout)
         )
         address = result[1] if result else None
         logger.trace(  # type: ignore[attr-defined]
@@ -178,25 +210,30 @@ class RedisIPPoolBackend(IPPoolBackend):
     async def quarantine_pop_expired(
         self, target: str, now: float
     ) -> list[str]:
-        """ZRANGEBYSCORE + ZREM — atomically claim expired entries.
+        """Lua script — atomically claim all expired quarantine entries.
 
-        ZREM is atomic per entry: only the instance that removes a member
-        gets to process it, preventing double-release under concurrent calls.
+        Runs ZRANGEBYSCORE + ZREM in a single server-side script, eliminating
+        the race window between scanning and claiming, and reducing N+1 round
+        trips to a single round trip regardless of how many IPs have expired.
         """
-        candidates: list[str] = await self._redis.zrangebyscore(
-            self._quarantine_key(target), 0, now
+        claimed: list[str] = await self._quarantine_pop(  # type: ignore[misc]
+            keys=[self._quarantine_key(target)],
+            args=[str(now)],
         )
-        claimed: list[str] = []
-        for address in candidates:
-            removed = await self._redis.zrem(self._quarantine_key(target), address)
-            if removed:
-                claimed.append(address)
         logger.trace(  # type: ignore[attr-defined]
-            "RedisIPPoolBackend: quarantine_pop_expired '%s' candidates=%d claimed=%d: %s",
-            target, len(candidates), len(claimed), claimed,
+            "RedisIPPoolBackend: quarantine_pop_expired '%s' claimed=%d: %s",
+            target, len(claimed), claimed,
         )
         return claimed
 
     async def quarantine_list(self, target: str) -> list[str]:
         """ZRANGE — all currently quarantined addresses (for status/metrics)."""
         return await self._redis.zrange(self._quarantine_key(target), 0, -1)
+
+    async def pool_size_and_quarantine(self, target: str) -> tuple[int, list[str]]:
+        """LLEN + ZRANGE in a single pipeline — used by get_status."""
+        async with self._redis.pipeline(transaction=False) as pipe:
+            pipe.llen(self._pool_key(target))
+            pipe.zrange(self._quarantine_key(target), 0, -1)
+            size, quarantined = await pipe.execute()
+        return int(size), quarantined

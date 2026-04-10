@@ -30,6 +30,8 @@ import aiohttp
 from .config import TargetConfig
 from .metrics import get_metrics
 
+_Auth = aiohttp.BasicAuth  # alias for brevity
+
 logger = logging.getLogger(__name__)
 
 # Default probe endpoints — lightweight, extremely reliable
@@ -61,22 +63,34 @@ class IPProber:
         probe_urls: Sequence[str] = DEFAULT_PROBE_URLS,
         interval: float = 60.0,
         timeout: float = 10.0,
+        debug: bool = False,
     ) -> None:
-        # Deduplicate IPs across all targets — order is arbitrary but stable
+        # Deduplicate IPs across all targets — order is arbitrary but stable.
+        # First target to claim an address wins for credentials.
         seen: set[str] = set()
         unique: list[str] = []
+        auth_map: dict[str, _Auth | None] = {}
         for target in targets:
+            auth = (
+                _Auth(target.proxy_username, target.proxy_password or "")
+                if target.proxy_username is not None
+                else None
+            )
             for host, port in target.resolved_ip_list():
                 address = f"{host}:{port}"
                 if address not in seen:
                     seen.add(address)
                     unique.append(address)
+                    auth_map[address] = auth
 
         self._addresses = unique
+        self._auth_map = auth_map
         self._probe_urls = list(probe_urls)
         self._interval = interval
         self._timeout = timeout
+        self._debug = debug
         self._task: asyncio.Task | None = None
+        self._session: aiohttp.ClientSession | None = None
         self._running = False
         # Rotate probe URLs independently per address
         self._url_cycles = {
@@ -100,18 +114,24 @@ class IPProber:
             logger.warning("IPProber: no probe URLs configured — task not started")
             return
 
+        self._session = aiohttp.ClientSession()
         self._running = True
         self._task = asyncio.create_task(
             self._probe_loop(), name="ph:prober"
         )
-        logger.debug("IPProber: background task started")
+        if self._debug:
+            logger.debug("IPProber: background task started")
 
     async def stop(self) -> None:
         self._running = False
         if self._task:
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
-        logger.debug("IPProber: background task stopped")
+        if self._session:
+            await self._session.close()
+            self._session = None
+        if self._debug:
+            logger.debug("IPProber: background task stopped")
 
     # ------------------------------------------------------------------
     # Probe loop
@@ -120,14 +140,16 @@ class IPProber:
     async def _probe_loop(self) -> None:
         """Probe all addresses concurrently once per interval."""
         while self._running:
-            logger.debug("IPProber: starting probe round for %d address(es)", len(self._addresses))
+            if self._debug:
+                logger.debug("IPProber: starting probe round for %d address(es)", len(self._addresses))
             await asyncio.gather(
                 *[self._probe_address(addr) for addr in self._addresses],
                 return_exceptions=True,
             )
-            logger.trace(  # type: ignore[attr-defined]
-                "IPProber: probe round complete, sleeping %.0fs", self._interval
-            )
+            if self._debug:
+                logger.trace(  # type: ignore[attr-defined]
+                    "IPProber: probe round complete, sleeping %.0fs", self._interval
+                )
             await asyncio.sleep(self._interval)
 
     async def _probe_address(self, address: str) -> None:
@@ -137,28 +159,30 @@ class IPProber:
         start = time.monotonic()
         reason: str | None = None
 
-        logger.trace(  # type: ignore[attr-defined]
-            "IPProber: probing %s via %s", url, address
-        )
+        if self._debug:
+            logger.trace(  # type: ignore[attr-defined]
+                "IPProber: probing %s via %s", url, address
+            )
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    url,
-                    proxy=proxy_url,
-                    timeout=aiohttp.ClientTimeout(total=self._timeout),
-                    allow_redirects=True,
-                    ssl=False,  # we're testing connectivity, not certificate validity
-                ) as resp:
+            async with self._session.get(  # type: ignore[union-attr]
+                url,
+                proxy=proxy_url,
+                proxy_auth=self._auth_map.get(address),
+                timeout=aiohttp.ClientTimeout(total=self._timeout),
+                allow_redirects=True,
+                ssl=False,  # we're testing connectivity, not certificate validity
+            ) as resp:
                     duration = time.monotonic() - start
                     if resp.status < 500:
                         # Any non-5xx response means the proxy IP is reachable
                         # and forwarding traffic — treat as success.
                         _record_probe_success(address, duration)
-                        logger.debug(
-                            "IPProber: %s via %s → %d (%.3fs)",
-                            url, address, resp.status, duration,
-                        )
+                        if self._debug:
+                            logger.debug(
+                                "IPProber: %s via %s → %d (%.3fs)",
+                                url, address, resp.status, duration,
+                            )
                     else:
                         reason = "http_error"
                         duration = time.monotonic() - start
