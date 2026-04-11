@@ -168,9 +168,9 @@ def run(
     # --- Run ---
     try:
         import uvloop
-        uvloop.run(_run(cfg.targets, server))
+        uvloop.run(_run(cfg.targets, cfg.providers, server))
     except ImportError:
-        asyncio.run(_run(cfg.targets, server))
+        asyncio.run(_run(cfg.targets, cfg.providers, server))
 
 
 @main.command()
@@ -203,7 +203,7 @@ def validate(config: Path) -> None:
 # Async run helper
 # ---------------------------------------------------------------------------
 
-async def _run(targets, server) -> None:
+async def _run(targets, providers, server) -> None:
     from .server import ProxyServer
     from .target_manager import TargetManager
 
@@ -226,7 +226,7 @@ async def _run(targets, server) -> None:
     await pool_backend.start()
 
     managers = [
-        TargetManager(t, pool_backend, providers=cfg.providers, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
+        TargetManager(t, pool_backend, providers=providers, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
         for t in targets
     ]
     proxy = ProxyServer(managers, host=server.host, port=server.port, enabled_modes=server.modes)
@@ -235,7 +235,7 @@ async def _run(targets, server) -> None:
     if server.probe:
         from .prober import IPProber
         prober = IPProber(
-            providers=cfg.providers,
+            providers=providers,
             targets=targets,
             probe_urls=server.probe_urls,
             interval=server.probe_interval,
