@@ -43,9 +43,13 @@ class TargetManager:
         backend: "IPPoolBackend",
         proxy_read_timeout: float | None = None,
         debug_quarantine: bool = False,
+        quarantine_sweep_interval: float | None = None,
     ) -> None:
         self._config = config
-        self._pool = IPPool(config, backend, debug=debug_quarantine)
+        pool_kwargs: dict = {"debug": debug_quarantine}
+        if quarantine_sweep_interval is not None:
+            pool_kwargs["sweep_interval"] = quarantine_sweep_interval
+        self._pool = IPPool(config, backend, **pool_kwargs)
         self._regex = config.compiled_regex()
         self._request_queue: asyncio.Queue[PendingRequest] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []

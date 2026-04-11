@@ -40,10 +40,17 @@ _QUARANTINE_SWEEP_INTERVAL = 5.0  # seconds between quarantine expiry checks
 class IPPool:
     """Manages the IP rotation policy for a single target."""
 
-    def __init__(self, config: TargetConfig, backend: IPPoolBackend, debug: bool = False) -> None:
+    def __init__(
+        self,
+        config: TargetConfig,
+        backend: IPPoolBackend,
+        debug: bool = False,
+        sweep_interval: float = _QUARANTINE_SWEEP_INTERVAL,
+    ) -> None:
         self._config = config
         self._backend = backend
         self._debug = debug
+        self._sweep_interval = sweep_interval
         self._addresses = [
             f"{host}:{port}" for host, port in config.resolved_ip_list()
         ]
@@ -178,7 +185,7 @@ class IPPool:
 
     async def _quarantine_sweep_loop(self) -> None:
         while self._running:
-            await asyncio.sleep(_QUARANTINE_SWEEP_INTERVAL)
+            await asyncio.sleep(self._sweep_interval)
             await self._sweep_quarantine()
 
     async def _sweep_quarantine(self) -> None:

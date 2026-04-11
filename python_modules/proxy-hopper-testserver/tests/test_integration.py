@@ -4,6 +4,11 @@ These tests verify observable system state after controlled upstream and
 proxy-layer failures — things that unit tests cannot cover because they
 require a real request lifecycle through the full stack.
 
+Each test runs twice: once against MemoryIPPoolBackend and once against
+RedisIPPoolBackend (using fakeredis when REDIS_URL is not set, real Redis
+in CI). A failure against one backend but not the other indicates a backend
+contract violation.
+
 Test matrix
 -----------
 Upstream failures (proxy forwards correctly, upstream returns error):
@@ -21,6 +26,7 @@ Proxy-layer failures (the proxy IP itself is broken):
 Cross-cutting:
   - successful requests reset failure counter
   - retry logic uses a different IP on each attempt
+  - quarantine expires and IPs return to the pool
   - graceful shutdown drains in-flight requests
 """
 
@@ -31,7 +37,6 @@ import time
 
 import pytest
 
-from proxy_hopper.backend.memory import MemoryIPPoolBackend
 from proxy_hopper.config import TargetConfig
 from proxy_hopper.models import PendingRequest
 from proxy_hopper.target_manager import TargetManager
@@ -64,24 +69,18 @@ async def submit_and_wait(
     return await asyncio.wait_for(req.future, timeout=timeout)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Upstream HTTP error responses
 # ---------------------------------------------------------------------------
 
 class TestUpstreamErrors:
-    async def test_503_increments_failure_counter(self, proxies, upstream):
-        # 503 is in _RETRIABLE_STATUSES so proxy-hopper records it as a failure.
-        # 500 is not — it's treated as a pass-through success from the upstream.
+    async def test_503_increments_failure_counter(self, backend, proxies, upstream):
         upstream.set_mode("http_error", status=503)
         cfg = make_target_config(
             ip_list=[proxies[0].address],
             num_retries=0,
             ip_failures_until_quarantine=99,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -92,10 +91,8 @@ class TestUpstreamErrors:
         assert failures == 1
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_503s_quarantine_ip_at_threshold(self, proxies, upstream):
-        # Single proxy, threshold=3: after 3 x 503 failures it must be quarantined
+    async def test_503s_quarantine_ip_at_threshold(self, backend, proxies, upstream):
         upstream.set_mode("http_error", status=503)
         threshold = 3
         cfg = make_target_config(
@@ -103,8 +100,6 @@ class TestUpstreamErrors:
             num_retries=0,
             ip_failures_until_quarantine=threshold,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -117,9 +112,8 @@ class TestUpstreamErrors:
         assert proxies[0].address in quarantined
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_429_quarantines_ip_at_threshold(self, proxies, upstream):
+    async def test_429_quarantines_ip_at_threshold(self, backend, proxies, upstream):
         upstream.set_mode("http_error", status=429)
         threshold = 3
         cfg = make_target_config(
@@ -127,8 +121,6 @@ class TestUpstreamErrors:
             num_retries=0,
             ip_failures_until_quarantine=threshold,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -141,16 +133,13 @@ class TestUpstreamErrors:
         assert proxies[0].address in quarantined
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_successful_request_resets_failure_count(self, proxies, upstream):
+    async def test_successful_request_resets_failure_count(self, backend, proxies, upstream):
         cfg = make_target_config(
             ip_list=[proxies[0].address],
             num_retries=0,
             ip_failures_until_quarantine=99,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -170,9 +159,8 @@ class TestUpstreamErrors:
         assert await backend.get_failures(cfg.name, proxies[0].address) == 0
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_500_is_passed_through_not_recorded_as_failure(self, proxies, upstream):
+    async def test_500_is_passed_through_not_recorded_as_failure(self, backend, proxies, upstream):
         # 500 is not in _RETRIABLE_STATUSES — proxy-hopper passes it straight
         # through to the client and does NOT count it as a proxy IP failure.
         upstream.set_mode("http_error", status=500)
@@ -181,8 +169,6 @@ class TestUpstreamErrors:
             num_retries=0,
             ip_failures_until_quarantine=99,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -193,7 +179,6 @@ class TestUpstreamErrors:
         assert await backend.get_failures(cfg.name, proxies[0].address) == 0
 
         await mgr.stop()
-        await backend.stop()
 
     async def test_successful_request_returns_200(self, manager, proxies, upstream):
         upstream.set_mode("normal")
@@ -201,7 +186,7 @@ class TestUpstreamErrors:
         assert result.status == 200
 
     async def test_error_response_body_is_structured_json_on_exhaustion(
-        self, proxies, upstream
+        self, backend, proxies, upstream
     ):
         upstream.set_mode("http_error", status=503)
         cfg = make_target_config(
@@ -209,14 +194,11 @@ class TestUpstreamErrors:
             num_retries=0,
             ip_failures_until_quarantine=99,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
         result = await submit_and_wait(mgr, upstream.url + "/fail", num_retries=0)
         await mgr.stop()
-        await backend.stop()
 
         import json
         body = json.loads(result.body)
@@ -230,8 +212,7 @@ class TestUpstreamErrors:
 # ---------------------------------------------------------------------------
 
 class TestProxyLayerFailures:
-    async def test_refused_connection_increments_failure(self, proxies, upstream):
-        # Single proxy in refuse mode — deterministic which IP gets the failure
+    async def test_refused_connection_increments_failure(self, backend, proxies, upstream):
         proxies[0].set_mode("refuse")
 
         cfg = make_target_config(
@@ -240,8 +221,6 @@ class TestProxyLayerFailures:
             ip_failures_until_quarantine=99,
             max_queue_wait=3.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -252,9 +231,8 @@ class TestProxyLayerFailures:
         assert failures == 1
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_hang_proxy_triggers_timeout_and_failure(self, proxies, upstream):
+    async def test_hang_proxy_triggers_timeout_and_failure(self, backend, proxies, upstream):
         proxies[0].set_mode("hang")
 
         cfg = make_target_config(
@@ -263,8 +241,6 @@ class TestProxyLayerFailures:
             ip_failures_until_quarantine=99,
             max_queue_wait=3.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend, proxy_read_timeout=0.5)
         await mgr.start()
 
@@ -272,7 +248,6 @@ class TestProxyLayerFailures:
         await submit_and_wait(mgr, upstream.url + "/test", timeout=3.0)
         elapsed = time.monotonic() - start
 
-        # Should have timed out — not waited forever
         assert elapsed < 2.5
 
         await asyncio.sleep(0.1)
@@ -280,9 +255,8 @@ class TestProxyLayerFailures:
         assert failures >= 1
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_close_proxy_increments_failure(self, proxies, upstream):
+    async def test_close_proxy_increments_failure(self, backend, proxies, upstream):
         proxies[0].set_mode("close")
 
         cfg = make_target_config(
@@ -291,8 +265,6 @@ class TestProxyLayerFailures:
             ip_failures_until_quarantine=99,
             max_queue_wait=3.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -303,9 +275,8 @@ class TestProxyLayerFailures:
         assert failures >= 1
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_proxy_error_response_increments_failure(self, proxies, upstream):
+    async def test_proxy_error_response_increments_failure(self, backend, proxies, upstream):
         proxies[0].set_mode("error_response", status=502)
 
         cfg = make_target_config(
@@ -313,8 +284,6 @@ class TestProxyLayerFailures:
             num_retries=0,
             ip_failures_until_quarantine=99,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -325,9 +294,8 @@ class TestProxyLayerFailures:
         assert failures >= 1
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_all_proxies_failing_exhausts_retries(self, proxies, upstream):
+    async def test_all_proxies_failing_exhausts_retries(self, backend, proxies, upstream):
         proxies.set_all_mode("refuse")
 
         cfg = make_target_config(
@@ -336,8 +304,6 @@ class TestProxyLayerFailures:
             ip_failures_until_quarantine=99,
             max_queue_wait=5.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -349,7 +315,6 @@ class TestProxyLayerFailures:
         assert body["retries_attempted"] == 2
 
         await mgr.stop()
-        await backend.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +322,7 @@ class TestProxyLayerFailures:
 # ---------------------------------------------------------------------------
 
 class TestRetryBehaviour:
-    async def test_retry_uses_different_ip(self, proxies, upstream):
+    async def test_retry_uses_different_ip(self, backend, proxies, upstream):
         """After a failure on proxies[0], the retry uses proxies[1] (FIFO order).
 
         FIFO: proxies[0] is acquired first. After the failure it goes back
@@ -372,24 +337,20 @@ class TestRetryBehaviour:
             ip_failures_until_quarantine=99,
             min_request_interval=0.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
         await submit_and_wait(mgr, upstream.url + "/test", num_retries=1)
         await asyncio.sleep(0.1)
 
-        # Both proxies[0] (first attempt) and proxies[1] (retry) should have failures
         failures_0 = await backend.get_failures(cfg.name, proxies[0].address)
         failures_1 = await backend.get_failures(cfg.name, proxies[1].address)
         assert failures_0 == 1
         assert failures_1 == 1
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_retry_succeeds_after_one_failure(self, proxies, upstream):
+    async def test_retry_succeeds_after_one_failure(self, backend, proxies, upstream):
         """If first proxy fails but second succeeds, request resolves 200."""
         proxies[0].set_mode("refuse")
         proxies[1].set_mode("forward")
@@ -402,8 +363,6 @@ class TestRetryBehaviour:
             ip_failures_until_quarantine=99,
             max_queue_wait=5.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -411,7 +370,54 @@ class TestRetryBehaviour:
         assert result.status == 200
 
         await mgr.stop()
-        await backend.stop()
+
+
+# ---------------------------------------------------------------------------
+# Quarantine lifecycle
+# ---------------------------------------------------------------------------
+
+class TestQuarantineLifecycle:
+    @pytest.mark.real_redis
+    async def test_quarantined_ip_returns_to_pool_after_expiry(self, backend, proxies, upstream):
+        """An IP that hits the failure threshold is quarantined, then released
+        back into the pool once quarantine_time elapses.
+
+        Uses a short quarantine_time (0.3s) and a fast sweep_interval (0.1s)
+        so the test completes quickly without waiting for the default 5s tick.
+        """
+        upstream.set_mode("http_error", status=503)
+        threshold = 2
+        quarantine_time = 0.3
+
+        cfg = make_target_config(
+            ip_list=[proxies[0].address],
+            num_retries=0,
+            ip_failures_until_quarantine=threshold,
+            quarantine_time=quarantine_time,
+        )
+        mgr = TargetManager(cfg, backend, quarantine_sweep_interval=0.1)
+        await mgr.start()
+
+        # Drive the IP into quarantine
+        for _ in range(threshold):
+            await submit_and_wait(mgr, upstream.url + "/test", num_retries=0)
+            await asyncio.sleep(0.05)
+
+        await asyncio.sleep(0.1)
+        assert proxies[0].address in await backend.quarantine_list(cfg.name)
+
+        # Wait for quarantine to expire and the pool sweeper to release it
+        await asyncio.sleep(quarantine_time + 0.5)
+
+        quarantined = await backend.quarantine_list(cfg.name)
+        assert proxies[0].address not in quarantined
+
+        # Confirm the IP is usable again — switch upstream to normal and send a request
+        upstream.set_mode("normal")
+        result = await submit_and_wait(mgr, upstream.url + "/test", timeout=3.0)
+        assert result.status == 200
+
+        await mgr.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +425,7 @@ class TestRetryBehaviour:
 # ---------------------------------------------------------------------------
 
 class TestLatency:
-    async def test_slow_proxy_completes_without_failure(self, proxies, upstream):
+    async def test_slow_proxy_completes_without_failure(self, backend, proxies, upstream):
         """Slow but responding proxy should not increment failure count."""
         proxies[0].set_latency(0.2)
         upstream.set_mode("normal")
@@ -429,8 +435,6 @@ class TestLatency:
             num_retries=0,
             ip_failures_until_quarantine=99,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -442,9 +446,8 @@ class TestLatency:
         assert failures == 0
 
         await mgr.stop()
-        await backend.stop()
 
-    async def test_slow_upstream_completes_without_failure(self, proxies, upstream):
+    async def test_slow_upstream_completes_without_failure(self, backend, proxies, upstream):
         """Slow upstream (not proxy) should not mark the proxy IP as failed."""
         upstream.set_mode("slow", delay=0.3)
 
@@ -453,8 +456,6 @@ class TestLatency:
             num_retries=0,
             ip_failures_until_quarantine=99,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -466,7 +467,6 @@ class TestLatency:
         assert failures == 0
 
         await mgr.stop()
-        await backend.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +474,7 @@ class TestLatency:
 # ---------------------------------------------------------------------------
 
 class TestGracefulShutdown:
-    async def test_queued_requests_receive_503_on_shutdown(self, proxies, upstream):
+    async def test_queued_requests_receive_503_on_shutdown(self, backend, proxies, upstream):
         upstream.set_mode("normal")
 
         cfg = make_target_config(
@@ -482,8 +482,6 @@ class TestGracefulShutdown:
             max_queue_wait=30.0,
             num_retries=0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
@@ -494,7 +492,6 @@ class TestGracefulShutdown:
         await mgr.submit(req)
 
         await mgr.stop()
-        await backend.stop()
 
         assert req.future.done()
         result = req.future.result()

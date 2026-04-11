@@ -3,16 +3,80 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import AsyncIterator
 
 import pytest
 import pytest_asyncio
 
+from proxy_hopper.backend.base import IPPoolBackend
 from proxy_hopper.backend.memory import MemoryIPPoolBackend
 from proxy_hopper.config import TargetConfig
-from proxy_hopper.pool import IPPool
 from proxy_hopper.target_manager import TargetManager
 from proxy_hopper_testserver import MockProxyPool, UpstreamServer
+
+_REDIS_URL = os.environ.get("REDIS_URL", "")
+
+# ---------------------------------------------------------------------------
+# Backend factory registry — same pattern as python_modules/tests/conftest.py
+# ---------------------------------------------------------------------------
+
+def _make_memory_backend() -> tuple[MemoryIPPoolBackend, bool]:
+    return MemoryIPPoolBackend(), False
+
+
+def _make_redis_backend():
+    from proxy_hopper_redis.backend import RedisIPPoolBackend
+    import fakeredis.aioredis as fakeredis
+
+    backend = RedisIPPoolBackend(_REDIS_URL if _REDIS_URL else "redis://localhost:6379/0")
+    if not _REDIS_URL:
+        fake_server = fakeredis.FakeServer()
+        backend._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
+        return backend, False
+    return backend, True
+
+
+_BACKEND_FACTORIES = {
+    "memory": _make_memory_backend,
+    "redis": _make_redis_backend,
+}
+
+# ---------------------------------------------------------------------------
+# Markers
+# ---------------------------------------------------------------------------
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "real_redis: mark test as requiring a real Redis instance (skipped with fakeredis)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    if _REDIS_URL:
+        return
+    skip = pytest.mark.skip(reason="requires real Redis — set REDIS_URL to enable")
+    for item in items:
+        if item.get_closest_marker("real_redis"):
+            item.add_marker(skip)
+
+# ---------------------------------------------------------------------------
+# Core fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(params=list(_BACKEND_FACTORIES))
+def backend_name(request) -> str:
+    return request.param
+
+
+@pytest_asyncio.fixture
+async def backend(backend_name) -> AsyncIterator[IPPoolBackend]:
+    """A started backend of each registered type."""
+    b, _ = _BACKEND_FACTORIES[backend_name]()
+    await b.start()
+    yield b
+    await b.stop()
 
 
 @pytest_asyncio.fixture
@@ -47,13 +111,10 @@ def make_target_config(ip_list: list[str], **kw) -> TargetConfig:
 
 
 @pytest_asyncio.fixture
-async def manager(proxies: MockProxyPool, upstream: UpstreamServer) -> AsyncIterator[TargetManager]:
+async def manager(proxies: MockProxyPool, upstream: UpstreamServer, backend: IPPoolBackend) -> AsyncIterator[TargetManager]:
     """A started TargetManager pointing at the mock proxy pool."""
     cfg = make_target_config(ip_list=proxies.ip_list)
-    backend = MemoryIPPoolBackend()
-    await backend.start()
     mgr = TargetManager(cfg, backend)
     await mgr.start()
     yield mgr
     await mgr.stop()
-    await backend.stop()
