@@ -113,8 +113,8 @@ Full config file reference
       probeInterval: 60          # PROXY_HOPPER_PROBE_INTERVAL  (seconds)
       probeTimeout: 10           # PROXY_HOPPER_PROBE_TIMEOUT   (seconds)
       probeUrls:                 # PROXY_HOPPER_PROBE_URLS      (comma-separated as env var)
-        - https://1.1.1.1
-        - https://www.google.com
+        - http://1.1.1.1
+        - http://www.google.com
       modes:                     # PROXY_HOPPER_MODES           (comma-separated as env var)
         - connect_tunnel         # HTTPS CONNECT tunnel (blind byte relay)
         - http_proxy             # Traditional HTTP proxy (absolute-form URLs)
@@ -240,7 +240,7 @@ class ServerConfig(BaseSettings):
     probe_interval: float = 60.0
     probe_timeout: float = 10.0
     probe_urls: list[str] = Field(
-        default_factory=lambda: ["https://1.1.1.1", "https://www.google.com"]
+        default_factory=lambda: ["http://1.1.1.1", "http://www.google.com"]
     )
     modes: set[str] = Field(default_factory=lambda: set(VALID_MODES))
 
