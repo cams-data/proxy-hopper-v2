@@ -87,8 +87,8 @@ jobs:
           TAG: ${{ steps.tag.outputs.new_tag }}
 
   # ---------------------------------------------------------------------------
-  # Build wheels + sdists, publish GitHub pre-release, upload wheels as
-  # artifacts for the Docker job to consume.
+  # Build wheels + sdists, publish GitHub pre-release with release notes.
+  # Uploads wheels as artifacts for the Docker job to consume.
   # ---------------------------------------------------------------------------
   build-and-release:
     name: Build & publish pre-release
@@ -109,6 +109,18 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Generate release notes
+        # For pre-releases: show all commits since the last stable tag so
+        # users can see everything that will land in the next stable release.
+        run: |
+          git-cliff --config cliff.toml --unreleased --strip header > release-notes.md
+          cat release-notes.md
+
       - name: Build wheels and sdists
         run: |
           uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper
@@ -121,7 +133,7 @@ jobs:
           gh release create "${{ needs.tag.outputs.new_tag }}" dist/* \
             --prerelease \
             --title "${{ needs.tag.outputs.new_tag }}" \
-            --generate-notes \
+            --notes-file release-notes.md \
             --repo "${{ github.repository }}"
 
       - name: Upload wheels for Docker job
@@ -133,6 +145,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Docker — multi-arch build (amd64 + arm64) pushed to ghcr.io.
+  # After pushing, edits the GitHub release to add image links.
   #
   # Two images per pre-release:
   #   proxy-hopper:<version>        memory backend only
@@ -146,7 +159,7 @@ jobs:
     if: needs.tag.outputs.new_tag != ''
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -194,3 +207,25 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/proxy-hopper:${{ needs.tag.outputs.version }}-redis
             ghcr.io/${{ github.repository_owner }}/proxy-hopper:preview-redis
+
+      - name: Add image links to release notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.tag.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          cat >> image-links.md << EOF
+
+          ## Docker images
+
+          | Image | Pull command |
+          |---|---|
+          | Memory backend | \`docker pull ghcr.io/${OWNER}/proxy-hopper:${VERSION}\` |
+          | Redis backend | \`docker pull ghcr.io/${OWNER}/proxy-hopper:${VERSION}-redis\` |
+
+          Built for \`linux/amd64\` and \`linux/arm64\`.
+          EOF
+
+          gh release edit "${{ needs.tag.outputs.new_tag }}" \
+            --notes-file <(gh release view "${{ needs.tag.outputs.new_tag }}" --json body --jq '.body' && cat image-links.md) \
+            --repo "${{ github.repository }}"
