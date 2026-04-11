@@ -334,10 +334,10 @@ proxy-hopper run --config config.yaml
 
 ### Redis (HA / multi-instance)
 
-Requires `proxy-hopper-redis`:
+Requires `proxy-hopper-redis`, installable as an extra:
 
 ```bash
-pip install proxy-hopper-redis
+pip install "proxy-hopper[redis]"
 proxy-hopper run --config config.yaml --backend redis --redis-url redis://redis:6379/0
 ```
 

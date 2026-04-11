@@ -32,7 +32,7 @@ Proxy Hopper supports three ways for clients to send requests. All three use the
 | Package | Description |
 |---|---|
 | [`proxy-hopper`](python_modules/proxy-hopper/) | Core proxy server, in-memory backend, CLI |
-| [`proxy-hopper-redis`](python_modules/proxy-hopper-redis/) | Redis backend for HA multi-instance deployments |
+| [`proxy-hopper-redis`](python_modules/proxy-hopper-redis/) | Redis backend for HA multi-instance deployments (`pip install "proxy-hopper[redis]"`) |
 
 ## Quick start
 

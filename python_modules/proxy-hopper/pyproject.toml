@@ -20,6 +20,9 @@ dependencies = [
 uvloop = [
     "uvloop>=0.19; sys_platform != 'win32'",
 ]
+redis = [
+    "proxy-hopper-redis",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
