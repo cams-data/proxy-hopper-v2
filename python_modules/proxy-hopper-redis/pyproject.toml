@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Redis-backed IP pool backend for Proxy Hopper — enables HA multi-instance deployments"
 requires-python = ">=3.11"
 dependencies = [
-    "proxy-hopper>=0.1.0",
+    "proxy-hopper>=0.0.0",
     "redis[hiredis]>=5.0",
 ]
 
@@ -26,6 +26,9 @@ source = "vcs"
 [tool.hatch.version.raw-options]
 search_parent_directories = true
 tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:[._-](?:a|alpha|b|beta|c|pre|preview|rc)[0-9.]*)?)$"
+# Used when building outside a git repo (e.g. Docker, CI source tarballs).
+# Override with SETUPTOOLS_SCM_PRETEND_VERSION_FOR_PROXY_HOPPER_REDIS env var.
+fallback_version = "0.0.0.dev0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/proxy_hopper_redis"]
