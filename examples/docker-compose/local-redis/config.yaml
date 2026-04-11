@@ -21,6 +21,7 @@
 
 proxyProviders:
   - name: general-provider
+    # auth is optional — omit entirely for open or IP-whitelisted proxies
     auth:
       type: basic
       username: myuser              # replace with your real credentials

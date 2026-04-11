@@ -193,8 +193,9 @@ Settings are resolved in this order (highest wins):
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | Unique identifier referenced from `ipPools.ipRequests` |
+| `auth` | block | — | Optional — omit entirely for open or IP-whitelisted proxies |
 | `auth.type` | string | `basic` | Auth type — currently `basic` |
-| `auth.username` | string | — | Username for HTTP Basic auth sent to this provider's proxies |
+| `auth.username` | string | required if auth set | Username for HTTP Basic auth sent to this provider's proxies |
 | `auth.password` | string | `""` | Password for HTTP Basic auth |
 | `ipList` | list | required | Proxy addresses from this provider — `scheme://host:port`, `host:port`, or bare host |
 | `regionTag` | string | — | Region label attached to metrics (e.g. `Australia`) — enables per-region observability |

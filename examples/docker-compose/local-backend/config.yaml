@@ -18,6 +18,7 @@
 #
 # proxyProviders:
 #   - name: my-provider
+#     # auth is optional — omit for open or IP-whitelisted proxies
 #     auth:
 #       type: basic
 #       username: myuser

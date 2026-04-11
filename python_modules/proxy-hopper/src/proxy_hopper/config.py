@@ -23,7 +23,7 @@ Full config file reference
     # Field reference
     # ~~~~~~~~~~~~~~~
     # name          (required) Unique identifier referenced from ipPools.
-    # auth          (optional) Credentials block for this provider.
+    # auth          (optional) Credentials block — omit entirely for open or IP-whitelisted proxies.
     #   type        Auth type: basic (default if omitted).
     #   username    Username for HTTP Basic auth.
     #   password    Password for HTTP Basic auth.
