@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 COPY wheels/proxy_hopper-*.whl /tmp/wheels/
 
-RUN pip install --no-cache-dir /tmp/wheels/proxy_hopper-*.whl[uvloop]
+RUN WHEEL=$(echo /tmp/wheels/proxy_hopper-*.whl) && \
+    pip install --no-cache-dir "${WHEEL}[uvloop]"
 
 VOLUME ["/etc/proxy-hopper"]
 
