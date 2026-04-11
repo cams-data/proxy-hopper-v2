@@ -34,10 +34,12 @@ _Auth = aiohttp.BasicAuth  # alias for brevity
 
 logger = logging.getLogger(__name__)
 
-# Default probe endpoints — lightweight, extremely reliable
+# Default probe endpoints — plain HTTP so they work through HTTP-only proxies
+# that do not support CONNECT tunnelling.  HTTPS probe URLs would require the
+# proxy to establish a TLS tunnel, which plain HTTP proxies reject.
 DEFAULT_PROBE_URLS: tuple[str, ...] = (
-    "https://1.1.1.1",
-    "https://www.google.com",
+    "http://1.1.1.1",
+    "http://www.google.com",
 )
 
 
