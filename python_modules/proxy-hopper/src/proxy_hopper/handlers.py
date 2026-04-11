@@ -207,13 +207,37 @@ async def _submit_and_respond(
             future, timeout=manager._config.max_queue_wait + 5
         )
     except (asyncio.TimeoutError, TimeoutError):
+        logger.warning(
+            "ProxyServer: %s %s — gateway timeout waiting for response (queue_wait=%.1fs)",
+            method, url, manager._config.max_queue_wait,
+        )
         _write_error(writer, 504, "Gateway Timeout")
         await writer.drain()
         return
     except Exception as exc:
+        logger.warning(
+            "ProxyServer: %s %s — unexpected error: %s",
+            method, url, exc,
+        )
         _write_error(writer, 502, f"Bad Gateway: {exc}")
         await writer.drain()
         return
+
+    if response.status >= 400:
+        # Extract the structured error detail from JSON body if present
+        detail = ""
+        ct = response.headers.get("Content-Type", "")
+        if "json" in ct and response.body:
+            try:
+                import json as _json
+                parsed = _json.loads(response.body)
+                detail = f" — {parsed.get('error', '')} {parsed.get('detail', '')}".rstrip()
+            except Exception:
+                pass
+        logger.warning(
+            "ProxyServer: %s %s → %d%s",
+            method, url, response.status, detail,
+        )
 
     _write_http_response(writer, response, http_version)
     await writer.drain()
