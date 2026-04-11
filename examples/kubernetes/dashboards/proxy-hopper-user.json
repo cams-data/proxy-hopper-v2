@@ -412,6 +412,25 @@
         }
       ],
       "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "description": "Total number of requests processed per target over the selected time window, broken down by outcome. Uses increase() over each step interval so the y-axis shows actual request counts rather than a rate.",
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 28 },
+      "id": 14,
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "title": "Request Count Over Time",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "expr": "sum by (target, outcome) (increase(proxy_hopper_requests_total{target=~\"$target\"}[$__interval]))",
+          "legendFormat": "{{target}} — {{outcome}}",
+          "refId": "A"
+        }
+      ],
+      "type": "timeseries"
     }
 
   ],
