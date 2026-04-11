@@ -174,7 +174,9 @@ class TargetManager:
                     self._config.name, request.method, request.url,
                 )
                 if not request.future.done():
-                    request.future.set_exception(TimeoutError("Request expired in queue"))
+                    request.future.set_result(
+                        self._error_response(503, "queue_timeout", request, "Request expired waiting in queue")
+                    )
                 self._request_queue.task_done()
                 continue
 
@@ -185,8 +187,8 @@ class TargetManager:
                     self._config.name, request.method, request.url, request.time_remaining(),
                 )
                 if not request.future.done():
-                    request.future.set_exception(
-                        TimeoutError("No IP available within the allowed wait time")
+                    request.future.set_result(
+                        self._error_response(503, "no_ip_available", request, "No proxy IP available within the allowed wait time")
                     )
                 self._request_queue.task_done()
                 continue

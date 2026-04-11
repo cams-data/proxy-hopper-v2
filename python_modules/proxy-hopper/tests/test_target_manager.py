@@ -83,7 +83,7 @@ class TestDispatcher:
             result = await asyncio.wait_for(req.future, timeout=2.0)
             assert result.status == 200
 
-    async def test_expired_request_sets_timeout(self):
+    async def test_expired_request_returns_503(self):
         cfg = make_config(max_queue_wait=0.01)
         backend = MemoryIPPoolBackend()
         await backend.start()
@@ -98,13 +98,13 @@ class TestDispatcher:
         )
         await mgr.submit(req)
 
-        with pytest.raises((TimeoutError, asyncio.TimeoutError, Exception)):
-            await asyncio.wait_for(req.future, timeout=1.0)
+        result = await asyncio.wait_for(req.future, timeout=1.0)
+        assert result.status == 503
 
         await mgr.stop()
         await backend.stop()
 
-    async def test_no_ip_sets_timeout_exception(self):
+    async def test_no_ip_returns_503(self):
         cfg = make_config(max_queue_wait=0.1)
         backend = MemoryIPPoolBackend()
         await backend.start()
@@ -123,8 +123,8 @@ class TestDispatcher:
         req = make_request(max_queue_wait=0.1)
         await mgr.submit(req)
 
-        with pytest.raises((TimeoutError, asyncio.TimeoutError, Exception)):
-            await asyncio.wait_for(req.future, timeout=1.0)
+        result = await asyncio.wait_for(req.future, timeout=1.0)
+        assert result.status == 503
 
         await mgr.stop()
         await backend.stop()
