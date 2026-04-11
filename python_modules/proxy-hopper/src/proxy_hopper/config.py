@@ -2,29 +2,85 @@
 
 Priority order (highest → lowest):
   1. CLI arguments
-  2. YAML config file  (server: block + ipPools / targets)
+  2. YAML config file  (server: block + proxyProviders / ipPools / targets)
   3. Environment variables (PROXY_HOPPER_*)
 
-Target definitions and IP pools live in the YAML file.  Server-level settings
-can live in the YAML ``server:`` block, fall back to ``PROXY_HOPPER_*`` env
-vars (read automatically by ``ServerConfig`` via ``pydantic-settings``), and
-can always be overridden at the CLI.
+Target definitions, IP pools, and proxy providers live in the YAML file.
+Server-level settings can live in the YAML ``server:`` block, fall back to
+``PROXY_HOPPER_*`` env vars (read automatically by ``ServerConfig`` via
+``pydantic-settings``), and can always be overridden at the CLI.
 
 Full config file reference
 --------------------------
 ::
 
     # ---------------------------------------------------------------------------
-    # IP Pools (optional)
+    # Proxy Providers (optional)
     # ---------------------------------------------------------------------------
-    # Reusable, named IP address lists.  Reference them from targets with
-    # `ipPool: <name>` instead of repeating IP lists across multiple targets.
+    # Named proxy suppliers.  Each provider declares its own credentials and IP
+    # list.  Providers are referenced from ipPools via `ipRequests`.
+    #
+    # Field reference
+    # ~~~~~~~~~~~~~~~
+    # name          (required) Unique identifier referenced from ipPools.
+    # auth          (optional) Credentials block for this provider.
+    #   type        Auth type: basic (default if omitted).
+    #   username    Username for HTTP Basic auth.
+    #   password    Password for HTTP Basic auth.
+    # ipList        (required) List of proxy addresses provided by this supplier.
+    #               Accepts "host:port", "host", or "scheme://host:port" forms.
+    # regionTag     (optional) Region label attached to metrics — useful for
+    #               comparing latency or failure rates across regions/providers.
 
-    ipPools:
-      - name: pool-1
+    proxyProviders:
+      - name: provider-au
+        auth:
+          type: basic
+          username: user
+          password: secret
         ipList:
           - "proxy-1.example.com:3128"
           - "proxy-2.example.com:3128"
+        regionTag: Australia
+
+      - name: provider-ca
+        auth:
+          type: basic
+          username: user
+          password: secret
+        ipList:
+          - "proxy-3.example.com:3128"
+          - "proxy-4.example.com:3128"
+        regionTag: Canada
+
+    # ---------------------------------------------------------------------------
+    # IP Pools (optional)
+    # ---------------------------------------------------------------------------
+    # Reusable, named IP address lists.  Reference them from targets with
+    # `ipPool: <name>`.  IPs can come from providers via `ipRequests` (which
+    # selects a random subset from a provider's list) or be listed inline.
+    #
+    # Field reference
+    # ~~~~~~~~~~~~~~~
+    # name          (required) Unique identifier referenced from targets.
+    # ipRequests    Draw IPs from providers:
+    #   provider    Name of a proxyProvider.
+    #   count       How many IPs to randomly select from that provider's list.
+    # ipList        Inline list of proxy addresses (alternative to ipRequests).
+    #
+    # ipRequests and ipList can be combined — all selected IPs are merged.
+
+    ipPools:
+      - name: pool-1
+        ipRequests:
+          - provider: provider-au
+            count: 5
+          - provider: provider-ca
+            count: 5
+
+      - name: pool-inline
+        ipList:
+          - "proxy-5.example.com:3128"
 
     # ---------------------------------------------------------------------------
     # Targets (required)
@@ -46,13 +102,9 @@ Full config file reference
     # ~~~~~~~~~~~~~~~
     # name                      (required) Human-readable label shown in logs/metrics.
     # regex                     (required) Python regex matched against the full request URL.
-    # ipList                    (required*) List of proxy addresses ("host:port" or "host").
-    # ipPool                    (required*) Name of a shared ipPool — alternative to ipList.
-    #   * Exactly one of ipList or ipPool must be provided.
-    # proxyUsername             Username for HTTP Basic auth sent to the external proxy.
-    # proxyPassword             Password for HTTP Basic auth sent to the external proxy.
-    #   If the external proxy uses IP whitelisting but still requires a Basic auth header
-    #   (common with Squid), provide these credentials.  Leave unset for open proxies.
+    # ipPool                    (required*) Name of a shared ipPool.
+    # ipList                    (required*) Inline list of proxy addresses.
+    #   * Exactly one of ipPool or ipList must be provided.
     # defaultProxyPort          Port applied to IPs listed without an explicit port. [default: 8080]
     # minRequestInterval        How long (seconds / duration string) an IP is held off
     #                           the pool after any request before being reused.
@@ -72,8 +124,8 @@ Full config file reference
     targets:
       - name: general
         regex: '.*'
-        ipPool: pool-1              # reference a named pool …
-        minRequestInterval: 2s      # hold each IP off for 2s between uses
+        ipPool: pool-1
+        minRequestInterval: 2s
         maxQueueWait: 30s
         numRetries: 3
         ipFailuresUntilQuarantine: 5
@@ -81,10 +133,9 @@ Full config file reference
 
       - name: strict-api
         regex: 'api[.]example[.]com'
-        ipList:                     # … or provide IPs inline
-          - "proxy-3.example.com:3128"
-          - "proxy-4.example.com:3128"
-        minRequestInterval: 10s     # strict rate limit — only one req per IP per 10s
+        ipList:
+          - "proxy-5.example.com:3128"
+        minRequestInterval: 10s
         maxQueueWait: 60s
         numRetries: 1
         ipFailuresUntilQuarantine: 2
@@ -123,9 +174,11 @@ Full config file reference
 
 from __future__ import annotations
 
+import random
 import re
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -153,14 +206,75 @@ def _parse_duration(value: str | int | float) -> float:
     return float(value)
 
 
+def _parse_address(entry: str, default_port: int) -> tuple[str, int]:
+    """Parse a proxy address string into (host, port).
+
+    Accepts:
+      - "host:port"
+      - "host"
+      - "scheme://host:port"  (scheme is discarded)
+    """
+    if "://" in entry:
+        parsed = urlparse(entry)
+        host = parsed.hostname or entry
+        port = parsed.port or default_port
+        return host, port
+    if ":" in entry:
+        host, _, port_str = entry.rpartition(":")
+        return host, int(port_str)
+    return entry, default_port
+
+
 # ---------------------------------------------------------------------------
-# IP pool model
+# Auth models
 # ---------------------------------------------------------------------------
 
-class IPPool(BaseModel):
-    """A named, reusable list of proxy IP addresses."""
+class BasicAuth(BaseModel):
+    type: str = "basic"
+    username: str
+    password: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Proxy provider model
+# ---------------------------------------------------------------------------
+
+class ProxyProvider(BaseModel):
+    """A named proxy supplier with credentials, IPs, and optional region tag."""
+    name: str
+    auth: Optional[BasicAuth] = None
+    ip_list: list[str] = Field(min_length=1)
+    region_tag: Optional[str] = None
+
+    def resolved_ip_list(self, default_port: int = 8080) -> list[tuple[str, int]]:
+        """Return list of (host, port) tuples."""
+        return [_parse_address(entry, default_port) for entry in self.ip_list]
+
+
+# ---------------------------------------------------------------------------
+# IP pool model (internal — resolved before TargetConfig is created)
+# ---------------------------------------------------------------------------
+
+class _ResolvedIPPool(BaseModel):
+    """Internal: a pool after ipRequests have been resolved to a flat IP list."""
     name: str
     ip_list: list[str] = Field(min_length=1)
+
+
+# ---------------------------------------------------------------------------
+# IP address entry — carries provider metadata alongside host/port
+# ---------------------------------------------------------------------------
+
+class ResolvedIP(BaseModel):
+    """A single proxy IP address with its origin provider metadata."""
+    host: str
+    port: int
+    provider: str = ""       # provider name, or "" for inline IPs
+    region_tag: str = ""     # provider region tag, or "" for inline IPs
+
+    @property
+    def address(self) -> str:
+        return f"{self.host}:{self.port}"
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +284,7 @@ class IPPool(BaseModel):
 class TargetConfig(BaseModel):
     name: str
     regex: str
-    ip_list: list[str] = Field(min_length=1)
-    proxy_username: Optional[str] = None
-    proxy_password: Optional[str] = None
+    resolved_ips: list[ResolvedIP] = Field(min_length=1)
     min_request_interval: float = Field(default=1.0)
     max_queue_wait: float = Field(default=30.0)
     num_retries: int = Field(default=3, ge=0)
@@ -193,15 +305,12 @@ class TargetConfig(BaseModel):
         return re.compile(self.regex)
 
     def resolved_ip_list(self) -> list[tuple[str, int]]:
-        """Return list of (host, port) tuples, applying default_proxy_port where needed."""
-        result: list[tuple[str, int]] = []
-        for entry in self.ip_list:
-            if ":" in entry:
-                host, _, port_str = entry.rpartition(":")
-                result.append((host, int(port_str)))
-            else:
-                result.append((entry, self.default_proxy_port))
-        return result
+        """Return list of (host, port) tuples — for backward compat with pool/prober."""
+        return [(ip.host, ip.port) for ip in self.resolved_ips]
+
+    def ip_list(self) -> list[str]:
+        """Return flat list of 'host:port' strings."""
+        return [ip.address for ip in self.resolved_ips]
 
 
 # ---------------------------------------------------------------------------
@@ -289,8 +398,6 @@ class ServerConfig(BaseSettings):
 _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipList": "ip_list",
     "ipPool": "ip_pool",
-    "proxyUsername": "proxy_username",
-    "proxyPassword": "proxy_password",
     "minRequestInterval": "min_request_interval",
     "maxRequestTimeInQueue": "max_queue_wait",
     "maxQueueWait": "max_queue_wait",
@@ -302,7 +409,15 @@ _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
 
 _POOL_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipList": "ip_list",
+    "ipRequests": "ip_requests",
 }
+
+_PROVIDER_CAMEL_TO_SNAKE: dict[str, str] = {
+    "ipList": "ip_list",
+    "regionTag": "region_tag",
+}
+
+_AUTH_CAMEL_TO_SNAKE: dict[str, str] = {}
 
 _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
     "logLevel": "log_level",
@@ -336,6 +451,10 @@ def _normalise_pool(raw: dict) -> dict:
     return {_POOL_CAMEL_TO_SNAKE.get(k, k): v for k, v in raw.items()}
 
 
+def _normalise_provider(raw: dict) -> dict:
+    return {_PROVIDER_CAMEL_TO_SNAKE.get(k, k): v for k, v in raw.items()}
+
+
 def _normalise_server(raw: dict) -> dict:
     out: dict = {}
     for key, value in raw.items():
@@ -354,53 +473,130 @@ class ProxyHopperConfig(BaseModel):
     """Top-level config object returned by load_config."""
     server: ServerConfig
     targets: list[TargetConfig]
+    providers: list[ProxyProvider] = Field(default_factory=list)
 
 
 def load_config(path: Path | str) -> ProxyHopperConfig:
     """Load and return the full configuration from a YAML file.
 
-    IP pool references are resolved before TargetConfig objects are created,
-    so callers always see a flat ``ip_list`` on each target.
-
-    ServerConfig is constructed with YAML values as explicit kwargs, which
-    pydantic-settings treats as higher priority than env vars.  This gives
-    us the correct chain: CLI > YAML > env vars > defaults — with the CLI
-    layer applied afterwards in cli.py.
+    Resolution order:
+      1. proxyProviders are parsed and indexed by name.
+      2. ipPools resolve their ipRequests against providers, randomly sampling
+         the requested count of IPs from each provider's list.
+      3. Targets reference pools or inline ipLists; the result is a flat list
+         of ResolvedIP objects that carry provider/region metadata.
+      4. ServerConfig is constructed with YAML values as explicit kwargs, which
+         pydantic-settings treats as higher priority than env vars — giving the
+         correct chain: CLI > YAML > env vars > defaults.
     """
     with open(path) as fh:
         raw = yaml.safe_load(fh) or {}
 
+    default_port = 8080  # used when parsing addresses without explicit ports
+
+    # --- Proxy providers ----------------------------------------------------
+    providers: list[ProxyProvider] = []
+    provider_map: dict[str, ProxyProvider] = {}
+    for p_raw in raw.get("proxyProviders", []):
+        normalised = _normalise_provider(p_raw)
+        # Normalise auth sub-block if present
+        if "auth" in normalised and isinstance(normalised["auth"], dict):
+            normalised["auth"] = BasicAuth(**normalised["auth"])
+        provider = ProxyProvider(**normalised)
+        if provider.name in provider_map:
+            raise ValueError(f"Duplicate proxyProvider name: '{provider.name}'")
+        provider_map[provider.name] = provider
+        providers.append(provider)
+
     # --- IP pools -----------------------------------------------------------
-    pools: dict[str, list[str]] = {}
+    # Each pool resolves to a list of ResolvedIP (carries provider metadata).
+    pool_map: dict[str, list[ResolvedIP]] = {}
     for pool_raw in raw.get("ipPools", []):
-        pool = IPPool(**_normalise_pool(pool_raw))
-        pools[pool.name] = pool.ip_list
+        normalised = _normalise_pool(pool_raw)
+        pool_name = normalised.get("name")
+        if not pool_name:
+            raise ValueError("ipPool entry is missing a 'name' field")
+
+        resolved: list[ResolvedIP] = []
+
+        # ipRequests — draw from providers
+        for req in normalised.get("ip_requests", []):
+            provider_name = req.get("provider")
+            count = req.get("count")
+            if provider_name not in provider_map:
+                raise ValueError(
+                    f"ipPool '{pool_name}' references unknown provider '{provider_name}'. "
+                    f"Defined providers: {list(provider_map)}"
+                )
+            provider = provider_map[provider_name]
+            available = provider.resolved_ip_list(default_port)
+            if count is not None and count > len(available):
+                raise ValueError(
+                    f"ipPool '{pool_name}' requests {count} IPs from provider "
+                    f"'{provider_name}' but only {len(available)} are available."
+                )
+            selected = random.sample(available, count) if count is not None else list(available)
+            for host, port in selected:
+                resolved.append(ResolvedIP(
+                    host=host,
+                    port=port,
+                    provider=provider.name,
+                    region_tag=provider.region_tag or "",
+                ))
+
+        # ipList — inline IPs with no provider metadata
+        for entry in normalised.get("ip_list", []):
+            host, port = _parse_address(entry, default_port)
+            resolved.append(ResolvedIP(host=host, port=port))
+
+        if not resolved:
+            raise ValueError(
+                f"ipPool '{pool_name}' has no IPs — add ipRequests or ipList."
+            )
+
+        if pool_name in pool_map:
+            raise ValueError(f"Duplicate ipPool name: '{pool_name}'")
+        pool_map[pool_name] = resolved
 
     # --- Targets ------------------------------------------------------------
     targets: list[TargetConfig] = []
     for t_raw in raw.get("targets", []):
         normalised = _normalise_target(t_raw)
+        target_name = normalised.get("name", "<unnamed>")
+        default_proxy_port = normalised.get("default_proxy_port", default_port)
 
         pool_ref = normalised.pop("ip_pool", None)
-        if pool_ref is not None and "ip_list" not in normalised:
-            if pool_ref not in pools:
-                raise ValueError(
-                    f"Target '{normalised.get('name')}' references unknown ipPool '{pool_ref}'. "
-                    f"Defined pools: {list(pools)}"
-                )
-            normalised["ip_list"] = pools[pool_ref]
-        elif pool_ref is not None and "ip_list" in normalised:
+        inline_ip_list = normalised.pop("ip_list", None)
+
+        if pool_ref is not None and inline_ip_list is not None:
             raise ValueError(
-                f"Target '{normalised.get('name')}' specifies both ipPool and ipList — use one."
+                f"Target '{target_name}' specifies both ipPool and ipList — use one."
+            )
+        if pool_ref is None and inline_ip_list is None:
+            raise ValueError(
+                f"Target '{target_name}' must specify either ipPool or ipList."
             )
 
-        targets.append(TargetConfig(**normalised))
+        if pool_ref is not None:
+            if pool_ref not in pool_map:
+                raise ValueError(
+                    f"Target '{target_name}' references unknown ipPool '{pool_ref}'. "
+                    f"Defined pools: {list(pool_map)}"
+                )
+            resolved_ips = pool_map[pool_ref]
+        else:
+            resolved_ips = [
+                ResolvedIP(host=h, port=p)
+                for h, p in (
+                    _parse_address(entry, default_proxy_port)
+                    for entry in inline_ip_list
+                )
+            ]
+
+        targets.append(TargetConfig(resolved_ips=resolved_ips, **normalised))
 
     # --- Server settings ----------------------------------------------------
-    # Pass YAML values as explicit kwargs — pydantic-settings gives init
-    # kwargs priority over env vars, so YAML naturally wins over env vars
-    # while env vars still win over field defaults.
     yaml_server = _normalise_server(raw.get("server") or {})
     server = ServerConfig(**yaml_server)
 
-    return ProxyHopperConfig(server=server, targets=targets)
+    return ProxyHopperConfig(server=server, targets=targets, providers=providers)

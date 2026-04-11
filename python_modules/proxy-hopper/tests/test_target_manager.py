@@ -14,12 +14,14 @@ from proxy_hopper.models import PendingRequest, ProxyResponse
 from proxy_hopper.pool import IPPool
 from proxy_hopper.target_manager import TargetManager
 
+from test_helpers import make_target_config
+
 
 def make_config(**kw) -> TargetConfig:
+    ip_list = kw.pop("ip_list", ["1.2.3.4:8080"])
     defaults = dict(
         name="test",
         regex=r".*example\.com.*",
-        ip_list=["1.2.3.4:8080"],
         min_request_interval=0.0,
         max_queue_wait=2.0,
         num_retries=2,
@@ -27,7 +29,7 @@ def make_config(**kw) -> TargetConfig:
         quarantine_time=0.1,
     )
     defaults.update(kw)
-    return TargetConfig(**defaults)
+    return make_target_config(ip_list, **defaults)
 
 
 def make_request(url="http://example.com/", max_queue_wait=2.0, num_retries=2) -> PendingRequest:

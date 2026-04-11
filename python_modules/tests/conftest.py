@@ -25,7 +25,7 @@ import pytest_asyncio
 
 from proxy_hopper.backend.base import IPPoolBackend
 from proxy_hopper.backend.memory import MemoryIPPoolBackend
-from proxy_hopper.config import TargetConfig
+from proxy_hopper.config import ResolvedIP, TargetConfig
 from proxy_hopper.pool import IPPool
 from proxy_hopper_redis.backend import RedisIPPoolBackend
 
@@ -78,12 +78,20 @@ async def backend(backend_name) -> AsyncIterator[IPPoolBackend]:
     await b.stop()
 
 
+def _make_resolved(ip_list: list[str]) -> list[ResolvedIP]:
+    result = []
+    for entry in ip_list:
+        host, _, port_str = entry.rpartition(":")
+        result.append(ResolvedIP(host=host, port=int(port_str)))
+    return result
+
+
 @pytest.fixture
 def target_config() -> TargetConfig:
     return TargetConfig(
         name="contract-target",
         regex=r".*example\.com.*",
-        ip_list=["1.2.3.4:8080", "5.6.7.8:8080"],
+        resolved_ips=_make_resolved(["1.2.3.4:8080", "5.6.7.8:8080"]),
         min_request_interval=0.0,
         max_queue_wait=2.0,
         num_retries=2,

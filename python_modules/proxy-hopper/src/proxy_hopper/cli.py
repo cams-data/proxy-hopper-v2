@@ -180,10 +180,18 @@ def validate(config: Path) -> None:
     """Validate a configuration file and exit."""
     try:
         cfg = load_config(config)
+        if cfg.providers:
+            click.echo(f"Providers: {len(cfg.providers)} defined.")
+            for p in cfg.providers:
+                click.echo(f"  {p.name!r}: {len(p.ip_list)} IP(s)"
+                           + (f", region={p.region_tag!r}" if p.region_tag else "")
+                           + (", auth=basic" if p.auth else ", auth=none"))
         click.echo(f"Config OK — {len(cfg.targets)} target(s) defined.")
         for t in cfg.targets:
-            ips = t.resolved_ip_list()
-            click.echo(f"  {t.name!r}: {len(ips)} IP(s), regex={t.regex!r}")
+            ips = t.resolved_ips
+            providers_used = {ip.provider for ip in ips if ip.provider}
+            click.echo(f"  {t.name!r}: {len(ips)} IP(s), regex={t.regex!r}"
+                       + (f", providers={sorted(providers_used)}" if providers_used else ""))
         click.echo(f"Server defaults: host={cfg.server.host}, port={cfg.server.port}, "
                    f"backend={cfg.server.backend}")
     except Exception as exc:
@@ -218,7 +226,7 @@ async def _run(targets, server) -> None:
     await pool_backend.start()
 
     managers = [
-        TargetManager(t, pool_backend, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
+        TargetManager(t, pool_backend, providers=cfg.providers, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
         for t in targets
     ]
     proxy = ProxyServer(managers, host=server.host, port=server.port, enabled_modes=server.modes)
@@ -227,7 +235,8 @@ async def _run(targets, server) -> None:
     if server.probe:
         from .prober import IPProber
         prober = IPProber(
-            targets,
+            providers=cfg.providers,
+            targets=targets,
             probe_urls=server.probe_urls,
             interval=server.probe_interval,
             timeout=server.probe_timeout,

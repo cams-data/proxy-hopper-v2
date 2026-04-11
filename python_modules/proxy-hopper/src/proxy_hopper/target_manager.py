@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
-from .config import TargetConfig
+from .config import ProxyProvider, TargetConfig
 from .metrics import get_metrics
 from .models import PendingRequest, ProxyResponse
 from .pool import IPPool
@@ -41,6 +41,7 @@ class TargetManager:
         self,
         config: TargetConfig,
         backend: "IPPoolBackend",
+        providers: list[ProxyProvider] | None = None,
         proxy_read_timeout: float | None = None,
         debug_quarantine: bool = False,
         quarantine_sweep_interval: float | None = None,
@@ -51,6 +52,20 @@ class TargetManager:
             pool_kwargs["sweep_interval"] = quarantine_sweep_interval
         self._pool = IPPool(config, backend, **pool_kwargs)
         self._regex = config.compiled_regex()
+        # Build auth map: address → aiohttp.BasicAuth (from provider credentials)
+        provider_map = {p.name: p for p in (providers or [])}
+        self._auth_map: dict[str, aiohttp.BasicAuth | None] = {}
+        for ip in config.resolved_ips:
+            if ip.provider and ip.provider in provider_map:
+                p = provider_map[ip.provider]
+                if p.auth is not None:
+                    self._auth_map[ip.address] = aiohttp.BasicAuth(
+                        p.auth.username, p.auth.password
+                    )
+                else:
+                    self._auth_map[ip.address] = None
+            else:
+                self._auth_map[ip.address] = None
         self._request_queue: asyncio.Queue[PendingRequest] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
         self._inflight: set[asyncio.Task] = set()
@@ -239,14 +254,7 @@ class TargetManager:
         start = time.monotonic()
         outcome = "unknown"
 
-        proxy_auth = (
-            aiohttp.BasicAuth(
-                self._config.proxy_username,
-                self._config.proxy_password or "",
-            )
-            if self._config.proxy_username is not None
-            else None
-        )
+        proxy_auth = self._auth_map.get(address)
 
         try:
             logger.trace(  # type: ignore[attr-defined]

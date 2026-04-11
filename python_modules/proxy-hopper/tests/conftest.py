@@ -2,27 +2,25 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from textwrap import dedent
 
 import pytest
 import pytest_asyncio
 
+# Make the tests/ directory importable so test_helpers can be imported
+# by test modules directly (e.g. `from test_helpers import make_target_config`).
+sys.path.insert(0, str(Path(__file__).parent))
+
 from proxy_hopper.backend.memory import MemoryIPPoolBackend
 from proxy_hopper.config import TargetConfig, load_config
+from test_helpers import make_target_config
 
 
 @pytest.fixture
 def target_config() -> TargetConfig:
-    return TargetConfig(
-        name="test-target",
-        regex=r".*example\.com.*",
-        ip_list=["1.2.3.4:8080", "5.6.7.8:8080"],
-        min_request_interval=0.0,
-        max_queue_wait=5.0,
-        num_retries=2,
-        ip_failures_until_quarantine=3,
-        quarantine_time=0.5,
-    )
+    return make_target_config(["1.2.3.4:8080", "5.6.7.8:8080"])
 
 
 @pytest_asyncio.fixture

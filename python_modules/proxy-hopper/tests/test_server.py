@@ -10,6 +10,7 @@ import pytest
 
 from proxy_hopper.backend.memory import MemoryIPPoolBackend
 from proxy_hopper.config import TargetConfig
+from test_helpers import make_target_config as _make_target_config
 from proxy_hopper.models import PendingRequest, ProxyResponse
 from proxy_hopper.server import (
     ProxyServer,
@@ -20,10 +21,10 @@ from proxy_hopper.target_manager import TargetManager
 
 
 def make_target_config(regex: str = r".*example\.com.*") -> TargetConfig:
-    return TargetConfig(
+    return _make_target_config(
+        ["1.2.3.4:8080"],
         name="test",
         regex=regex,
-        ip_list=["1.2.3.4:8080"],
         min_request_interval=0.0,
         max_queue_wait=2.0,
         num_retries=1,

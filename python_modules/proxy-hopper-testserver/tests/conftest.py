@@ -11,7 +11,7 @@ import pytest_asyncio
 
 from proxy_hopper.backend.base import IPPoolBackend
 from proxy_hopper.backend.memory import MemoryIPPoolBackend
-from proxy_hopper.config import TargetConfig
+from proxy_hopper.config import ResolvedIP, TargetConfig
 from proxy_hopper.target_manager import TargetManager
 from proxy_hopper_testserver import MockProxyPool, UpstreamServer
 
@@ -95,11 +95,18 @@ async def proxies() -> AsyncIterator[MockProxyPool]:
         pool.reset_all()
 
 
+def _make_resolved(ip_list: list[str]) -> list[ResolvedIP]:
+    result = []
+    for entry in ip_list:
+        host, _, port_str = entry.rpartition(":")
+        result.append(ResolvedIP(host=host, port=int(port_str)))
+    return result
+
+
 def make_target_config(ip_list: list[str], **kw) -> TargetConfig:
     defaults = dict(
         name="integration-test",
         regex=r".*",
-        ip_list=ip_list,
         min_request_interval=0.0,
         max_queue_wait=5.0,
         num_retries=2,
@@ -107,7 +114,7 @@ def make_target_config(ip_list: list[str], **kw) -> TargetConfig:
         quarantine_time=60.0,
     )
     defaults.update(kw)
-    return TargetConfig(**defaults)
+    return TargetConfig(resolved_ips=_make_resolved(ip_list), **defaults)
 
 
 @pytest_asyncio.fixture

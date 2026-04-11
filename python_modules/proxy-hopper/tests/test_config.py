@@ -10,11 +10,14 @@ from pydantic import ValidationError
 
 from proxy_hopper.config import (
     ProxyHopperConfig,
+    ResolvedIP,
     ServerConfig,
     TargetConfig,
     _parse_duration,
     load_config,
 )
+
+from test_helpers import make_target_config
 
 
 class TestParseDuration:
@@ -39,27 +42,30 @@ class TestParseDuration:
 
 class TestTargetConfig:
     def test_valid_config(self):
-        t = TargetConfig(name="foo", regex=r".*foo\.com.*", ip_list=["1.2.3.4:8080"])
+        t = make_target_config(["1.2.3.4:8080"], name="foo", regex=r".*foo\.com.*")
         assert t.name == "foo"
 
     def test_invalid_regex_raises(self):
         with pytest.raises(ValidationError, match="Invalid regex"):
-            TargetConfig(name="bad", regex="[invalid", ip_list=["1.2.3.4"])
+            make_target_config(["1.2.3.4:8080"], name="bad", regex="[invalid")
 
     def test_empty_ip_list_raises(self):
         with pytest.raises(ValidationError):
-            TargetConfig(name="foo", regex=".*", ip_list=[])
+            TargetConfig(name="foo", regex=".*", resolved_ips=[])
 
     def test_resolved_ip_list_with_port(self):
-        t = TargetConfig(name="foo", regex=".*", ip_list=["10.0.0.1:3128"])
+        t = make_target_config(["10.0.0.1:3128"], name="foo", regex=".*")
         assert t.resolved_ip_list() == [("10.0.0.1", 3128)]
 
     def test_resolved_ip_list_default_port(self):
-        t = TargetConfig(name="foo", regex=".*", ip_list=["10.0.0.1"], default_proxy_port=8888)
+        t = TargetConfig(
+            name="foo", regex=".*",
+            resolved_ips=[ResolvedIP(host="10.0.0.1", port=8888)],
+        )
         assert t.resolved_ip_list() == [("10.0.0.1", 8888)]
 
     def test_compiled_regex(self):
-        t = TargetConfig(name="foo", regex=r".*google\.com.*", ip_list=["1.1.1.1"])
+        t = make_target_config(["1.1.1.1:8080"], name="foo", regex=r".*google\.com.*")
         pattern = t.compiled_regex()
         assert pattern.search("http://google.com/path")
         assert not pattern.search("http://bing.com/path")
@@ -112,7 +118,7 @@ class TestIPPools:
                 ipPool: shared
         """)
         cfg = load_config(p)
-        assert cfg.targets[0].ip_list == ["1.1.1.1:3128", "2.2.2.2:3128"]
+        assert cfg.targets[0].ip_list() == ["1.1.1.1:3128", "2.2.2.2:3128"]
 
     def test_target_with_inline_ip_list_unaffected(self, tmp_path):
         p = self._write(tmp_path, """
@@ -127,7 +133,7 @@ class TestIPPools:
                   - "9.9.9.9:3128"
         """)
         cfg = load_config(p)
-        assert cfg.targets[0].ip_list == ["9.9.9.9:3128"]
+        assert cfg.targets[0].ip_list() == ["9.9.9.9:3128"]
 
     def test_pool_and_inline_can_coexist_across_targets(self, tmp_path):
         p = self._write(tmp_path, """
@@ -145,8 +151,8 @@ class TestIPPools:
                   - "2.2.2.2:3128"
         """)
         cfg = load_config(p)
-        assert cfg.targets[0].ip_list == ["1.1.1.1:3128"]
-        assert cfg.targets[1].ip_list == ["2.2.2.2:3128"]
+        assert cfg.targets[0].ip_list() == ["1.1.1.1:3128"]
+        assert cfg.targets[1].ip_list() == ["2.2.2.2:3128"]
 
     def test_multiple_targets_share_same_pool(self, tmp_path):
         p = self._write(tmp_path, """
@@ -164,7 +170,7 @@ class TestIPPools:
                 ipPool: shared
         """)
         cfg = load_config(p)
-        assert cfg.targets[0].ip_list == cfg.targets[1].ip_list
+        assert cfg.targets[0].ip_list() == cfg.targets[1].ip_list()
 
     def test_unknown_pool_reference_raises(self, tmp_path):
         p = self._write(tmp_path, """
@@ -205,7 +211,7 @@ class TestIPPools:
                 ipPool: p
         """)
         cfg = load_config(p)
-        assert "1.1.1.1:3128" in cfg.targets[0].ip_list
+        assert "1.1.1.1:3128" in cfg.targets[0].ip_list()
 
 
 class TestServerConfig:

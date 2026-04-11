@@ -5,16 +5,18 @@ endpoints and records the results as Prometheus metrics.  Completely
 independent of the pool, backend, and target machinery — it has no side
 effects on IP state and no knowledge of targets.
 
-The prober works from the deduplicated set of IP addresses extracted from the
-config at startup.  Because the same IP often appears in multiple targets,
-deduplication ensures each address is tested exactly once per interval.
+The prober works from the full set of ProxyProvider definitions.  Each
+provider's IPs are probed using that provider's credentials, and results are
+tagged with the provider name and region for metric filtering.  If no
+providers are configured (inline ipList only), the prober falls back to
+iterating target IPs with no provider metadata.
 
 Metrics written
 ---------------
-  proxy_hopper_probe_success_total{address}                Counter
-  proxy_hopper_probe_failure_total{address, reason}        Counter
-  proxy_hopper_probe_duration_seconds{address}             Histogram
-  proxy_hopper_ip_reachable{address}                       Gauge  (1=up, 0=down)
+  proxy_hopper_probe_success_total{address, provider, region}            Counter
+  proxy_hopper_probe_failure_total{address, provider, region, reason}    Counter
+  proxy_hopper_probe_duration_seconds{address, provider, region}         Histogram
+  proxy_hopper_ip_reachable{address, provider, region}                   Gauge  (1=up, 0=down)
 """
 
 from __future__ import annotations
@@ -27,10 +29,8 @@ from typing import Sequence
 
 import aiohttp
 
-from .config import TargetConfig
+from .config import ProxyProvider, TargetConfig
 from .metrics import get_metrics
-
-_Auth = aiohttp.BasicAuth  # alias for brevity
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +42,37 @@ DEFAULT_PROBE_URLS: tuple[str, ...] = (
     "http://www.google.com",
 )
 
+_DEFAULT_PORT = 8080
+
+
+class _ProbeEntry:
+    """Internal: everything needed to probe one IP address."""
+    __slots__ = ("address", "provider", "region", "auth")
+
+    def __init__(
+        self,
+        address: str,
+        provider: str = "",
+        region: str = "",
+        auth: aiohttp.BasicAuth | None = None,
+    ) -> None:
+        self.address = address
+        self.provider = provider
+        self.region = region
+        self.auth = auth
+
 
 class IPProber:
     """Background task that health-checks proxy IPs and exports metrics.
 
     Parameters
     ----------
+    providers:
+        All configured proxy providers.  IPs are deduplicated; each address
+        is probed with the credentials and region tag of its provider.
     targets:
-        All configured targets.  IP addresses are deduplicated across targets.
+        Fallback — used only when there are no providers (pure inline ipList
+        configs).  IPs are deduplicated; first target claiming an address wins.
     probe_urls:
         Endpoints to probe through each IP.  One URL is used per probe cycle,
         rotating round-robin, to keep outbound traffic light.
@@ -61,32 +84,43 @@ class IPProber:
 
     def __init__(
         self,
-        targets: Sequence[TargetConfig],
+        providers: Sequence[ProxyProvider] = (),
+        targets: Sequence[TargetConfig] = (),
         probe_urls: Sequence[str] = DEFAULT_PROBE_URLS,
         interval: float = 60.0,
         timeout: float = 10.0,
         debug: bool = False,
     ) -> None:
-        # Deduplicate IPs across all targets — order is arbitrary but stable.
-        # First target to claim an address wins for credentials.
+        entries: list[_ProbeEntry] = []
         seen: set[str] = set()
-        unique: list[str] = []
-        auth_map: dict[str, _Auth | None] = {}
-        for target in targets:
+
+        # Primary path — derive probes from providers
+        for provider in providers:
             auth = (
-                _Auth(target.proxy_username, target.proxy_password or "")
-                if target.proxy_username is not None
+                aiohttp.BasicAuth(provider.auth.username, provider.auth.password)
+                if provider.auth is not None
                 else None
             )
+            for host, port in provider.resolved_ip_list(_DEFAULT_PORT):
+                address = f"{host}:{port}"
+                if address not in seen:
+                    seen.add(address)
+                    entries.append(_ProbeEntry(
+                        address=address,
+                        provider=provider.name,
+                        region=provider.region_tag or "",
+                        auth=auth,
+                    ))
+
+        # Fallback path — inline IPs from targets (no provider metadata)
+        for target in targets:
             for host, port in target.resolved_ip_list():
                 address = f"{host}:{port}"
                 if address not in seen:
                     seen.add(address)
-                    unique.append(address)
-                    auth_map[address] = auth
+                    entries.append(_ProbeEntry(address=address))
 
-        self._addresses = unique
-        self._auth_map = auth_map
+        self._entries = entries
         self._probe_urls = list(probe_urls)
         self._interval = interval
         self._timeout = timeout
@@ -96,12 +130,12 @@ class IPProber:
         self._running = False
         # Rotate probe URLs independently per address
         self._url_cycles = {
-            addr: itertools.cycle(self._probe_urls) for addr in self._addresses
+            e.address: itertools.cycle(self._probe_urls) for e in self._entries
         }
 
         logger.info(
-            "IPProber: initialised with %d unique address(es), interval=%.0fs, urls=%s",
-            len(self._addresses), self._interval, self._probe_urls,
+            "IPProber: initialised with %d unique address(es) across %d provider(s), interval=%.0fs, urls=%s",
+            len(self._entries), len(providers), self._interval, self._probe_urls,
         )
 
     # ------------------------------------------------------------------
@@ -109,7 +143,7 @@ class IPProber:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        if not self._addresses:
+        if not self._entries:
             logger.warning("IPProber: no addresses to probe — task not started")
             return
         if not self._probe_urls:
@@ -143,9 +177,9 @@ class IPProber:
         """Probe all addresses concurrently once per interval."""
         while self._running:
             if self._debug:
-                logger.debug("IPProber: starting probe round for %d address(es)", len(self._addresses))
+                logger.debug("IPProber: starting probe round for %d address(es)", len(self._entries))
             await asyncio.gather(
-                *[self._probe_address(addr) for addr in self._addresses],
+                *[self._probe_address(entry) for entry in self._entries],
                 return_exceptions=True,
             )
             if self._debug:
@@ -154,23 +188,24 @@ class IPProber:
                 )
             await asyncio.sleep(self._interval)
 
-    async def _probe_address(self, address: str) -> None:
+    async def _probe_address(self, entry: _ProbeEntry) -> None:
         """Run a single probe through one proxy IP and record the result."""
-        url = next(self._url_cycles[address])
-        proxy_url = f"http://{address}"
+        url = next(self._url_cycles[entry.address])
+        proxy_url = f"http://{entry.address}"
         start = time.monotonic()
         reason: str | None = None
 
         if self._debug:
             logger.trace(  # type: ignore[attr-defined]
-                "IPProber: probing %s via %s", url, address
+                "IPProber: probing %s via %s (provider=%s region=%s)",
+                url, entry.address, entry.provider or "-", entry.region or "-",
             )
 
         try:
             async with self._session.get(  # type: ignore[union-attr]
                 url,
                 proxy=proxy_url,
-                proxy_auth=self._auth_map.get(address),
+                proxy_auth=entry.auth,
                 timeout=aiohttp.ClientTimeout(total=self._timeout),
                 allow_redirects=True,
                 ssl=False,  # we're testing connectivity, not certificate validity
@@ -179,49 +214,50 @@ class IPProber:
                     if resp.status < 500:
                         # Any non-5xx response means the proxy IP is reachable
                         # and forwarding traffic — treat as success.
-                        _record_probe_success(address, duration)
+                        get_metrics().record_probe_success(
+                            entry.address, duration,
+                            provider=entry.provider, region=entry.region,
+                        )
                         if self._debug:
                             logger.debug(
                                 "IPProber: %s via %s → %d (%.3fs)",
-                                url, address, resp.status, duration,
+                                url, entry.address, resp.status, duration,
                             )
                     else:
                         reason = "http_error"
                         duration = time.monotonic() - start
-                        _record_probe_failure(address, reason, duration)
+                        get_metrics().record_probe_failure(
+                            entry.address, reason, duration,
+                            provider=entry.provider, region=entry.region,
+                        )
                         logger.warning(
                             "IPProber: %s via %s → %d (%.3fs)",
-                            url, address, resp.status, duration,
+                            url, entry.address, resp.status, duration,
                         )
 
         except asyncio.TimeoutError:
             reason = "timeout"
             duration = time.monotonic() - start
-            _record_probe_failure(address, reason, duration)
-            logger.warning("IPProber: %s via %s timed out after %.1fs", url, address, duration)
+            get_metrics().record_probe_failure(
+                entry.address, reason, duration,
+                provider=entry.provider, region=entry.region,
+            )
+            logger.warning("IPProber: %s via %s timed out after %.1fs", url, entry.address, duration)
 
         except aiohttp.ClientProxyConnectionError:
             reason = "proxy_unreachable"
             duration = time.monotonic() - start
-            _record_probe_failure(address, reason, duration)
-            logger.warning("IPProber: could not connect to proxy %s", address)
+            get_metrics().record_probe_failure(
+                entry.address, reason, duration,
+                provider=entry.provider, region=entry.region,
+            )
+            logger.warning("IPProber: could not connect to proxy %s", entry.address)
 
         except aiohttp.ClientError as exc:
             reason = "connection_error"
             duration = time.monotonic() - start
-            _record_probe_failure(address, reason, duration)
-            logger.warning("IPProber: %s via %s — %s: %s", url, address, type(exc).__name__, exc)
-
-
-# ---------------------------------------------------------------------------
-# Metric helpers — delegate to the singleton collector
-# ---------------------------------------------------------------------------
-
-def _record_probe_success(address: str, duration: float) -> None:
-    m = get_metrics()
-    m.record_probe_success(address, duration)
-
-
-def _record_probe_failure(address: str, reason: str, duration: float) -> None:
-    m = get_metrics()
-    m.record_probe_failure(address, reason, duration)
+            get_metrics().record_probe_failure(
+                entry.address, reason, duration,
+                provider=entry.provider, region=entry.region,
+            )
+            logger.warning("IPProber: %s via %s — %s: %s", url, entry.address, type(exc).__name__, exc)

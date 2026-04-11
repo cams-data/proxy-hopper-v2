@@ -7,31 +7,32 @@ on PROXY_HOPPER_METRICS_PORT (default 9090).  No web framework is required.
 Metrics exposed
 ---------------
 Request pipeline
-  proxy_hopper_requests_total{target, outcome}              Counter
-  proxy_hopper_request_duration_seconds{target}             Histogram
-  proxy_hopper_responses_total{target, status_code}         Counter
-  proxy_hopper_retries_total{target}                        Counter
-  proxy_hopper_retry_exhaustions_total{target}              Counter
+  proxy_hopper_requests_total{target, outcome}                           Counter
+  proxy_hopper_request_duration_seconds{target}                          Histogram
+  proxy_hopper_responses_total{target, status_code}                      Counter
+  proxy_hopper_retries_total{target}                                     Counter
+  proxy_hopper_retry_exhaustions_total{target}                           Counter
 
 Queue
-  proxy_hopper_queue_depth{target}                          Gauge
-  proxy_hopper_queue_wait_seconds{target}                   Histogram
-  proxy_hopper_queue_expired_total{target}                  Counter
+  proxy_hopper_queue_depth{target}                                       Gauge
+  proxy_hopper_queue_wait_seconds{target}                                Histogram
+  proxy_hopper_queue_expired_total{target}                               Counter
 
 Connections
-  proxy_hopper_active_connections                           Gauge
+  proxy_hopper_active_connections                                        Gauge
 
 IP pool
-  proxy_hopper_available_ips{target}                        Gauge
-  proxy_hopper_quarantined_ips{target}                      Gauge
-  proxy_hopper_ip_quarantine_events_total{target, address}  Counter
-  proxy_hopper_ip_failure_count{target, address}            Gauge
+  proxy_hopper_available_ips{target}                                     Gauge
+  proxy_hopper_quarantined_ips{target}                                   Gauge
+  proxy_hopper_ip_quarantine_events_total{target, address,
+                                          provider, region}              Counter
+  proxy_hopper_ip_failure_count{target, address, provider, region}       Gauge
 
 Probes
-  proxy_hopper_probe_success_total{address}                 Counter
-  proxy_hopper_probe_failure_total{address, reason}         Counter
-  proxy_hopper_probe_duration_seconds{address}              Histogram
-  proxy_hopper_ip_reachable{address}                        Gauge  (1=up, 0=down)
+  proxy_hopper_probe_success_total{address, provider, region}            Counter
+  proxy_hopper_probe_failure_total{address, provider, region, reason}    Counter
+  proxy_hopper_probe_duration_seconds{address, provider, region}         Histogram
+  proxy_hopper_ip_reachable{address, provider, region}                   Gauge  (1=up, 0=down)
 """
 
 from __future__ import annotations
@@ -81,13 +82,13 @@ class _NoopMetrics:
         pass
     def set_quarantined_ips(self, target: str, count: int) -> None:
         pass
-    def record_quarantine_event(self, target: str, address: str) -> None:
+    def record_quarantine_event(self, target: str, address: str, *, provider: str = "", region: str = "") -> None:
         pass
-    def set_ip_failure_count(self, target: str, address: str, count: int) -> None:
+    def set_ip_failure_count(self, target: str, address: str, count: int, *, provider: str = "", region: str = "") -> None:
         pass
-    def record_probe_success(self, address: str, duration: float) -> None:
+    def record_probe_success(self, address: str, duration: float, *, provider: str = "", region: str = "") -> None:
         pass
-    def record_probe_failure(self, address: str, reason: str, duration: float) -> None:
+    def record_probe_failure(self, address: str, reason: str, duration: float, *, provider: str = "", region: str = "") -> None:
         pass
 
 
@@ -161,35 +162,35 @@ class PrometheusMetrics:
         self._quarantine_events = Counter(
             "proxy_hopper_ip_quarantine_events_total",
             "Total number of times an IP has been quarantined",
-            ["target", "address"],
+            ["target", "address", "provider", "region"],
         )
         self._ip_failure_count = Gauge(
             "proxy_hopper_ip_failure_count",
             "Current consecutive failure count for a proxy IP (resets to 0 on success)",
-            ["target", "address"],
+            ["target", "address", "provider", "region"],
         )
 
         # --- Probes ---
         self._probe_success = Counter(
             "proxy_hopper_probe_success_total",
             "Total number of successful background IP probes",
-            ["address"],
+            ["address", "provider", "region"],
         )
         self._probe_failure = Counter(
             "proxy_hopper_probe_failure_total",
             "Total number of failed background IP probes",
-            ["address", "reason"],
+            ["address", "provider", "region", "reason"],
         )
         self._probe_duration = Histogram(
             "proxy_hopper_probe_duration_seconds",
             "Duration of background IP probe requests",
-            ["address"],
+            ["address", "provider", "region"],
             buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
         )
         self._ip_reachable = Gauge(
             "proxy_hopper_ip_reachable",
             "Whether the proxy IP is reachable (1=up, 0=down)",
-            ["address"],
+            ["address", "provider", "region"],
         )
 
     def record_request(self, target: str, outcome: str, duration: float) -> None:
@@ -226,21 +227,21 @@ class PrometheusMetrics:
     def set_quarantined_ips(self, target: str, count: int) -> None:
         self._quarantined_ips.labels(target=target).set(count)
 
-    def record_quarantine_event(self, target: str, address: str) -> None:
-        self._quarantine_events.labels(target=target, address=address).inc()
+    def record_quarantine_event(self, target: str, address: str, *, provider: str = "", region: str = "") -> None:
+        self._quarantine_events.labels(target=target, address=address, provider=provider, region=region).inc()
 
-    def set_ip_failure_count(self, target: str, address: str, count: int) -> None:
-        self._ip_failure_count.labels(target=target, address=address).set(count)
+    def set_ip_failure_count(self, target: str, address: str, count: int, *, provider: str = "", region: str = "") -> None:
+        self._ip_failure_count.labels(target=target, address=address, provider=provider, region=region).set(count)
 
-    def record_probe_success(self, address: str, duration: float) -> None:
-        self._probe_success.labels(address=address).inc()
-        self._probe_duration.labels(address=address).observe(duration)
-        self._ip_reachable.labels(address=address).set(1)
+    def record_probe_success(self, address: str, duration: float, *, provider: str = "", region: str = "") -> None:
+        self._probe_success.labels(address=address, provider=provider, region=region).inc()
+        self._probe_duration.labels(address=address, provider=provider, region=region).observe(duration)
+        self._ip_reachable.labels(address=address, provider=provider, region=region).set(1)
 
-    def record_probe_failure(self, address: str, reason: str, duration: float) -> None:
-        self._probe_failure.labels(address=address, reason=reason).inc()
-        self._probe_duration.labels(address=address).observe(duration)
-        self._ip_reachable.labels(address=address).set(0)
+    def record_probe_failure(self, address: str, reason: str, duration: float, *, provider: str = "", region: str = "") -> None:
+        self._probe_failure.labels(address=address, provider=provider, region=region, reason=reason).inc()
+        self._probe_duration.labels(address=address, provider=provider, region=region).observe(duration)
+        self._ip_reachable.labels(address=address, provider=provider, region=region).set(0)
 
 
 # Singleton — created once at startup
