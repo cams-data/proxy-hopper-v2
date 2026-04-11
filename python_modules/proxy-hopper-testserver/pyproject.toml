@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proxy-hopper-testserver"
+version = "0.1.0"
+description = "Controllable upstream server and mock proxy layer for proxy-hopper integration tests"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "proxy-hopper",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proxy_hopper_testserver"]
+
+[tool.uv.sources]
+proxy-hopper = { path = "../proxy-hopper", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

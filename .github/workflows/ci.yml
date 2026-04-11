@@ -66,3 +66,9 @@ jobs:
         run: |
           uv sync --python ${{ matrix.python-version }}
           uv run pytest --tb=short -q
+
+      - name: Run integration tests
+        working-directory: python_modules/proxy-hopper-testserver
+        run: |
+          uv sync --python ${{ matrix.python-version }} --all-extras
+          uv run pytest --tb=short -q
