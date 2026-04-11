@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-hopper-grafana-dashboards
+  namespace: proxy-hopper-test
+  labels:
+    grafana_dashboard: "true"
+data:
+  # https://github.com/cams-data/proxy-hopper-v2/tree/next/examples/kubernetes/dashboards
+  proxy-hopper-admin.json.url: "https://raw.githubusercontent.com/cams-data/proxy-hopper-v2/next/examples/kubernetes/dashboards/proxy-hopper-admin.json"
+  proxy-hopper-user.json.url: "https://raw.githubusercontent.com/cams-data/proxy-hopper-v2/next/examples/kubernetes/dashboards/proxy-hopper-user.json"

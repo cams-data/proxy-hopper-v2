@@ -10,15 +10,4 @@ resources:
   - service.yaml
   - servicemonitor.yaml
   - ingress.yaml
-
-configMapGenerator:
-  - name: proxy-hopper-grafana-dashboards
-    options:
-      disableNameSuffixHash: true
-      labels:
-        grafana_dashboard: "1"
-        app.kubernetes.io/name: proxy-hopper
-        environment: test
-    files:
-      - ../examples/kubernetes/dashboards/proxy-hopper-admin.json
-      - ../examples/kubernetes/dashboards/proxy-hopper-user.json
+  - dashboards-configmap.yaml

@@ -1,29 +1,11 @@
----
-# Grafana dashboard ConfigMap for the grafana-sc-dashboard sidecar.
-#
-# This file is a kustomize generator stub — see kustomization.yaml in this
-# directory for the recommended way to apply it.
-#
-# If you prefer a plain kubectl apply, run the helper script instead:
-#   ./apply-dashboards.sh [namespace]
-#
-# Prerequisites (kube-prometheus-stack or standalone Grafana with sidecar):
-#   The Grafana sidecar must be configured to watch for ConfigMaps with the
-#   label grafana_dashboard=1.  With the kube-prometheus-stack Helm chart:
-#
-#     grafana:
-#       sidecar:
-#         dashboards:
-#           enabled: true
-#           label: grafana_dashboard
-#           labelValue: "1"
-#           searchNamespace: proxy-hopper   # if Grafana is in a different namespace
-
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: proxy-hopper-grafana-dashboards
-  namespace: proxy-hopper
+  namespace: proxy-hopper        # adjust to match your deployment namespace
   labels:
-    grafana_dashboard: "1"
-# Data is populated by kustomization.yaml configMapGenerator or apply-dashboards.sh
+    grafana_dashboard: "true"
+data:
+  # https://github.com/cams-data/proxy-hopper-v2/tree/main/examples/kubernetes/dashboards
+  proxy-hopper-admin.json.url: "https://raw.githubusercontent.com/cams-data/proxy-hopper-v2/main/examples/kubernetes/dashboards/proxy-hopper-admin.json"
+  proxy-hopper-user.json.url: "https://raw.githubusercontent.com/cams-data/proxy-hopper-v2/main/examples/kubernetes/dashboards/proxy-hopper-user.json"
