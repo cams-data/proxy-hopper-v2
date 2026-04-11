@@ -11,16 +11,33 @@
 #   3. PROXY_HOPPER_* environment variables
 #
 # =============================================================================
-# IP POOLS  (optional)
+# PROXY PROVIDERS  (optional)
 # =============================================================================
-# Define a named list of IPs once and reference it from multiple targets.
-# Useful when several targets share the same proxy fleet.
+# Named proxy suppliers — each with their own credentials and a region tag for
+# observability.  Reference them from ipPools via ipRequests.
 #
-# ipPools:
-#   - name: shared-pool
+# proxyProviders:
+#   - name: my-provider
+#     auth:
+#       type: basic
+#       username: myuser
+#       password: mypassword
 #     ipList:
 #       - "proxy-1.example.com:3128"
 #       - "proxy-2.example.com:3128"
+#     regionTag: Australia
+
+# =============================================================================
+# IP POOLS  (optional)
+# =============================================================================
+# Define a named IP list once and reference it from multiple targets.
+# Draw IPs from providers via ipRequests, or list them inline.
+#
+# ipPools:
+#   - name: shared-pool
+#     ipRequests:
+#       - provider: my-provider
+#         count: 3      # randomly sample 3 IPs from the provider's list
 
 # =============================================================================
 # TARGETS  (required)
@@ -35,21 +52,13 @@ targets:
   # ---------------------------------------------------------------------------
   # - name: strict-api
   #   regex: 'api\.example\.com'
-  #   ipList:
-  #     - "203.0.113.20:3128"
-  #     - "203.0.113.21:3128"
-  #   minRequestInterval: 10s   # only one request per IP per 10 seconds
-  #   maxQueueWait: 60s         # wait up to 60s for a free IP
+  #   ipPool: shared-pool           # reference a named pool (credentials from provider)
+  #   minRequestInterval: 10s       # only one request per IP per 10 seconds
+  #   maxQueueWait: 60s
   #   numRetries: 1
   #   ipFailuresUntilQuarantine: 2
   #   quarantineTime: 30m
   #   defaultProxyPort: 3128
-  #
-  #   # Proxy credentials — required if the external proxy uses HTTP Basic auth
-  #   # (e.g. Squid with both IP whitelisting and credential fallback).
-  #   # Leave unset for open or IP-whitelisted-only proxies.
-  #   proxyUsername: myuser
-  #   proxyPassword: mypassword
 
   # ---------------------------------------------------------------------------
   # General catch-all target
@@ -116,8 +125,8 @@ targets:
 #   probeInterval: 60          # PROXY_HOPPER_PROBE_INTERVAL  — seconds between probe rounds
 #   probeTimeout: 10           # PROXY_HOPPER_PROBE_TIMEOUT   — per-probe HTTP timeout
 #   probeUrls:                 # PROXY_HOPPER_PROBE_URLS      — comma-separated as env var
-#     - https://1.1.1.1
-#     - https://www.google.com
+#     - http://1.1.1.1
+#     - http://www.google.com
 #
 #   # Interaction modes — disable any you don't want to expose.
 #   # Valid values: connect_tunnel, http_proxy, forwarding

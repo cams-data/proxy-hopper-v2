@@ -22,17 +22,35 @@ data:
     #   3. PROXY_HOPPER_* env vars in the Deployment manifest
     #
     # =========================================================================
-    # IP POOLS  (optional)
+    # PROXY PROVIDERS  (optional)
     # =========================================================================
-    # Define a named IP list once and reference it from multiple targets.
+    # Named proxy suppliers — credentials and region tag live here.
+    # Reference them from ipPools via ipRequests.
 
-    ipPools:
-      - name: general-pool
+    proxyProviders:
+      - name: general-provider
+        auth:
+          type: basic
+          username: myuser            # replace with your real credentials
+          password: mypassword
         ipList:
           - "203.0.113.10:3128"       # replace with your real proxy IPs
           - "203.0.113.11:3128"
           - "203.0.113.12:3128"
           - "203.0.113.13:3128"
+        regionTag: US-East            # optional — used in Prometheus metric labels
+
+    # =========================================================================
+    # IP POOLS  (optional)
+    # =========================================================================
+    # Define a named pool once and reference it from multiple targets.
+    # ipRequests randomly samples `count` IPs from the provider's list.
+
+    ipPools:
+      - name: general-pool
+        ipRequests:
+          - provider: general-provider
+            count: 4
 
     # =========================================================================
     # TARGETS  (required)
@@ -93,5 +111,5 @@ data:
     #   probe: true              # background IP health prober
     #   probeInterval: 60
     #   probeUrls:
-    #     - https://1.1.1.1
-    #     - https://www.google.com
+    #     - http://1.1.1.1
+    #     - http://www.google.com

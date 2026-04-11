@@ -14,23 +14,51 @@ Requires Python 3.11+.
 
 ### 1. Write a config file
 
-Configuration lives in a single YAML file covering targets, IP pools, and optional server defaults.
+Configuration lives in a single YAML file covering proxy providers, IP pools, targets, and optional server defaults.
 
 ```yaml
 # config.yaml
 
 # ---------------------------------------------------------------------------
-# IP Pools (optional)
+# Proxy Providers (optional)
 # ---------------------------------------------------------------------------
-# Define a named IP list once and reference it from multiple targets.
-# Saves repeating the same IPs when several targets share a fleet.
+# Named proxy suppliers — each with its own credentials and region tag.
+# Providers are referenced from ipPools via ipRequests.
 
-ipPools:
-  - name: shared-pool
+proxyProviders:
+  - name: provider-au
+    auth:
+      type: basic
+      username: user
+      password: secret
     ipList:
       - "10.0.0.1:3128"
       - "10.0.0.2:3128"
-      - "10.0.0.3:3128"
+    regionTag: Australia
+
+  - name: provider-ca
+    auth:
+      type: basic
+      username: user
+      password: secret
+    ipList:
+      - "10.1.0.1:3128"
+      - "10.1.0.2:3128"
+    regionTag: Canada
+
+# ---------------------------------------------------------------------------
+# IP Pools (optional)
+# ---------------------------------------------------------------------------
+# Named pools referenced by targets.  Draw IPs from providers via ipRequests
+# (randomly samples `count` IPs) or list them inline.
+
+ipPools:
+  - name: shared-pool
+    ipRequests:
+      - provider: provider-au
+        count: 3
+      - provider: provider-ca
+        count: 3
 
 # ---------------------------------------------------------------------------
 # Targets (required)
@@ -49,9 +77,9 @@ targets:
 
   - name: fallback
     regex: '.*'
-    ipList:                       # … or provide IPs inline
-      - "10.1.0.1:3128"
-      - "10.1.0.2:3128"
+    ipList:                       # … or provide IPs inline (no provider metadata)
+      - "10.2.0.1:3128"
+      - "10.2.0.2:3128"
     minRequestInterval: 1s
     maxQueueWait: 30s
     numRetries: 2
@@ -160,16 +188,41 @@ Settings are resolved in this order (highest wins):
 | 3 | `PROXY_HOPPER_*` environment variables |
 | 4 | Built-in defaults |
 
+### Proxy provider fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | Unique identifier referenced from `ipPools.ipRequests` |
+| `auth.type` | string | `basic` | Auth type — currently `basic` |
+| `auth.username` | string | — | Username for HTTP Basic auth sent to this provider's proxies |
+| `auth.password` | string | `""` | Password for HTTP Basic auth |
+| `ipList` | list | required | Proxy addresses from this provider — `scheme://host:port`, `host:port`, or bare host |
+| `regionTag` | string | — | Region label attached to metrics (e.g. `Australia`) — enables per-region observability |
+
+### IP pool fields
+
+```yaml
+ipPools:
+  - name: pool-name
+    # Draw from providers (randomly sampled):
+    ipRequests:
+      - provider: provider-name
+        count: 5          # how many IPs to randomly select from that provider's list
+    # Or list IPs inline (no provider metadata):
+    ipList:
+      - "host:port"
+```
+
+`ipRequests` and `ipList` can be combined in the same pool. Multiple targets can reference the same pool — each target maintains independent rotation state.
+
 ### Target fields
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `name` | string | required | Label used in logs and metrics |
 | `regex` | string | required | Python regex matched against the full request URL |
-| `ipList` | list | required* | Proxy addresses — `host:port` or bare host (uses `defaultProxyPort`) |
-| `ipPool` | string | required* | Name of a shared `ipPools` entry — alternative to `ipList` |
-| `proxyUsername` | string | — | Username for HTTP Basic auth sent to the external proxy |
-| `proxyPassword` | string | — | Password for HTTP Basic auth sent to the external proxy |
+| `ipPool` | string | required* | Name of a shared `ipPools` entry |
+| `ipList` | list | required* | Inline proxy addresses — `host:port` or bare host (uses `defaultProxyPort`) |
 | `defaultProxyPort` | int | `8080` | Port applied to bare IPs in `ipList` |
 | `minRequestInterval` | duration | `1s` | **Primary rate-limit knob.** How long an IP is held off the pool after any request before it can be reused. |
 | `maxQueueWait` | duration | `30s` | How long a request waits for a free IP before failing |
@@ -177,23 +230,11 @@ Settings are resolved in this order (highest wins):
 | `ipFailuresUntilQuarantine` | int | `5` | Consecutive failures before an IP is quarantined |
 | `quarantineTime` | duration | `120s` | How long a quarantined IP sits out before returning to the pool |
 
-\* Exactly one of `ipList` or `ipPool` must be provided per target.
+\* Exactly one of `ipPool` or `ipList` must be provided per target.
 
-`proxyUsername` / `proxyPassword` are needed when the external proxy requires HTTP Basic auth on CONNECT or forwarded requests (common with Squid-based providers that use both IP whitelisting and credential auth as fallback). Leave unset for open or IP-only proxies.
+Credentials are defined on `proxyProviders` — targets inherit auth from whichever provider contributed each IP. Inline `ipList` targets have no credentials.
 
 Duration values accept a suffix (`1s`, `5m`, `2h`) or a bare number (seconds).
-
-### IP pools
-
-```yaml
-ipPools:
-  - name: pool-name
-    ipList:
-      - "host:port"
-      - "host"           # port from defaultProxyPort
-```
-
-Multiple targets can reference the same pool. Each target still maintains its own independent rotation state — sharing a pool definition does not mean IPs are shared at runtime.
 
 ### Server fields
 
@@ -316,17 +357,27 @@ proxy-hopper run --config config.yaml --metrics --metrics-port 9090
 |---|---|---|---|
 | `proxy_hopper_requests_total` | Counter | `target`, `outcome` | Total proxied requests |
 | `proxy_hopper_request_duration_seconds` | Histogram | `target` | Outbound request latency |
+| `proxy_hopper_responses_total` | Counter | `target`, `status_code` | Upstream HTTP responses by status code |
+| `proxy_hopper_retries_total` | Counter | `target` | Retry attempts |
+| `proxy_hopper_retry_exhaustions_total` | Counter | `target` | Requests that exhausted all retries |
 | `proxy_hopper_queue_depth` | Gauge | `target` | Requests waiting for an IP |
+| `proxy_hopper_queue_wait_seconds` | Histogram | `target` | Time spent waiting in queue |
+| `proxy_hopper_queue_expired_total` | Counter | `target` | Requests dropped due to queue timeout |
+| `proxy_hopper_active_connections` | Gauge | — | Open client connections |
 | `proxy_hopper_available_ips` | Gauge | `target` | IPs currently in pool |
 | `proxy_hopper_quarantined_ips` | Gauge | `target` | IPs currently quarantined |
-| `proxy_hopper_probe_success_total` | Counter | `address` | Successful background probes |
-| `proxy_hopper_probe_failure_total` | Counter | `address`, `reason` | Failed background probes |
-| `proxy_hopper_probe_duration_seconds` | Histogram | `address` | Background probe latency |
-| `proxy_hopper_ip_reachable` | Gauge | `address` | `1` if IP passed last probe, `0` if not |
+| `proxy_hopper_ip_quarantine_events_total` | Counter | `target`, `address`, `provider`, `region` | Quarantine events per IP |
+| `proxy_hopper_ip_failure_count` | Gauge | `target`, `address`, `provider`, `region` | Consecutive failure count per IP |
+| `proxy_hopper_probe_success_total` | Counter | `address`, `provider`, `region` | Successful background probes |
+| `proxy_hopper_probe_failure_total` | Counter | `address`, `provider`, `region`, `reason` | Failed background probes |
+| `proxy_hopper_probe_duration_seconds` | Histogram | `address`, `provider`, `region` | Background probe latency |
+| `proxy_hopper_ip_reachable` | Gauge | `address`, `provider`, `region` | `1` if IP passed last probe, `0` if not |
 
 `outcome` values: `success`, `rate_limited`, `server_error`, `connection_error`, `no_match`.
 
 Probe `reason` values: `timeout`, `proxy_unreachable`, `connection_error`, `http_error`.
+
+The `provider` and `region` labels on IP-level and probe metrics come from `proxyProviders` — enabling per-provider and per-region queries such as `avg by (region) (proxy_hopper_probe_duration_seconds)`.
 
 ---
 

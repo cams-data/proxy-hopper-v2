@@ -42,12 +42,23 @@ pip install proxy-hopper
 
 ```yaml
 # config.yaml
-ipPools:
-  - name: my-pool
+proxyProviders:
+  - name: my-provider
+    auth:
+      type: basic
+      username: user
+      password: secret
     ipList:
       - "10.0.0.1:3128"
       - "10.0.0.2:3128"
       - "10.0.0.3:3128"
+    regionTag: US-East
+
+ipPools:
+  - name: my-pool
+    ipRequests:
+      - provider: my-provider
+        count: 3
 
 targets:
   - name: general

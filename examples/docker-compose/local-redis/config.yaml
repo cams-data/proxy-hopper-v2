@@ -14,23 +14,50 @@
 #   3. PROXY_HOPPER_* environment variables
 #
 # =============================================================================
-# IP POOLS  (optional)
+# PROXY PROVIDERS  (optional)
 # =============================================================================
-# Define a named list of IPs once and reference it from multiple targets with
-# `ipPool: <name>`.  Avoids repeating the same IP list across many targets.
+# Named proxy suppliers — each with credentials and a region tag.
+# Reference them from ipPools via ipRequests.
 
-ipPools:
-  - name: general-pool
+proxyProviders:
+  - name: general-provider
+    auth:
+      type: basic
+      username: myuser              # replace with your real credentials
+      password: mypassword
     ipList:
       - "203.0.113.10:3128"         # replace with your real proxy IPs
       - "203.0.113.11:3128"
       - "203.0.113.12:3128"
       - "203.0.113.13:3128"
+    regionTag: US-East              # optional — used in Prometheus metrics labels
 
-  # - name: premium-pool
+  # - name: premium-provider
+  #   auth:
+  #     type: basic
+  #     username: premuser
+  #     password: premsecret
   #   ipList:
   #     - "203.0.113.20:3128"
   #     - "203.0.113.21:3128"
+  #   regionTag: EU-West
+
+# =============================================================================
+# IP POOLS  (optional)
+# =============================================================================
+# Define a named pool once and reference it from multiple targets.
+# ipRequests randomly samples `count` IPs from the provider's list.
+
+ipPools:
+  - name: general-pool
+    ipRequests:
+      - provider: general-provider
+        count: 4                    # use all 4 IPs from the provider
+
+  # - name: premium-pool
+  #   ipRequests:
+  #     - provider: premium-provider
+  #       count: 2
 
 # =============================================================================
 # TARGETS  (required)
@@ -117,8 +144,8 @@ targets:
 #   probeInterval: 60          # PROXY_HOPPER_PROBE_INTERVAL  — seconds between probe rounds
 #   probeTimeout: 10           # PROXY_HOPPER_PROBE_TIMEOUT   — per-probe HTTP timeout
 #   probeUrls:                 # PROXY_HOPPER_PROBE_URLS      — comma-separated as env var
-#     - https://1.1.1.1
-#     - https://www.google.com
+#     - http://1.1.1.1
+#     - http://www.google.com
 #
 #   # Interaction modes — disable any you don't want to expose.
 #   # Valid values: connect_tunnel, http_proxy, forwarding
