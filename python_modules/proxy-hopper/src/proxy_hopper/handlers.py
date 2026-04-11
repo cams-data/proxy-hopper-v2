@@ -239,6 +239,8 @@ async def _submit_and_respond(
             method, url, response.status, detail,
         )
 
+    get_metrics().record_response(manager._config.name, response.status)
+
     _write_http_response(writer, response, http_version)
     await writer.drain()
 

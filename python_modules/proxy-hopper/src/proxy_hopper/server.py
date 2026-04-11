@@ -28,6 +28,7 @@ from .handlers import (
     _reason,           # noqa: F401 — re-exported; imported directly by tests
     _write_error,
 )
+from .metrics import get_metrics
 
 if TYPE_CHECKING:
     from .target_manager import TargetManager
@@ -122,6 +123,7 @@ class ProxyServer:
         writer: asyncio.StreamWriter,
     ) -> None:
         peer = writer.get_extra_info("peername", "<unknown>")
+        get_metrics().inc_active_connections()
         try:
             while True:
                 keep_alive = await self._dispatch(reader, writer, peer)
@@ -134,6 +136,7 @@ class ProxyServer:
         except Exception:
             logger.exception("ProxyServer: unhandled error for client %s", peer)
         finally:
+            get_metrics().dec_active_connections()
             try:
                 writer.close()
                 await writer.wait_closed()

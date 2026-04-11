@@ -173,6 +173,7 @@ class TargetManager:
                     "TargetManager '%s': %s %s expired in queue — dropping",
                     self._config.name, request.method, request.url,
                 )
+                get_metrics().record_queue_expired(self._config.name)
                 if not request.future.done():
                     request.future.set_result(
                         self._error_response(503, "queue_timeout", request, "Request expired waiting in queue")
@@ -180,18 +181,22 @@ class TargetManager:
                 self._request_queue.task_done()
                 continue
 
+            queue_wait = time.monotonic() - request.arrival_time
             address = await self._pool.acquire(request.time_remaining())
             if address is None:
                 logger.warning(
                     "TargetManager '%s': no IP available for %s %s within %.2fs — dropping",
                     self._config.name, request.method, request.url, request.time_remaining(),
                 )
+                get_metrics().record_queue_expired(self._config.name)
                 if not request.future.done():
                     request.future.set_result(
                         self._error_response(503, "no_ip_available", request, "No proxy IP available within the allowed wait time")
                     )
                 self._request_queue.task_done()
                 continue
+
+            get_metrics().record_queue_wait(self._config.name, queue_wait)
 
             logger.debug(
                 "TargetManager '%s': dispatching %s %s via %s",
@@ -273,6 +278,7 @@ class TargetManager:
                     )
                     await self._pool.record_failure(address, elapsed)
                     if request.can_retry():
+                        get_metrics().record_retry(self._config.name)
                         retry = request.clone_for_retry()
                         logger.debug(
                             "TargetManager '%s': retrying %s %s",
@@ -280,6 +286,7 @@ class TargetManager:
                         )
                         await self._request_queue.put(retry)
                     elif not request.future.done():
+                        get_metrics().record_retry_exhaustion(self._config.name)
                         logger.warning(
                             "TargetManager '%s': %s %s — retries exhausted after %d/%d attempts, upstream returned %d",
                             self._config.name, request.method, request.url,
@@ -314,12 +321,14 @@ class TargetManager:
             )
             await self._pool.record_failure(address)
             if request.can_retry():
+                get_metrics().record_retry(self._config.name)
                 logger.debug(
                     "TargetManager '%s': scheduling retry for %s %s after connection error",
                     self._config.name, request.method, request.url,
                 )
                 await self._request_queue.put(request.clone_for_retry())
             elif not request.future.done():
+                get_metrics().record_retry_exhaustion(self._config.name)
                 logger.warning(
                     "TargetManager '%s': %s %s — retries exhausted after %d/%d attempts, connection error: %s",
                     self._config.name, request.method, request.url,
@@ -342,12 +351,14 @@ class TargetManager:
             )
             await self._pool.record_failure(address)
             if request.can_retry():
+                get_metrics().record_retry(self._config.name)
                 logger.debug(
                     "TargetManager '%s': scheduling retry for %s %s after unexpected error",
                     self._config.name, request.method, request.url,
                 )
                 await self._request_queue.put(request.clone_for_retry())
             elif not request.future.done():
+                get_metrics().record_retry_exhaustion(self._config.name)
                 logger.error(
                     "TargetManager '%s': %s %s — retries exhausted after %d/%d attempts, unexpected error: %s",
                     self._config.name, request.method, request.url,
