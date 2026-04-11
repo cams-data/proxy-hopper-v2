@@ -123,7 +123,10 @@ class ProxyServer:
     ) -> None:
         peer = writer.get_extra_info("peername", "<unknown>")
         try:
-            await self._dispatch(reader, writer, peer)
+            while True:
+                keep_alive = await self._dispatch(reader, writer, peer)
+                if not keep_alive:
+                    break
         except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
             logger.trace(  # type: ignore[attr-defined]
                 "ProxyServer: connection from %s closed abruptly", peer
@@ -142,8 +145,16 @@ class ProxyServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         peer: object,
-    ) -> None:
+    ) -> bool:
+        """Handle one request.  Returns True if the connection should be kept alive."""
         method, target, http_version, headers = await _read_request_head(reader)
+
+        # Honour explicit close requests; HTTP/1.0 is close-by-default.
+        # HTTP/1.1 with no Connection header is keep-alive by default.
+        client_wants_close = (
+            headers.get("connection", "").lower() == "close"
+            or http_version == "HTTP/1.0"
+        )
 
         if not _is_healthcheck(peer, method, target):
             logger.debug("ProxyServer: %s %s from %s", method, target, peer)
@@ -151,11 +162,11 @@ class ProxyServer:
         for handler in self._handlers:
             if handler.can_handle(method, target, http_version, headers):
                 await handler.handle(reader, writer, method, target, http_version, headers)
-                if not _is_healthcheck(peer, method, target):
-                    logger.trace(  # type: ignore[attr-defined]
-                        "ProxyServer: closing connection from %s", peer
-                    )
-                return
+                # CONNECT tunnels take over the raw socket — never loop after one.
+                from .handlers import ConnectTunnelHandler
+                if isinstance(handler, ConnectTunnelHandler):
+                    return False
+                return not client_wants_close
 
         logger.warning(
             "ProxyServer: no handler claimed %s %s — enabled modes: %s",
@@ -163,6 +174,7 @@ class ProxyServer:
         )
         _write_error(writer, 400, "Request format not supported by any enabled mode")
         await writer.drain()
+        return False
 
     # ------------------------------------------------------------------
     # Backward-compatible shim (used in tests)

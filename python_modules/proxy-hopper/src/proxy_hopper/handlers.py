@@ -93,11 +93,7 @@ def _write_http_response(
         for k, v in response.headers.items()
         if k.lower() not in _HOP_BY_HOP
     )
-    # Always close after one request — proxy-hopper is a one-request-per-connection
-    # server.  Without this header, clients with connection pooling (e.g. aiohttp)
-    # may attempt to reuse a connection that proxy-hopper has already closed,
-    # resulting in ServerDisconnectedError on the client side.
-    writer.write((status_line + header_lines + "Connection: close\r\n\r\n").encode("latin-1") + response.body)
+    writer.write((status_line + header_lines + "\r\n").encode("latin-1") + response.body)
 
 
 async def _relay(
