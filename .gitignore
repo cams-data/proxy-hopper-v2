@@ -212,8 +212,9 @@ cython_debug/
 # Ruff stuff:
 .ruff_cache/
 
-# Local test environment — never commit
+# Local test environments — never commit (contain real proxy IPs)
 docker-test/
+kube-test/
 
 # PyPI configuration file
 .pypirc
