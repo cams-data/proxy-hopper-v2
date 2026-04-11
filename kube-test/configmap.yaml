@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: proxy-hopper-config
+  namespace: proxy-hopper-test
+  labels:
+    app.kubernetes.io/name: proxy-hopper
+    app.kubernetes.io/component: config
+data:
+  config.yaml: |
+    # =========================================================================
+    # Proxy Hopper — kube-test config
+    # =========================================================================
+    # Replace the placeholder IPs with your real proxy addresses.
+    # After editing, apply and restart:
+    #   kubectl apply -f kube-test/configmap.yaml
+    #   kubectl rollout restart deployment/proxy-hopper -n proxy-hopper-test
+    # =========================================================================
+
+    ipPools:
+      - name: pool-1
+        ipList:
+          - "203.0.113.10:8800"    # replace with real proxy IPs
+          - "203.0.113.11:8800"
+          - "203.0.113.12:8800"
+          - "203.0.113.13:8800"
+          - "203.0.113.14:8800"
+
+    targets:
+      - name: arcgis
+        regex: 'services\.arcgis\.com'
+        ipPool: pool-1
+        minRequestInterval: 1s
+        maxQueueWait: 60s
+        numRetries: 5
+        ipFailuresUntilQuarantine: 3
+        quarantineTime: 5m
+
+      # Catch-all — matches anything not claimed above
+      - name: general
+        regex: '.*'
+        ipPool: pool-1
+        minRequestInterval: 1s
+        maxQueueWait: 30s
+        numRetries: 3
+        ipFailuresUntilQuarantine: 5
+        quarantineTime: 2m
