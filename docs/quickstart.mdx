@@ -1,0 +1,135 @@
+---
+title: "Quick start"
+description: "Install Proxy Hopper, write a config file, and send your first proxied request."
+---
+
+## Install
+
+```bash
+pip install proxy-hopper
+```
+
+For the Redis backend (multi-instance HA deployments):
+
+```bash
+pip install proxy-hopper-redis
+```
+
+Requires Python 3.11+.
+
+## Write a config file
+
+Create a `config.yaml`. The minimal config needs at least one target:
+
+```yaml
+targets:
+  - name: general
+    regex: '.*'
+    ipList:
+      - "10.0.0.1:3128"
+      - "10.0.0.2:3128"
+      - "10.0.0.3:3128"
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+```
+
+For a config with named proxy providers and shared IP pools:
+
+```yaml
+proxyProviders:
+  - name: my-provider
+    auth:
+      type: basic
+      username: user
+      password: secret
+    ipList:
+      - "10.0.0.1:3128"
+      - "10.0.0.2:3128"
+      - "10.0.0.3:3128"
+    regionTag: US-East
+
+ipPools:
+  - name: my-pool
+    ipRequests:
+      - provider: my-provider
+        count: 3
+
+targets:
+  - name: general
+    regex: '.*'
+    ipPool: my-pool
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+```
+
+## Start the server
+
+```bash
+proxy-hopper run --config config.yaml
+```
+
+## Send a request
+
+<CodeGroup>
+
+```bash HTTP proxy mode
+curl --proxy http://localhost:8080 https://example.com
+```
+
+```bash Forwarding mode
+curl -H "X-Proxy-Hopper-Target: https://example.com" \
+     http://localhost:8080/api/endpoint
+```
+
+```python requests (HTTP proxy)
+import requests
+resp = requests.get(
+    "https://example.com",
+    proxies={"https": "http://localhost:8080"}
+)
+```
+
+```python requests (forwarding mode)
+import requests
+session = requests.Session()
+session.headers["X-Proxy-Hopper-Target"] = "https://example.com"
+resp = session.get("http://localhost:8080/api/endpoint")
+```
+
+```python aiohttp
+import aiohttp
+async with aiohttp.ClientSession() as session:
+    async with session.get(
+        "https://example.com",
+        proxy="http://localhost:8080"
+    ) as resp:
+        print(resp.status)
+```
+
+</CodeGroup>
+
+## Validate a config file
+
+```bash
+proxy-hopper validate --config config.yaml
+# Config OK — 1 target(s) defined.
+#   'general': 3 IP(s), regex='.*'
+# Server defaults: host=0.0.0.0, port=8080, backend=memory
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Integration modes" icon="plug" href="/integration-modes">
+    Learn the differences between HTTP proxy, CONNECT tunnel, and forwarding mode.
+  </Card>
+  <Card title="Config reference" icon="sliders" href="/configuration/reference">
+    Full reference for all configuration fields.
+  </Card>
+</CardGroup>

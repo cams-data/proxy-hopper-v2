@@ -1,0 +1,99 @@
+---
+title: "IP pools"
+description: "Named pools of proxy IPs referenced by targets."
+---
+
+## Overview
+
+IP pools are named collections of proxy IPs that targets reference by name. Pools decouple the IP list from the target config — multiple targets can reference the same pool, and each target maintains independent rotation state.
+
+Defining pools is optional — targets can also list IPs inline via `ipList`.
+
+## Fields
+
+```yaml
+ipPools:
+  - name: pool-name          # required — referenced from targets
+    ipRequests:              # draw IPs from providers (randomly sampled)
+      - provider: name
+        count: 5
+    ipList:                  # or list IPs inline (no provider metadata)
+      - "host:port"
+```
+
+`ipRequests` and `ipList` can be combined in the same pool.
+
+### ipRequests fields
+
+| Field | Type | Description |
+|---|---|---|
+| `provider` | string | Name of a `proxyProviders` entry |
+| `count` | int | Number of IPs to randomly sample from that provider's list |
+
+## Examples
+
+### Pool drawing from a single provider
+
+```yaml
+proxyProviders:
+  - name: my-provider
+    ipList:
+      - "10.0.0.1:3128"
+      - "10.0.0.2:3128"
+      - "10.0.0.3:3128"
+      - "10.0.0.4:3128"
+      - "10.0.0.5:3128"
+
+ipPools:
+  - name: my-pool
+    ipRequests:
+      - provider: my-provider
+        count: 3    # randomly picks 3 of the 5 available IPs at startup
+```
+
+### Pool drawing from multiple providers
+
+```yaml
+ipPools:
+  - name: global-pool
+    ipRequests:
+      - provider: provider-au
+        count: 3
+      - provider: provider-ca
+        count: 3
+```
+
+### Pool with inline IPs (no provider)
+
+```yaml
+ipPools:
+  - name: simple-pool
+    ipList:
+      - "10.2.0.1:3128"
+      - "10.2.0.2:3128"
+```
+
+Inline IPs have no provider metadata — they won't appear with `provider` or `region` labels in metrics.
+
+### Multiple targets sharing a pool
+
+```yaml
+ipPools:
+  - name: shared-pool
+    ipRequests:
+      - provider: my-provider
+        count: 5
+
+targets:
+  - name: api-a
+    regex: '.*api-a\.example\.com.*'
+    ipPool: shared-pool
+    minRequestInterval: 2s
+
+  - name: api-b
+    regex: '.*api-b\.example\.com.*'
+    ipPool: shared-pool
+    minRequestInterval: 1s
+```
+
+Each target maintains its own independent rotation state — sharing a pool definition does not mean IPs are shared at runtime. Both targets get their own queue seeded from the same pool.

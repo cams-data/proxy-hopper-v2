@@ -1,0 +1,122 @@
+---
+title: "Kubernetes"
+description: "Deploy Proxy Hopper on Kubernetes with Redis for high-availability multi-instance deployments."
+---
+
+## Overview
+
+The Kubernetes manifests in `examples/kubernetes/` deploy:
+
+- A dedicated `proxy-hopper` namespace
+- Redis StatefulSet for shared pool state
+- Proxy Hopper Deployment (2 replicas by default)
+- ClusterIP service for in-cluster access + optional LoadBalancer for external access
+- HorizontalPodAutoscaler (2–10 replicas, CPU-based)
+
+```
+examples/kubernetes/
+├── namespace.yaml      # proxy-hopper namespace
+├── configmap.yaml      # config.yaml as a ConfigMap
+├── secret.yaml         # Redis URL (base64-encoded)
+├── redis.yaml          # Redis StatefulSet + Service
+├── deployment.yaml     # Proxy Hopper Deployment
+├── service.yaml        # ClusterIP + LoadBalancer Services
+└── hpa.yaml            # HorizontalPodAutoscaler
+```
+
+## Prerequisites
+
+- Kubernetes 1.25+
+- `kubectl` configured against your cluster
+
+## Deploy
+
+Apply all manifests in order:
+
+```bash
+kubectl apply -f examples/kubernetes/namespace.yaml
+kubectl apply -f examples/kubernetes/secret.yaml
+kubectl apply -f examples/kubernetes/configmap.yaml
+kubectl apply -f examples/kubernetes/redis.yaml
+kubectl apply -f examples/kubernetes/deployment.yaml
+kubectl apply -f examples/kubernetes/service.yaml
+kubectl apply -f examples/kubernetes/hpa.yaml
+```
+
+Or apply the whole directory at once:
+
+```bash
+kubectl apply -f examples/kubernetes/
+```
+
+Check rollout status:
+
+```bash
+kubectl rollout status deployment/proxy-hopper -n proxy-hopper
+```
+
+## Accessing the proxy
+
+Two Services are created:
+
+- **`proxy-hopper`** — `ClusterIP` on port 8080. Use for in-cluster clients:
+  ```
+  http://proxy-hopper.proxy-hopper.svc.cluster.local:8080
+  ```
+- **`proxy-hopper-lb`** — `LoadBalancer` on port 8080. Provisions a cloud load balancer for external access. Remove if you don't need external exposure.
+
+## Updating the config
+
+The target config lives in a ConfigMap. Edit it and trigger a rolling restart:
+
+```bash
+kubectl edit configmap proxy-hopper-config -n proxy-hopper
+kubectl rollout restart deployment/proxy-hopper -n proxy-hopper
+```
+
+## Scaling
+
+Manual scale:
+
+```bash
+kubectl scale deployment proxy-hopper --replicas=5 -n proxy-hopper
+```
+
+The HPA automatically scales between 2 and 10 replicas based on CPU utilisation. Adjust `minReplicas`, `maxReplicas`, and `averageUtilization` in `hpa.yaml` to suit your traffic.
+
+## Monitoring
+
+If Prometheus is running in your cluster with pod annotation scraping, the metrics port is annotated in `deployment.yaml`:
+
+```yaml
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+```
+
+## Production hardening checklist
+
+<AccordionGroup>
+  <Accordion title="Replace bundled Redis with a managed service">
+    The bundled Redis StatefulSet is suitable for getting started. For production, replace it with a managed Redis service (AWS ElastiCache, GCP Memorystore, Redis Cloud) and update `secret.yaml` with the new URL.
+  </Accordion>
+  <Accordion title="Set resource requests and limits">
+    Set `requests` and `limits` in `deployment.yaml` based on observed usage. Proxy Hopper is I/O-bound — CPU usage is low, but memory scales with the number of open connections.
+  </Accordion>
+  <Accordion title="Add a PodDisruptionBudget">
+    Configure a `PodDisruptionBudget` to maintain minimum availability during node drain or rolling upgrades.
+  </Accordion>
+  <Accordion title="Enable Redis AUTH">
+    Add a password to the Redis secret and the Redis config if your cluster environment requires it.
+  </Accordion>
+  <Accordion title="Use a private registry">
+    If pulling from a private registry, configure `imagePullSecrets` in `deployment.yaml`.
+  </Accordion>
+</AccordionGroup>
+
+## Helm chart
+
+<Note>
+  A Helm chart is on the roadmap. Until then, use the raw manifests above.
+</Note>

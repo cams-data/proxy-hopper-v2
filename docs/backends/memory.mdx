@@ -1,0 +1,34 @@
+---
+title: "In-memory backend"
+description: "The default backend — no external dependencies, suitable for single-instance deployments."
+---
+
+## Overview
+
+The in-memory backend stores all IP pool state in asyncio queues and Python dicts within the Proxy Hopper process. It requires no external dependencies and is the default.
+
+```bash
+proxy-hopper run --config config.yaml
+# or explicitly:
+proxy-hopper run --config config.yaml --backend memory
+```
+
+## Characteristics
+
+| Property | Detail |
+|---|---|
+| Dependencies | None |
+| State persistence | Lost on restart |
+| Multi-instance | Not supported — each instance has its own pool |
+| Performance | Fastest — no network round trips for pool operations |
+
+## When to use it
+
+- Development and testing
+- Single-host deployments where pool state loss on restart is acceptable
+- High-throughput single-instance deployments where Redis latency matters
+
+## When not to use it
+
+- Multiple replicas behind a load balancer — each replica would have independent pool state, leading to duplicate IP usage and inconsistent quarantine
+- Deployments where IP pool state must survive restarts

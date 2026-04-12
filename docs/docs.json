@@ -1,0 +1,102 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Proxy Hopper",
+  "colors": {
+    "primary": "#0EA5E9",
+    "light": "#38BDF8",
+    "dark": "#0284C7"
+  },
+  "favicon": "/favicon.svg",
+  "logo": {
+    "light": "/logo/light.svg",
+    "dark": "/logo/dark.svg"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/cams-data/proxy-hopper-v2"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Releases",
+      "href": "https://github.com/cams-data/proxy-hopper-v2/releases"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting started",
+            "pages": [
+              "index",
+              "quickstart",
+              "integration-modes"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/reference",
+              "configuration/proxy-providers",
+              "configuration/ip-pools",
+              "configuration/targets",
+              "configuration/server"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/kubernetes"
+            ]
+          },
+          {
+            "group": "Backends",
+            "pages": [
+              "backends/memory",
+              "backends/redis"
+            ]
+          },
+          {
+            "group": "Observability",
+            "pages": [
+              "observability/metrics",
+              "observability/logging"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/architecture",
+              "development/testing"
+            ]
+          }
+        ]
+      }
+    ],
+    "global": {
+      "anchors": [
+        {
+          "anchor": "GitHub",
+          "href": "https://github.com/cams-data/proxy-hopper-v2",
+          "icon": "github"
+        },
+        {
+          "anchor": "Releases",
+          "href": "https://github.com/cams-data/proxy-hopper-v2/releases",
+          "icon": "tag"
+        }
+      ]
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/cams-data/proxy-hopper-v2"
+    }
+  }
+}

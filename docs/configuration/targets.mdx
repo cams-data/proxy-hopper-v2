@@ -1,0 +1,103 @@
+---
+title: "Targets"
+description: "URL-matching rules that control IP rotation, retry behaviour, and rate limiting."
+---
+
+## Overview
+
+Targets are the core routing config. Each inbound request is matched against the target list top-to-bottom — the first regex match handles the request. Every target has its own IP pool with independent rotation and quarantine state.
+
+At least one target is required.
+
+## Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | Label used in logs and metrics |
+| `regex` | string | required | Python regex matched against the full request URL |
+| `ipPool` | string | required* | Name of a shared `ipPools` entry |
+| `ipList` | list | required* | Inline proxy addresses — `host:port` or bare host |
+| `defaultProxyPort` | int | `8080` | Port applied to bare IPs in `ipList` |
+| `minRequestInterval` | duration | `1s` | How long an IP is held off the pool after any request |
+| `maxQueueWait` | duration | `30s` | How long a request waits for a free IP before failing |
+| `numRetries` | int | `3` | Retry attempts on failure, each using a different IP |
+| `ipFailuresUntilQuarantine` | int | `5` | Consecutive failures before an IP is quarantined |
+| `quarantineTime` | duration | `120s` | How long a quarantined IP sits out before returning |
+
+\* Exactly one of `ipPool` or `ipList` must be provided per target.
+
+## Rate limiting with `minRequestInterval`
+
+`minRequestInterval` is the primary knob for respecting a target site's rate limits. After any request through an IP, that IP is unavailable for this duration before being returned to the pool.
+
+```yaml
+minRequestInterval: 5s   # max 1 request per IP per 5 seconds
+```
+
+With 3 IPs and `minRequestInterval: 1s`, you can sustain ~3 requests/second to the target.
+
+## Retry behaviour
+
+On a failed request (connection error, 429, 5xx), Proxy Hopper picks a different IP and retries up to `numRetries` times. Each retry uses a freshly acquired IP from the pool.
+
+```yaml
+numRetries: 3   # up to 3 retries = up to 4 total attempts
+```
+
+<Note>
+  CONNECT tunnel mode cannot retry mid-flight failures — the client has already committed to the TLS connection. Use [forwarding mode](/integration-modes#url-forwarding-mode) for full retry support over HTTPS.
+</Note>
+
+## Quarantine
+
+When an IP accumulates `ipFailuresUntilQuarantine` consecutive failures, it is removed from the pool for `quarantineTime`, then automatically returned.
+
+```yaml
+ipFailuresUntilQuarantine: 5
+quarantineTime: 2m
+```
+
+Quarantine events are tracked in Prometheus: `proxy_hopper_ip_quarantine_events_total`.
+
+## Examples
+
+### Single catch-all target
+
+```yaml
+targets:
+  - name: general
+    regex: '.*'
+    ipList:
+      - "10.0.0.1:3128"
+      - "10.0.0.2:3128"
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+```
+
+### Per-API targets with shared pool
+
+```yaml
+targets:
+  - name: google-apis
+    regex: '.*\.googleapis\.com.*'
+    ipPool: shared-pool
+    minRequestInterval: 5s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 10m
+
+  - name: fallback
+    regex: '.*'
+    ipPool: shared-pool
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 2
+    ipFailuresUntilQuarantine: 3
+    quarantineTime: 5m
+```
+
+Targets are evaluated top-to-bottom — `google-apis` matches first for Google API URLs; everything else falls through to `fallback`.

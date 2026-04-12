@@ -1,0 +1,160 @@
+---
+title: "Docker & Docker Compose"
+description: "Deploy Proxy Hopper with Docker for single-host or multi-replica setups."
+---
+
+## Docker images
+
+Pre-built multi-arch images (`linux/amd64`, `linux/arm64`) are published to the GitHub Container Registry on every release:
+
+| Image | Description |
+|---|---|
+| `ghcr.io/cams-data/proxy-hopper:latest` | Memory backend — single instance |
+| `ghcr.io/cams-data/proxy-hopper:latest-redis` | Redis backend — multi-instance HA |
+
+```bash
+docker pull ghcr.io/cams-data/proxy-hopper:latest
+docker pull ghcr.io/cams-data/proxy-hopper:latest-redis
+```
+
+## Single container (memory backend)
+
+Good for development and single-host deployments. IP pool state lives in memory and is lost on restart.
+
+**1. Write a config file**
+
+```yaml
+# config.yaml
+proxyProviders:
+  - name: my-provider
+    auth:
+      type: basic
+      username: user
+      password: secret
+    ipList:
+      - "10.0.0.1:3128"
+      - "10.0.0.2:3128"
+
+ipPools:
+  - name: my-pool
+    ipRequests:
+      - provider: my-provider
+        count: 2
+
+targets:
+  - name: general
+    regex: '.*'
+    ipPool: my-pool
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+```
+
+**2. Run**
+
+```bash
+docker run -d \
+  -p 8080:8080 \
+  -v $(pwd)/config.yaml:/etc/proxy-hopper/config.yaml:ro \
+  ghcr.io/cams-data/proxy-hopper:latest
+```
+
+## Docker Compose with Redis
+
+For production deployments where you need pool state to survive restarts, or where you want to run multiple replicas sharing a single IP pool.
+
+**`docker-compose.yml`**
+
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --save 60 1
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  proxy-hopper:
+    image: ghcr.io/cams-data/proxy-hopper:latest-redis
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/etc/proxy-hopper/config.yaml:ro
+    environment:
+      PROXY_HOPPER_BACKEND: redis
+      PROXY_HOPPER_REDIS_URL: redis://redis:6379/0
+      PROXY_HOPPER_LOG_FORMAT: json
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:
+```
+
+```bash
+docker compose up -d
+```
+
+## Scaling replicas
+
+Because pool state lives in Redis, multiple replicas share it safely. Each IP is checked out to exactly one replica at a time (Redis `BLPOP` atomicity).
+
+```bash
+docker compose up -d --scale proxy-hopper=3
+```
+
+<Note>
+  When scaling, remove the host `ports:` mapping from the `proxy-hopper` service and put a load balancer (nginx, Traefik, HAProxy) in front of the replicas.
+</Note>
+
+### Example with Traefik
+
+```yaml
+services:
+  traefik:
+    image: traefik:v3
+    command:
+      - "--providers.docker=true"
+      - "--entrypoints.proxy.address=:8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  proxy-hopper:
+    image: ghcr.io/cams-data/proxy-hopper:latest-redis
+    # no ports: block — Traefik routes to it
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.proxy.entrypoints=proxy"
+      - "traefik.http.services.proxy.loadbalancer.server.port=8080"
+    deploy:
+      replicas: 3
+```
+
+## Enabling Prometheus metrics
+
+Add the metrics port and environment variables:
+
+```yaml
+proxy-hopper:
+  ports:
+    - "8080:8080"
+    - "9090:9090"
+  environment:
+    PROXY_HOPPER_METRICS: "true"
+    PROXY_HOPPER_METRICS_PORT: "9090"
+```

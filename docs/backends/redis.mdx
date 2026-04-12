@@ -1,0 +1,62 @@
+---
+title: "Redis backend"
+description: "Shared pool state via Redis — enables multi-instance HA deployments."
+---
+
+## Overview
+
+The Redis backend stores all IP pool state in Redis, enabling multiple Proxy Hopper instances to share a single pool. Each IP is delivered to exactly one instance at a time using `BLPOP` atomicity. Quarantine expiry uses `ZRANGEBYSCORE` + `ZREM` to prevent double-release across instances.
+
+## Install
+
+The Redis backend is a separate package:
+
+```bash
+pip install proxy-hopper-redis
+```
+
+## Configure
+
+```bash
+proxy-hopper run --config config.yaml --backend redis --redis-url redis://redis:6379/0
+```
+
+Or in `config.yaml`:
+
+```yaml
+server:
+  backend: redis
+  redisUrl: redis://redis:6379/0
+```
+
+Or via environment variable:
+
+```bash
+PROXY_HOPPER_BACKEND=redis
+PROXY_HOPPER_REDIS_URL=redis://redis:6379/0
+```
+
+## Characteristics
+
+| Property | Detail |
+|---|---|
+| Dependencies | Redis 6+ |
+| State persistence | Survives restarts |
+| Multi-instance | Fully supported — shared pool state |
+| Performance | Small added latency per pool operation (~1ms on local Redis) |
+
+## How it works
+
+- **IP queue** — each pool's available IPs are stored as a Redis list. `BLPOP` atomically dequeues one IP per request, guaranteeing exclusive delivery to one instance.
+- **Quarantine** — quarantined IPs are stored in a sorted set keyed by expiry timestamp. A background sweep uses `ZRANGEBYSCORE` to find expired entries and `ZREM` to atomically return them to the pool.
+- **Cooldown** — after each request, an IP is held with a Redis key that expires after `minRequestInterval`. Once expired, the IP is returned to the queue.
+
+## Deployment
+
+See [Docker Compose with Redis](/deployment/docker#docker-compose-with-redis) and [Kubernetes](/deployment/kubernetes) for full deployment examples.
+
+## Production considerations
+
+- Use a managed Redis service (AWS ElastiCache, GCP Memorystore, Redis Cloud) rather than a self-hosted instance for production workloads
+- Enable Redis persistence (`RDB` or `AOF`) if pool state must survive a Redis restart
+- Set `maxmemory` and `maxmemory-policy` to prevent Redis from consuming unbounded memory
