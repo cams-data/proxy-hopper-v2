@@ -4,10 +4,10 @@ description: "A rotating HTTP/HTTPS proxy server that routes outbound requests t
 mode: "custom"
 ---
 
-<div style={{maxWidth: "860px", margin: "0 auto", padding: "0 24px"}}>
+<div style={{maxWidth: "860px", margin: "0 auto", padding: "0 24px", color: "inherit"}}>
 
 <div style={{textAlign: "center", padding: "60px 0 40px"}}>
-  <h1 style={{fontSize: "2.5rem", fontWeight: "800", marginBottom: "16px"}}>Proxy Hopper</h1>
+  <h1 style={{fontSize: "2.5rem", fontWeight: "800", marginBottom: "16px", color: "inherit"}}>Proxy Hopper</h1>
   <p style={{fontSize: "1.25rem", maxWidth: "600px", margin: "0 auto 32px", opacity: 0.7}}>
     A rotating HTTP/HTTPS proxy server that routes outbound requests through a pool of external proxy IP addresses — with automatic retries, failure tracking, and IP quarantine.
   </p>
@@ -20,7 +20,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "0 0 40px"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px"}}>The problem</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "inherit"}}>The problem</h2>
 
 <p style={{marginBottom: "16px"}}>When your application needs to make outbound HTTP requests at scale — scraping, API polling, data collection — you run into rate limits, IP blocks, and connection failures. Managing a pool of proxy IPs manually means writing retry logic, tracking which IPs are healthy, rotating through them fairly, and handling failures gracefully. Every project reinvents this wheel.</p>
 
@@ -33,7 +33,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "0 0 40px"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px"}}>How it works</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>How it works</h2>
 
 <Steps>
   <Step title="Configure your proxy providers and targets">
@@ -49,7 +49,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px"}}>Key features</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>Key features</h2>
 
 <CardGroup cols={3}>
   <Card title="IP rotation" icon="rotate">
@@ -74,7 +74,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px"}}>Three integration modes</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "inherit"}}>Three integration modes</h2>
 
 <p style={{marginBottom: "16px"}}>Proxy Hopper supports three ways for clients to send requests. All three use the same IP rotation and retry logic.</p>
 
@@ -111,7 +111,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px"}}>Get started</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>Get started</h2>
 
 ```yaml
 # config.yaml
@@ -149,7 +149,7 @@ resp = requests.get(
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px"}}>Deployment options</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>Deployment options</h2>
 
 <CardGroup cols={3}>
   <Card title="Single container" icon="box" href="/deployment/docker">
@@ -165,7 +165,7 @@ resp = requests.get(
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px"}}>Open source</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "inherit"}}>Open source</h2>
 
 <p style={{marginBottom: "24px"}}>Proxy Hopper is open source under the MIT licence. Contributions, bug reports, and feature requests are welcome on <a href="https://github.com/cams-data/proxy-hopper-v2" style={{color: "#0D9488"}}>GitHub</a>.</p>
 
