@@ -236,3 +236,66 @@ jobs:
           gh release edit "${{ needs.tag.outputs.new_tag }}" \
             --notes-file <(gh release view "${{ needs.tag.outputs.new_tag }}" --json body --jq '.body' && cat image-links.md) \
             --repo "${{ github.repository }}"
+
+  # ---------------------------------------------------------------------------
+  # Helm — package the chart and push to ghcr.io OCI registry.
+  # ---------------------------------------------------------------------------
+  helm:
+    name: Publish Helm chart
+    needs: [tag, docker]
+    if: needs.tag.outputs.new_tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.tag.outputs.new_tag }}
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update chart version
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+        run: |
+          sed -i "s/^version:.*/version: ${VERSION}/" charts/proxy-hopper/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/proxy-hopper/Chart.yaml
+
+      - name: Package chart
+        run: helm package charts/proxy-hopper --destination /tmp/helm-charts
+
+      - name: Push chart to ghcr.io
+        env:
+          VERSION: ${{ needs.tag.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          helm push /tmp/helm-charts/proxy-hopper-${VERSION}.tgz oci://ghcr.io/${OWNER}/helm
+
+      - name: Add Helm install instructions to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.tag.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          cat >> helm-links.md << EOF
+
+          ## Helm chart
+
+          \`\`\`bash
+          helm install proxy-hopper oci://ghcr.io/${OWNER}/helm/proxy-hopper --version ${VERSION}
+          \`\`\`
+          EOF
+
+          gh release edit "${{ needs.tag.outputs.new_tag }}" \
+            --notes-file <(gh release view "${{ needs.tag.outputs.new_tag }}" --json body --jq '.body' && cat helm-links.md) \
+            --repo "${{ github.repository }}"
