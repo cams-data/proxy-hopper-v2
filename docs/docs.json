@@ -3,9 +3,9 @@
   "theme": "mint",
   "name": "Proxy Hopper",
   "colors": {
-    "primary": "#0EA5E9",
-    "light": "#38BDF8",
-    "dark": "#0284C7"
+    "primary": "#0D9488",
+    "light": "#14B8A6",
+    "dark": "#0F766E"
   },
   "favicon": "/favicon.svg",
   "logo": {
