@@ -52,8 +52,8 @@
             "pages": [
               {
                 "group": "Proxy modes",
-                "page": "concepts/proxy-modes",
                 "pages": [
+                  "concepts/proxy-modes",
                   "concepts/proxy-modes/http-proxy",
                   "concepts/proxy-modes/connect-tunnel",
                   "concepts/proxy-modes/url-forwarding"
@@ -61,8 +61,8 @@
               },
               {
                 "group": "Backends",
-                "page": "concepts/backends",
                 "pages": [
+                  "concepts/backends",
                   "concepts/backends/memory",
                   "concepts/backends/redis"
                 ]
