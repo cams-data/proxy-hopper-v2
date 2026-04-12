@@ -1,0 +1,44 @@
+---
+title: "CONNECT tunnel mode"
+description: "HTTP CONNECT tunnelling — Proxy Hopper establishes an encrypted tunnel through an external proxy IP and relays bytes in both directions."
+---
+
+CONNECT tunnel mode handles the standard `CONNECT` method used by HTTP clients for HTTPS traffic. Proxy Hopper picks an external proxy IP, asks it to open a TCP tunnel to the target host, then relays bytes between your client and the destination.
+
+The TLS handshake happens directly between your client and the target server — Proxy Hopper only sees encrypted bytes.
+
+## Usage
+
+<CodeGroup>
+
+```bash curl
+curl --proxy http://localhost:8080 https://example.com
+```
+
+```python requests
+import requests
+session = requests.Session()
+session.proxies = {"https": "http://localhost:8080"}
+resp = session.get("https://example.com")
+```
+
+</CodeGroup>
+
+## Characteristics
+
+| Property | Detail |
+|---|---|
+| Protocol | HTTP CONNECT |
+| HTTPS support | Yes |
+| Retry support | No — tunnel is opaque once established |
+| Client changes required | Proxy settings only |
+
+## Limitations
+
+<Warning>
+  Once the TLS handshake completes inside the tunnel, Proxy Hopper is relaying encrypted bytes it cannot inspect. If the connection drops mid-request, the error is returned directly to your client — Proxy Hopper cannot retry it.
+
+  Use [URL forwarding](/concepts/proxy-modes/url-forwarding) if you need retry support for HTTPS requests.
+</Warning>
+
+CONNECT tunnel is best suited for clients that only support standard proxy environment variables (`https_proxy`) and where retry support is not a requirement.

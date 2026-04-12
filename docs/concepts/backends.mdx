@@ -1,0 +1,21 @@
+---
+title: "Backends"
+description: "Proxy Hopper's backend determines where IP pool state is stored — in-process memory or Redis."
+---
+
+The backend is responsible for storing IP pool state: which IPs are available, which are on cooldown, and which are quarantined. The choice of backend determines whether multiple Proxy Hopper instances can share a single pool.
+
+| Backend | State storage | Multi-instance | Dependencies |
+|---|---|---|---|
+| [Memory](/concepts/backends/memory) | In-process | No | None |
+| [Redis](/concepts/backends/redis) | Redis | Yes | Redis 6+ |
+
+## How to choose
+
+**Use the memory backend** for development, testing, and single-instance production deployments. It has no external dependencies and is the fastest option.
+
+**Use the Redis backend** when running multiple replicas — for example behind a Kubernetes HPA or a load balancer. All instances share a single pool, so each IP is used by exactly one instance at a time and quarantine state is consistent across the fleet.
+
+<Note>
+  If you run multiple replicas with the memory backend, each instance maintains independent pool state. The same IP may be used concurrently by multiple instances, and an IP quarantined on one instance remains active on others.
+</Note>

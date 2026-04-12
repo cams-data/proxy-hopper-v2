@@ -1,0 +1,37 @@
+---
+title: "Proxy modes"
+description: "Proxy Hopper supports three modes for receiving requests from your application. All three use the same IP rotation, rate limiting, and retry logic."
+---
+
+A proxy mode determines how your HTTP client sends requests to Proxy Hopper and how Proxy Hopper forwards them onward. The choice affects whether HTTPS retries are possible.
+
+| Mode | Protocol | HTTPS retries | Best for |
+|---|---|---|---|
+| [HTTP proxy](/concepts/proxy-modes/http-proxy) | Standard proxy protocol | Yes | General HTTP traffic |
+| [CONNECT tunnel](/concepts/proxy-modes/connect-tunnel) | HTTP CONNECT | No | HTTPS with standard proxy settings |
+| [URL forwarding](/concepts/proxy-modes/url-forwarding) | Custom header | Yes | HTTPS APIs where retries matter |
+
+## How to choose
+
+**Use HTTP proxy** if your traffic is plain HTTP, or if you control your HTTP client and HTTPS retry support isn't required.
+
+**Use CONNECT tunnel** if you need HTTPS and your client only supports standard proxy settings (e.g. `https_proxy` env var). Understand that Proxy Hopper cannot retry failed HTTPS requests in this mode — the TLS handshake happens inside the tunnel, which Proxy Hopper cannot inspect.
+
+**Use URL forwarding** if you're hitting HTTPS APIs and want full retry support. This is the recommended mode for scraping and API polling workloads where resilience matters most.
+
+## Enabling and disabling modes
+
+All three modes are enabled by default. Restrict to specific modes via config:
+
+```yaml
+server:
+  modes:
+    - forwarding
+    - connect_tunnel
+```
+
+Or via environment variable:
+
+```bash
+PROXY_HOPPER_MODES=forwarding,connect_tunnel
+```

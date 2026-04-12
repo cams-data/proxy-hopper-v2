@@ -1,0 +1,57 @@
+---
+title: "URL forwarding mode"
+description: "The recommended mode for HTTPS APIs — Proxy Hopper owns the full request lifecycle, enabling retries and IP rotation on failure."
+---
+
+URL forwarding mode is the recommended approach for HTTPS APIs. Instead of tunnelling, you send requests to Proxy Hopper with a `X-Proxy-Hopper-Target` header specifying the target. Proxy Hopper reconstructs the full URL and makes the HTTPS request itself — owning the connection end-to-end.
+
+Because Proxy Hopper owns the full request, it can retry on 429 or 5xx responses, rotating to a different IP each time, without the client knowing.
+
+## Usage
+
+Set `X-Proxy-Hopper-Target` to the target scheme and host, then send requests to Proxy Hopper as if it were the target server:
+
+<CodeGroup>
+
+```bash curl
+curl -H "X-Proxy-Hopper-Target: https://api.example.com" \
+     http://localhost:8080/v1/endpoint?q=search
+```
+
+```python requests
+import requests
+session = requests.Session()
+session.headers["X-Proxy-Hopper-Target"] = "https://api.example.com"
+resp = session.get("http://localhost:8080/v1/endpoint", params={"q": "search"})
+# → forwards to https://api.example.com/v1/endpoint?q=search
+```
+
+```python aiohttp
+import aiohttp
+async with aiohttp.ClientSession(
+    headers={"X-Proxy-Hopper-Target": "https://api.example.com"}
+) as session:
+    async with session.get("http://localhost:8080/v1/endpoint") as resp:
+        print(resp.status)
+```
+
+</CodeGroup>
+
+The header value may include a base path (`https://api.example.com/v2`) which is prepended to the request path.
+
+## Characteristics
+
+| Property | Detail |
+|---|---|
+| Protocol | HTTP with custom header |
+| HTTPS support | Yes |
+| Retry support | Yes — full retry and IP rotation on failure |
+| Client changes required | Change base URL + add header |
+
+## When to use it
+
+URL forwarding is the best choice when:
+
+- You're hitting HTTPS APIs and need retry support
+- You're scraping or polling at scale and want maximum resilience
+- You can modify your HTTP client's base URL (most API clients support this)
