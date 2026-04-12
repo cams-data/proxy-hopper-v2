@@ -24,8 +24,8 @@
      inkscape:pagecheckerboard="0"
      inkscape:deskcolor="#505050"
      inkscape:zoom="2.3157747"
-     inkscape:cx="143.58046"
-     inkscape:cy="56.352632"
+     inkscape:cx="185.03527"
+     inkscape:cy="17.920569"
      inkscape:window-width="2560"
      inkscape:window-height="1369"
      inkscape:window-x="1912"
@@ -46,7 +46,7 @@
   <!-- Right front leg -->
   <g
      id="g9"
-     transform="matrix(1.1531767,0,0,1.1531767,-1.2244039,-13.419208)">
+     transform="matrix(1.0452215,0,0,1.0452215,-0.5766725,-12.01579)">
     <ellipse
        cx="30"
        cy="46"
@@ -123,16 +123,24 @@
   </g>
   <!-- Wordmark: "Proxy Hopper" on one line -->
   <text
-     x="62.135334"
-     y="44.598495"
-     font-family="system-ui, '-apple-system', BlinkMacSystemFont, sans-serif"
-     font-size="57.2931px"
-     font-weight="800"
-     fill="#134e4a"
-     letter-spacing="-0.5"
-     id="text9"
-     style="stroke-width:2.20358">Proxy <tspan
-   fill="#0d9488"
-   id="tspan9"
-   style="stroke-width:2.20358">Hopper</tspan></text>
+     xml:space="preserve"
+     style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:58.6667px;font-family:'Segoe UI';-inkscape-font-specification:'Segoe UI, Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;letter-spacing:0px;fill:#ffffff;fill-opacity:1;stroke-width:4"
+     x="60.458015"
+     y="43.664116"
+     id="text10"><tspan
+       sodipodi:role="line"
+       id="tspan10"
+       x="60.458015"
+       y="43.664116"
+       style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:58.6667px;font-family:'Segoe UI';-inkscape-font-specification:'Segoe UI, Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;fill:#ffffff;fill-opacity:1">Proxy</tspan></text>
+  <text
+     xml:space="preserve"
+     style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:58.6667px;font-family:'Segoe UI';-inkscape-font-specification:'Segoe UI, Bold';font-variant-ligatures:normal;font-variant-caps:normal;font-variant-numeric:normal;font-variant-east-asian:normal;letter-spacing:0px;fill:#0d9488;fill-opacity:1;stroke-width:4"
+     x="219.23665"
+     y="43.969463"
+     id="text12"><tspan
+       sodipodi:role="line"
+       id="tspan12"
+       x="219.23665"
+       y="43.969463">Hopper</tspan></text>
 </svg>
