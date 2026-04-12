@@ -4,43 +4,41 @@ description: "A rotating HTTP/HTTPS proxy server that routes outbound requests t
 mode: "custom"
 ---
 
-<div style={{maxWidth: "860px", margin: "0 auto", padding: "0 24px", color: "var(--ot-fg, inherit)"}}>
+<div className="overview-page">
 
-<div style={{textAlign: "center", padding: "60px 0 40px"}}>
-  <h1 style={{fontSize: "2.5rem", fontWeight: "800", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>Proxy Hopper</h1>
-  <p style={{fontSize: "1.25rem", maxWidth: "600px", margin: "0 auto 32px", opacity: 0.7}}>
-    A rotating HTTP/HTTPS proxy server that routes outbound requests through a pool of external proxy IP addresses — with automatic retries, failure tracking, and IP quarantine.
-  </p>
-  <div style={{display: "flex", gap: "12px", justifyContent: "center", flexWrap: "wrap"}}>
-    <a href="/quickstart" style={{background: "#0D9488", color: "white", padding: "10px 24px", borderRadius: "8px", fontWeight: "600", textDecoration: "none"}}>Get started →</a>
-    <a href="https://github.com/cams-data/proxy-hopper-v2" style={{border: "1px solid #0D9488", color: "#0D9488", padding: "10px 24px", borderRadius: "8px", fontWeight: "600", textDecoration: "none"}}>GitHub</a>
-    <a href="https://github.com/cams-data/proxy-hopper-v2/releases" style={{border: "1px solid #0D9488", color: "#0D9488", padding: "10px 24px", borderRadius: "8px", fontWeight: "600", textDecoration: "none"}}>Releases</a>
+<div className="overview-hero">
+  <h1>Proxy Hopper</h1>
+  <p>A rotating HTTP/HTTPS proxy server that routes outbound requests through a pool of external proxy IP addresses — with automatic retries, failure tracking, and IP quarantine.</p>
+  <div className="overview-hero-buttons">
+    <a href="/quickstart" className="btn-primary">Get started →</a>
+    <a href="https://github.com/cams-data/proxy-hopper-v2" className="btn-secondary">GitHub</a>
+    <a href="https://github.com/cams-data/proxy-hopper-v2/releases" className="btn-secondary">Releases</a>
   </div>
 </div>
 
-<div style={{display: "flex", gap: "24px", justifyContent: "center", flexWrap: "wrap", padding: "20px 0 32px", fontSize: "0.9rem", opacity: 0.7}}>
-  <span><span style={{color: "#0D9488", marginRight: "8px", fontSize: "1.2em"}}>●</span>Open Source</span>
-  <span><span style={{color: "#0D9488", marginRight: "8px", fontSize: "1.2em"}}>●</span>Self Hostable</span>
-  <span><span style={{color: "#0D9488", marginRight: "8px", fontSize: "1.2em"}}>●</span>Docker Ready</span>
-  <span><span style={{color: "#0D9488", marginRight: "8px", fontSize: "1.2em"}}>●</span>No cloud required</span>
+<div className="overview-tagline">
+  <span><span className="dot">●</span>Open Source</span>
+  <span><span className="dot">●</span>Self Hostable</span>
+  <span><span className="dot">●</span>Docker Ready</span>
+  <span><span className="dot">●</span>No cloud required</span>
 </div>
 
-<hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "0 0 40px"}}/>
+<hr className="hr-top"/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>The problem</h2>
+<h2>The problem</h2>
 
-<p style={{marginBottom: "16px"}}>When your application needs to make outbound HTTP requests at scale — scraping, API polling, data collection — you run into rate limits, IP blocks, and connection failures. Managing a pool of proxy IPs manually means writing retry logic, tracking which IPs are healthy, rotating through them fairly, and handling failures gracefully. Every project reinvents this wheel.</p>
+<p>When your application needs to make outbound HTTP requests at scale — scraping, API polling, data collection — you run into rate limits, IP blocks, and connection failures. Managing a pool of proxy IPs manually means writing retry logic, tracking which IPs are healthy, rotating through them fairly, and handling failures gracefully. Every project reinvents this wheel.</p>
 
-<p style={{marginBottom: "24px"}}>Proxy Hopper solves it once, as a standalone service.</p>
+<p>Proxy Hopper solves it once, as a standalone service.</p>
 
-<img src="/images/diagram-light.svg" alt="Proxy Hopper architecture" className="block dark:hidden" style={{width: "100%", borderRadius: "12px", margin: "0 0 24px"}}/>
-<img src="/images/diagram-dark.svg" alt="Proxy Hopper architecture" className="hidden dark:block" style={{width: "100%", borderRadius: "12px", margin: "0 0 24px"}}/>
+<img src="/images/diagram-light.svg" alt="Proxy Hopper architecture" className="overview-diagram block dark:hidden"/>
+<img src="/images/diagram-dark.svg" alt="Proxy Hopper architecture" className="overview-diagram hidden dark:block"/>
 
-<p style={{marginBottom: "40px"}}>Point your HTTP client at Proxy Hopper as its proxy. Proxy Hopper handles everything else.</p>
+<p className="mb-xl">Point your HTTP client at Proxy Hopper as its proxy. Proxy Hopper handles everything else.</p>
 
-<hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "0 0 40px"}}/>
+<hr/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>How it works</h2>
+<h2 className="mb-lg">How it works</h2>
 
 <Steps>
   <Step title="Configure your proxy providers and targets">
@@ -54,9 +52,9 @@ mode: "custom"
   </Step>
 </Steps>
 
-<hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
+<hr/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>Key features</h2>
+<h2 className="mb-lg">Key features</h2>
 
 <CardGroup cols={3}>
   <Card title="IP rotation" icon="rotate">
@@ -79,35 +77,35 @@ mode: "custom"
   </Card>
 </CardGroup>
 
-<hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
+<hr/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>Three integration modes</h2>
+<h2>Three integration modes</h2>
 
-<p style={{marginBottom: "16px"}}>Proxy Hopper supports three ways for clients to send requests. All three use the same IP rotation and retry logic.</p>
+<p>Proxy Hopper supports three ways for clients to send requests. All three use the same IP rotation and retry logic.</p>
 
-<table style={{width: "100%", borderCollapse: "collapse", marginBottom: "24px", fontSize: "0.9rem"}}>
+<table className="overview-table">
   <thead>
-    <tr style={{borderBottom: "1px solid rgba(148,163,184,0.3)"}}>
-      <th style={{textAlign: "left", padding: "10px 12px", fontWeight: "600"}}>Mode</th>
-      <th style={{textAlign: "left", padding: "10px 12px", fontWeight: "600"}}>How to use</th>
-      <th style={{textAlign: "left", padding: "10px 12px", fontWeight: "600"}}>HTTPS retries</th>
+    <tr>
+      <th>Mode</th>
+      <th>How to use</th>
+      <th>HTTPS retries</th>
     </tr>
   </thead>
   <tbody>
-    <tr style={{borderBottom: "1px solid rgba(148,163,184,0.15)"}}>
-      <td style={{padding: "10px 12px", fontWeight: "600"}}>HTTP proxy</td>
-      <td style={{padding: "10px 12px"}}><code>http_proxy=http://proxy-hopper:8080</code></td>
-      <td style={{padding: "10px 12px"}}>Yes</td>
-    </tr>
-    <tr style={{borderBottom: "1px solid rgba(148,163,184,0.15)"}}>
-      <td style={{padding: "10px 12px", fontWeight: "600"}}>CONNECT tunnel</td>
-      <td style={{padding: "10px 12px"}}><code>https_proxy=http://proxy-hopper:8080</code></td>
-      <td style={{padding: "10px 12px"}}>No — tunnel is opaque</td>
+    <tr>
+      <td><strong>HTTP proxy</strong></td>
+      <td><code>http_proxy=http://proxy-hopper:8080</code></td>
+      <td>Yes</td>
     </tr>
     <tr>
-      <td style={{padding: "10px 12px", fontWeight: "600"}}>URL forwarding</td>
-      <td style={{padding: "10px 12px"}}><code>X-Proxy-Hopper-Target</code> header</td>
-      <td style={{padding: "10px 12px"}}>Yes — recommended for APIs</td>
+      <td><strong>CONNECT tunnel</strong></td>
+      <td><code>https_proxy=http://proxy-hopper:8080</code></td>
+      <td>No — tunnel is opaque</td>
+    </tr>
+    <tr>
+      <td><strong>URL forwarding</strong></td>
+      <td><code>X-Proxy-Hopper-Target</code> header</td>
+      <td>Yes — recommended for APIs</td>
     </tr>
   </tbody>
 </table>
@@ -116,9 +114,9 @@ mode: "custom"
   Use forwarding mode for HTTPS APIs where you need retry support. CONNECT tunnels are opaque byte relays — Proxy Hopper cannot retry a mid-flight failure once the TLS handshake is complete.
 </Tip>
 
-<hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
+<hr/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>Get started</h2>
+<h2 className="mb-lg">Get started</h2>
 
 ```yaml
 # config.yaml
@@ -154,9 +152,9 @@ resp = requests.get(
   </Card>
 </CardGroup>
 
-<hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
+<hr/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>Deployment options</h2>
+<h2 className="mb-lg">Deployment options</h2>
 
 <CardGroup cols={3}>
   <Card title="Single container" icon="box" href="/deployment/docker">
@@ -170,13 +168,13 @@ resp = requests.get(
   </Card>
 </CardGroup>
 
-<hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
+<hr/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>Free and open source. Forever.</h2>
+<h2>Free and open source. Forever.</h2>
 
-<p style={{marginBottom: "16px"}}>Proxy Hopper is MIT licensed and built for self-hosting. No SaaS, no usage fees, no data leaving your infrastructure. Run it on a single container or scale it across a Kubernetes cluster — you own the deployment entirely.</p>
+<p>Proxy Hopper is MIT licensed and built for self-hosting. No SaaS, no usage fees, no data leaving your infrastructure. Run it on a single container or scale it across a Kubernetes cluster — you own the deployment entirely.</p>
 
-<p style={{marginBottom: "24px"}}>Contributions, bug reports, and feature requests are welcome on <a href="https://github.com/cams-data/proxy-hopper-v2" style={{color: "#0D9488"}}>GitHub</a>.</p>
+<p className="mb-lg">Contributions, bug reports, and feature requests are welcome on <a href="https://github.com/cams-data/proxy-hopper-v2" className="accent">GitHub</a>.</p>
 
 ```bash
 # Memory backend (default)

@@ -1,0 +1,150 @@
+/* ── Overview page layout ── */
+.overview-page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 24px;
+  color: var(--ot-fg);
+}
+
+/* ── Hero ── */
+.overview-hero {
+  text-align: center;
+  padding: 60px 0 40px;
+}
+
+.overview-hero h1 {
+  font-size: 2.5rem;
+  font-weight: 800;
+  margin-bottom: 16px;
+  color: var(--ot-fg);
+}
+
+.overview-hero p {
+  font-size: 1.25rem;
+  max-width: 600px;
+  margin: 0 auto 32px;
+  opacity: 0.7;
+}
+
+.overview-hero-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn-primary {
+  background: #0D9488;
+  color: white !important;
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-weight: 600;
+  text-decoration: none !important;
+}
+
+.btn-secondary {
+  border: 1px solid #0D9488;
+  color: #0D9488 !important;
+  padding: 10px 24px;
+  border-radius: 8px;
+  font-weight: 600;
+  text-decoration: none !important;
+}
+
+/* ── Tagline badges ── */
+.overview-tagline {
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+  flex-wrap: wrap;
+  padding: 20px 0 32px;
+  font-size: 0.9rem;
+  opacity: 0.7;
+}
+
+.overview-tagline .dot {
+  color: #0D9488;
+  margin-right: 8px;
+  font-size: 1.2em;
+}
+
+/* ── Section headings ── */
+h1, h2, h3, h4 {
+  color: var(--ot-fg);
+}
+
+.overview-page h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+}
+
+.overview-page h2.mb-lg {
+  margin-bottom: 24px;
+}
+
+/* ── Dividers ── */
+.overview-page hr {
+  border: none;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  margin: 40px 0;
+}
+
+.overview-page hr.hr-top {
+  margin: 0 0 40px;
+}
+
+/* ── Body text ── */
+.overview-page p {
+  margin-bottom: 16px;
+}
+
+.overview-page p.mb-lg {
+  margin-bottom: 24px;
+}
+
+.overview-page p.mb-xl {
+  margin-bottom: 40px;
+}
+
+/* ── Diagram ── */
+.overview-diagram {
+  width: 100%;
+  border-radius: 12px;
+  margin: 0 0 24px;
+}
+
+/* ── Integration modes table ── */
+.overview-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 24px;
+  font-size: 0.9rem;
+}
+
+.overview-table thead tr {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.3);
+}
+
+.overview-table th {
+  text-align: left;
+  padding: 10px 12px;
+  font-weight: 600;
+}
+
+.overview-table td {
+  padding: 10px 12px;
+}
+
+.overview-table tbody tr {
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+.overview-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+/* ── Open source link ── */
+.overview-page a.accent {
+  color: #0D9488;
+}
