@@ -111,11 +111,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px"}}>Get started in 60 seconds</h2>
-
-```bash
-pip install proxy-hopper
-```
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px"}}>Get started</h2>
 
 ```yaml
 # config.yaml
@@ -130,7 +126,8 @@ targets:
 ```
 
 ```bash
-proxy-hopper run --config config.yaml
+docker run -v $(pwd)/config.yaml:/etc/proxy-hopper/config.yaml \
+  ghcr.io/cams-data/proxy-hopper:latest
 ```
 
 ```python
@@ -173,11 +170,10 @@ resp = requests.get(
 <p style={{marginBottom: "24px"}}>Proxy Hopper is open source under the MIT licence. Contributions, bug reports, and feature requests are welcome on <a href="https://github.com/cams-data/proxy-hopper-v2" style={{color: "#0D9488"}}>GitHub</a>.</p>
 
 ```bash
-# Install with Redis backend support
-pip install proxy-hopper-redis
-
-# Pull the latest Docker image
+# Memory backend (default)
 docker pull ghcr.io/cams-data/proxy-hopper:latest
+
+# Redis backend
 docker pull ghcr.io/cams-data/proxy-hopper:latest-redis
 ```
 

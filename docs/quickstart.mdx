@@ -3,19 +3,23 @@ title: "Quick start"
 description: "Install Proxy Hopper, write a config file, and send your first proxied request."
 ---
 
-## Install
+## Run with Docker
+
+The quickest way to run Proxy Hopper is with the pre-built Docker image:
 
 ```bash
-pip install proxy-hopper
+docker pull ghcr.io/cams-data/proxy-hopper:latest
 ```
 
 For the Redis backend (multi-instance HA deployments):
 
 ```bash
-pip install proxy-hopper-redis
+docker pull ghcr.io/cams-data/proxy-hopper:latest-redis
 ```
 
-Requires Python 3.11+.
+<Note>
+  PyPI packages are not yet published. Docker is the recommended installation method. See [Deployment](/deployment/docker) for full Docker and Compose examples.
+</Note>
 
 ## Write a config file
 
@@ -71,7 +75,9 @@ targets:
 ## Start the server
 
 ```bash
-proxy-hopper run --config config.yaml
+docker run -v $(pwd)/config.yaml:/etc/proxy-hopper/config.yaml \
+  -p 8080:8080 \
+  ghcr.io/cams-data/proxy-hopper:latest
 ```
 
 ## Send a request
@@ -117,7 +123,9 @@ async with aiohttp.ClientSession() as session:
 ## Validate a config file
 
 ```bash
-proxy-hopper validate --config config.yaml
+docker run -v $(pwd)/config.yaml:/etc/proxy-hopper/config.yaml \
+  ghcr.io/cams-data/proxy-hopper:latest \
+  proxy-hopper validate --config /etc/proxy-hopper/config.yaml
 # Config OK — 1 target(s) defined.
 #   'general': 3 IP(s), regex='.*'
 # Server defaults: host=0.0.0.0, port=8080, backend=memory
