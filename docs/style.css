@@ -73,7 +73,11 @@
   font-size: 1.2em;
 }
 
-/* ── Section headings — dark mode only ── */
+/* ── Section headings ── */
+h1, h2, h3, h4 {
+  color: #111827;
+}
+
 .dark h1, .dark h2, .dark h3, .dark h4 {
   color: #e5e7eb;
 }
