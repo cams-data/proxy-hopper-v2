@@ -1,29 +1,138 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 60" fill="none">
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 440 60"
+   fill="none"
+   version="1.1"
+   id="svg9"
+   sodipodi:docname="dark.svg"
+   width="440"
+   height="60"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs9" />
+  <sodipodi:namedview
+     id="namedview9"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#505050"
+     inkscape:zoom="2.3157747"
+     inkscape:cx="143.58046"
+     inkscape:cy="56.352632"
+     inkscape:window-width="2560"
+     inkscape:window-height="1369"
+     inkscape:window-x="1912"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg9" />
   <!-- Frog body -->
-  <ellipse cx="30" cy="46" rx="17" ry="13" fill="#14B8A6"/>
   <!-- Frog head -->
-  <ellipse cx="30" cy="30" rx="14" ry="12" fill="#14B8A6"/>
   <!-- Left eye dome -->
-  <circle cx="18" cy="20" r="7" fill="#0D9488"/>
   <!-- Right eye dome -->
-  <circle cx="42" cy="20" r="7" fill="#0D9488"/>
   <!-- Left eye white -->
-  <circle cx="18" cy="20" r="4.2" fill="white"/>
   <!-- Right eye white -->
-  <circle cx="42" cy="20" r="4.2" fill="white"/>
   <!-- Left pupil -->
-  <circle cx="19" cy="20" r="2.1" fill="#134E4A"/>
   <!-- Right pupil -->
-  <circle cx="43" cy="20" r="2.1" fill="#134E4A"/>
   <!-- Belly highlight -->
-  <ellipse cx="30" cy="48" rx="10" ry="9" fill="#2DD4BF" opacity="0.35"/>
   <!-- Smile -->
-  <path d="M21 37 Q30 44 39 37" stroke="#0D9488" stroke-width="2" stroke-linecap="round" fill="none"/>
   <!-- Left front leg -->
-  <path d="M15 50 Q9 55 6 59 Q10 60 12 56 Q13 60 17 59 Q16 54 18 51" fill="#14B8A6"/>
   <!-- Right front leg -->
-  <path d="M45 50 Q51 55 54 59 Q50 60 48 56 Q47 60 43 59 Q44 54 42 51" fill="#14B8A6"/>
-
+  <g
+     id="g9"
+     transform="matrix(1.1531767,0,0,1.1531767,-1.2244039,-13.419208)">
+    <ellipse
+       cx="30"
+       cy="46"
+       rx="17"
+       ry="13"
+       fill="#0d9488"
+       id="ellipse1" />
+    <ellipse
+       cx="30"
+       cy="30"
+       rx="14"
+       ry="12"
+       fill="#0d9488"
+       id="ellipse2" />
+    <circle
+       cx="18"
+       cy="20"
+       r="7"
+       fill="#0f766e"
+       id="circle2" />
+    <circle
+       cx="42"
+       cy="20"
+       r="7"
+       fill="#0f766e"
+       id="circle3" />
+    <circle
+       cx="18"
+       cy="20"
+       r="4.1999998"
+       fill="#ffffff"
+       id="circle4" />
+    <circle
+       cx="42"
+       cy="20"
+       r="4.1999998"
+       fill="#ffffff"
+       id="circle5" />
+    <circle
+       cx="19"
+       cy="20"
+       r="2.0999999"
+       fill="#134e4a"
+       id="circle6" />
+    <circle
+       cx="43"
+       cy="20"
+       r="2.0999999"
+       fill="#134e4a"
+       id="circle7" />
+    <ellipse
+       cx="30"
+       cy="48"
+       rx="10"
+       ry="9"
+       fill="#14b8a6"
+       opacity="0.35"
+       id="ellipse7" />
+    <path
+       d="m 21,37 q 9,7 18,0"
+       stroke="#0f766e"
+       stroke-width="2"
+       stroke-linecap="round"
+       fill="none"
+       id="path7" />
+    <path
+       d="m 15,50 q -6,5 -9,9 4,1 6,-3 1,4 5,3 -1,-5 1,-8"
+       fill="#0d9488"
+       id="path8" />
+    <path
+       d="m 45,50 q 6,5 9,9 -4,1 -6,-3 -1,4 -5,3 1,-5 -1,-8"
+       fill="#0d9488"
+       id="path9" />
+  </g>
   <!-- Wordmark: "Proxy Hopper" on one line -->
-  <text x="68" y="40" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-size="26" font-weight="800" fill="white" letter-spacing="-0.5">Proxy <tspan fill="#2DD4BF">Hopper</tspan></text>
+  <text
+     x="62.135334"
+     y="44.598495"
+     font-family="system-ui, '-apple-system', BlinkMacSystemFont, sans-serif"
+     font-size="57.2931px"
+     font-weight="800"
+     fill="#134e4a"
+     letter-spacing="-0.5"
+     id="text9"
+     style="stroke-width:2.20358">Proxy <tspan
+   fill="#0d9488"
+   id="tspan9"
+   style="stroke-width:2.20358">Hopper</tspan></text>
 </svg>
