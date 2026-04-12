@@ -48,6 +48,11 @@ spec:
           args:
             - --config
             - /etc/proxy-hopper/config.yaml
+            {{- if .Values.metrics.enabled }}
+            - --metrics
+            - --metrics-port
+            - {{ .Values.metrics.port | quote }}
+            {{- end }}
             {{- if eq .Values.backend.type "redis" }}
             - --backend
             - redis
