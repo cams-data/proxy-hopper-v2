@@ -1,0 +1,30 @@
+Proxy Hopper has been deployed.
+
+  Release:   {{ .Release.Name }}
+  Namespace: {{ .Release.Namespace }}
+  Backend:   {{ .Values.backend.type }}
+
+Get the proxy address:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http://{{ .host }}
+{{- end }}
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  export PROXY_IP=$(kubectl get svc {{ include "proxy-hopper.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "http://$PROXY_IP:{{ .Values.service.port }}"
+{{- else }}
+  kubectl port-forward svc/{{ include "proxy-hopper.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+  echo "http://localhost:8080"
+{{- end }}
+
+Test:
+  curl --proxy http://<address>:{{ .Values.service.port }} https://example.com
+{{- if eq .Values.backend.type "redis" }}
+
+Redis backend is enabled.
+{{- if .Values.redis.enabled }}
+  Bundled Redis: {{ .Release.Name }}-redis-master:6379
+{{- else }}
+  External Redis: {{ .Values.backend.redis.url }}
+{{- end }}
+{{- end }}

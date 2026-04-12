@@ -1,0 +1,25 @@
+apiVersion: v2
+name: proxy-hopper
+description: A rotating HTTP/HTTPS proxy server with automatic retries, failure tracking, and IP quarantine.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+
+keywords:
+  - proxy
+  - rotating-proxy
+  - http-proxy
+
+home: https://proxy-hopper.io
+sources:
+  - https://github.com/cams-data/proxy-hopper-v2
+
+maintainers:
+  - name: cams-data
+    url: https://github.com/cams-data
+
+dependencies:
+  - name: redis
+    version: "20.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled

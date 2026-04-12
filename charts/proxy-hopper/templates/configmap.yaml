@@ -1,0 +1,11 @@
+{{- if and (not .Values.config.existingConfigMap) (not .Values.config.existingSecret) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "proxy-hopper.fullname" . }}-config
+  labels:
+    {{- include "proxy-hopper.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- .Values.config.inline | nindent 4 }}
+{{- end }}
