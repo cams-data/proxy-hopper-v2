@@ -33,7 +33,7 @@
         "groups": [
           {
             "group": "Overview",
-            "pages": ["overview"]
+            "pages": ["index"]
           }
         ]
       },
@@ -43,7 +43,7 @@
           {
             "group": "Getting started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
               "integration-modes"
             ]
