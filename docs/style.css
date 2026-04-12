@@ -3,6 +3,7 @@
   max-width: 100%;
 }
 
+
 /* ── Overview page layout ── */
 .overview-page {
   max-width: 860px;
@@ -24,6 +25,10 @@
   cursor: default;
   pointer-events: none;
 }
+
+.logo-dark { display: none; }
+.dark .logo-dark { display: block; }
+.dark .logo-light { display: none; }
 
 .overview-hero p {
   font-size: 1.25rem;
