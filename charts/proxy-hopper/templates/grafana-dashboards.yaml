@@ -1,0 +1,15 @@
+{{- if .Values.grafana.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "proxy-hopper.fullname" . }}-grafana-dashboards
+  labels:
+    {{- include "proxy-hopper.labels" . | nindent 4 }}
+    {{ .Values.grafana.dashboards.labelKey }}: {{ .Values.grafana.dashboards.labelValue | quote }}
+    {{- with .Values.grafana.dashboards.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  proxy-hopper-admin.json.url: {{ .Values.grafana.dashboards.baseUrl }}/proxy-hopper-admin.json
+  proxy-hopper-user.json.url: {{ .Values.grafana.dashboards.baseUrl }}/proxy-hopper-user.json
+{{- end }}

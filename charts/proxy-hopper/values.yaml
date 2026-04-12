@@ -127,6 +127,24 @@ redis:
       enabled: true
       size: 1Gi
 
+# ── Grafana dashboards ───────────────────────────────────────────────────────
+# Creates a ConfigMap with .url keys that the Grafana sidecar picks up and
+# fetches from GitHub. Requires the Grafana dashboard sidecar to be configured
+# to watch this namespace.
+grafana:
+  dashboards:
+    enabled: false
+    # Label key/value the Grafana sidecar watches for. Common values:
+    #   grafana_dashboard: "1"   (kube-prometheus-stack default)
+    #   grafana_dashboard: "true"
+    labelKey: grafana_dashboard
+    labelValue: "1"
+    # Additional labels to add to the ConfigMap (e.g. to scope to a folder).
+    additionalLabels: {}
+      # grafana_folder: proxy-hopper
+    # Base URL for the dashboard JSON files.
+    baseUrl: "https://raw.githubusercontent.com/cams-data/proxy-hopper-v2/next/monitoring/grafana/dashboards"
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
