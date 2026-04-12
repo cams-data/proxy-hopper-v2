@@ -68,9 +68,9 @@
   font-size: 1.2em;
 }
 
-/* ── Section headings ── */
-h1, h2, h3, h4 {
-  color: var(--ot-fg);
+/* ── Section headings — dark mode only ── */
+.dark h1, .dark h2, .dark h3, .dark h4 {
+  color: #e5e7eb;
 }
 
 .overview-page h2 {
