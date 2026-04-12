@@ -11,7 +11,7 @@
   "logo": {
     "light": "/logo/light.svg",
     "dark": "/logo/dark.svg",
-    "height": 40
+    "height": 60
   },
   "navbar": {
     "links": [
