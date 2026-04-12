@@ -29,6 +29,15 @@
   "navigation": {
     "tabs": [
       {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": ["overview"]
+          }
+        ]
+      },
+      {
         "tab": "Documentation",
         "groups": [
           {
