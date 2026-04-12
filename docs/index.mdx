@@ -4,10 +4,10 @@ description: "A rotating HTTP/HTTPS proxy server that routes outbound requests t
 mode: "custom"
 ---
 
-<div style={{maxWidth: "860px", margin: "0 auto", padding: "0 24px", color: "inherit"}}>
+<div style={{maxWidth: "860px", margin: "0 auto", padding: "0 24px", color: "var(--ot-fg, inherit)"}}>
 
 <div style={{textAlign: "center", padding: "60px 0 40px"}}>
-  <h1 style={{fontSize: "2.5rem", fontWeight: "800", marginBottom: "16px", color: "inherit"}}>Proxy Hopper</h1>
+  <h1 style={{fontSize: "2.5rem", fontWeight: "800", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>Proxy Hopper</h1>
   <p style={{fontSize: "1.25rem", maxWidth: "600px", margin: "0 auto 32px", opacity: 0.7}}>
     A rotating HTTP/HTTPS proxy server that routes outbound requests through a pool of external proxy IP addresses — with automatic retries, failure tracking, and IP quarantine.
   </p>
@@ -19,7 +19,7 @@ mode: "custom"
 </div>
 
 <div style={{display: "flex", gap: "24px", justifyContent: "center", flexWrap: "wrap", padding: "20px 0 32px", fontSize: "0.9rem", opacity: 0.7}}>
-  <span>🔓 MIT licensed</span>
+  <span>Open Source</span>
   <span>🏠 Self-hosted</span>
   <span>🐳 Docker-native</span>
   <span>☁️ No cloud required</span>
@@ -27,7 +27,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "0 0 40px"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "inherit"}}>The problem</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>The problem</h2>
 
 <p style={{marginBottom: "16px"}}>When your application needs to make outbound HTTP requests at scale — scraping, API polling, data collection — you run into rate limits, IP blocks, and connection failures. Managing a pool of proxy IPs manually means writing retry logic, tracking which IPs are healthy, rotating through them fairly, and handling failures gracefully. Every project reinvents this wheel.</p>
 
@@ -40,7 +40,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "0 0 40px"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>How it works</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>How it works</h2>
 
 <Steps>
   <Step title="Configure your proxy providers and targets">
@@ -56,7 +56,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>Key features</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>Key features</h2>
 
 <CardGroup cols={3}>
   <Card title="IP rotation" icon="rotate">
@@ -81,7 +81,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "inherit"}}>Three integration modes</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>Three integration modes</h2>
 
 <p style={{marginBottom: "16px"}}>Proxy Hopper supports three ways for clients to send requests. All three use the same IP rotation and retry logic.</p>
 
@@ -118,7 +118,7 @@ mode: "custom"
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>Get started</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>Get started</h2>
 
 ```yaml
 # config.yaml
@@ -156,7 +156,7 @@ resp = requests.get(
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "inherit"}}>Deployment options</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "24px", color: "var(--ot-fg, inherit)"}}>Deployment options</h2>
 
 <CardGroup cols={3}>
   <Card title="Single container" icon="box" href="/deployment/docker">
@@ -172,7 +172,7 @@ resp = requests.get(
 
 <hr style={{borderColor: "rgba(148,163,184,0.2)", margin: "40px 0"}}/>
 
-<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "inherit"}}>Free and open source. Forever.</h2>
+<h2 style={{fontSize: "1.5rem", fontWeight: "700", marginBottom: "16px", color: "var(--ot-fg, inherit)"}}>Free and open source. Forever.</h2>
 
 <p style={{marginBottom: "16px"}}>Proxy Hopper is MIT licensed and built for self-hosting. No SaaS, no usage fees, no data leaving your infrastructure. Run it on a single container or scale it across a Kubernetes cluster — you own the deployment entirely.</p>
 
