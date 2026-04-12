@@ -216,6 +216,10 @@ cython_debug/
 docker-test/
 kube-test/
 
+# Helm dependency downloads
+charts/*/charts/
+charts/*/Chart.lock
+
 # PyPI configuration file
 .pypirc
 

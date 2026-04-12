@@ -264,6 +264,9 @@ jobs:
           sed -i "s/^version:.*/version: ${VERSION}/" charts/proxy-hopper/Chart.yaml
           sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/proxy-hopper/Chart.yaml
 
+      - name: Fetch chart dependencies
+        run: helm dependency update charts/proxy-hopper
+
       - name: Package chart
         run: helm package charts/proxy-hopper --destination /tmp/helm-charts
 
