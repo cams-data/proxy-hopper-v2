@@ -1,122 +1,190 @@
 ---
 title: "Kubernetes"
-description: "Deploy Proxy Hopper on Kubernetes with Redis for high-availability multi-instance deployments."
+description: "Deploy Proxy Hopper on Kubernetes using the official Helm chart."
 ---
-
-## Overview
-
-The Kubernetes manifests in `examples/kubernetes/` deploy:
-
-- A dedicated `proxy-hopper` namespace
-- Redis StatefulSet for shared pool state
-- Proxy Hopper Deployment (2 replicas by default)
-- ClusterIP service for in-cluster access + optional LoadBalancer for external access
-- HorizontalPodAutoscaler (2–10 replicas, CPU-based)
-
-```
-examples/kubernetes/
-├── namespace.yaml      # proxy-hopper namespace
-├── configmap.yaml      # config.yaml as a ConfigMap
-├── secret.yaml         # Redis URL (base64-encoded)
-├── redis.yaml          # Redis StatefulSet + Service
-├── deployment.yaml     # Proxy Hopper Deployment
-├── service.yaml        # ClusterIP + LoadBalancer Services
-└── hpa.yaml            # HorizontalPodAutoscaler
-```
 
 ## Prerequisites
 
 - Kubernetes 1.25+
-- `kubectl` configured against your cluster
+- Helm 3.8+
 
-## Deploy
-
-Apply all manifests in order:
+## Install
 
 ```bash
-kubectl apply -f examples/kubernetes/namespace.yaml
-kubectl apply -f examples/kubernetes/secret.yaml
-kubectl apply -f examples/kubernetes/configmap.yaml
-kubectl apply -f examples/kubernetes/redis.yaml
-kubectl apply -f examples/kubernetes/deployment.yaml
-kubectl apply -f examples/kubernetes/service.yaml
-kubectl apply -f examples/kubernetes/hpa.yaml
+helm install proxy-hopper oci://ghcr.io/cams-data/helm/proxy-hopper \
+  --namespace proxy-hopper \
+  --create-namespace
 ```
 
-Or apply the whole directory at once:
+This deploys a single-instance Proxy Hopper with the in-memory backend using the default config. See [Configuration](#configuration) below to supply your own.
+
+## Configuration
+
+### Inline config (default)
+
+Pass your `config.yaml` content directly in values:
 
 ```bash
-kubectl apply -f examples/kubernetes/
+helm install proxy-hopper oci://ghcr.io/cams-data/helm/proxy-hopper \
+  --namespace proxy-hopper \
+  --create-namespace \
+  --set-file config.inline=config.yaml
 ```
 
-Check rollout status:
+Or in a `values.yaml` file:
 
-```bash
-kubectl rollout status deployment/proxy-hopper -n proxy-hopper
+```yaml
+config:
+  inline: |
+    proxyProviders:
+      - name: my-provider
+        auth:
+          type: basic
+          username: user
+          password: secret
+        ipList:
+          - "10.0.0.1:3128"
+          - "10.0.0.2:3128"
+        regionTag: US-East
+
+    targets:
+      - name: general
+        regex: '.*'
+        ipPool: my-provider
+        minRequestInterval: 1s
+        numRetries: 3
 ```
 
-## Accessing the proxy
-
-Two Services are created:
-
-- **`proxy-hopper`** — `ClusterIP` on port 8080. Use for in-cluster clients:
-  ```
-  http://proxy-hopper.proxy-hopper.svc.cluster.local:8080
-  ```
-- **`proxy-hopper-lb`** — `LoadBalancer` on port 8080. Provisions a cloud load balancer for external access. Remove if you don't need external exposure.
-
-## Updating the config
-
-The target config lives in a ConfigMap. Edit it and trigger a rolling restart:
-
 ```bash
-kubectl edit configmap proxy-hopper-config -n proxy-hopper
-kubectl rollout restart deployment/proxy-hopper -n proxy-hopper
+helm install proxy-hopper oci://ghcr.io/cams-data/helm/proxy-hopper \
+  --namespace proxy-hopper \
+  --create-namespace \
+  -f values.yaml
+```
+
+### Existing ConfigMap or Secret
+
+If you manage config separately (e.g. via an operator or external-secrets), reference it instead:
+
+```yaml
+# Reference a ConfigMap — key must be "config.yaml"
+config:
+  existingConfigMap: my-proxy-hopper-config
+
+# Or reference a Secret (for configs containing credentials)
+config:
+  existingSecret: my-proxy-hopper-secret
+```
+
+## Redis backend
+
+Enable the bundled Redis subchart for multi-instance HA deployments:
+
+```yaml
+backend:
+  type: redis
+
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      size: 1Gi
+```
+
+The chart automatically selects the `-redis` Docker image and wires up the Redis URL when `backend.type: redis` is set.
+
+To use an external Redis instance instead:
+
+```yaml
+backend:
+  type: redis
+  redis:
+    url: redis://my-redis:6379/0
+
+redis:
+  enabled: false
 ```
 
 ## Scaling
 
-Manual scale:
-
-```bash
-kubectl scale deployment proxy-hopper --replicas=5 -n proxy-hopper
-```
-
-The HPA automatically scales between 2 and 10 replicas based on CPU utilisation. Adjust `minReplicas`, `maxReplicas`, and `averageUtilization` in `hpa.yaml` to suit your traffic.
-
-## Monitoring
-
-If Prometheus is running in your cluster with pod annotation scraping, the metrics port is annotated in `deployment.yaml`:
+Enable the HorizontalPodAutoscaler:
 
 ```yaml
-annotations:
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "9090"
-  prometheus.io/path: "/metrics"
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
 ```
 
-## Production hardening checklist
+<Note>
+  HPA with multiple replicas requires the Redis backend so that all instances share pool state. The in-memory backend is not suitable for multi-replica deployments.
+</Note>
+
+## Ingress
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: proxy-hopper.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: proxy-hopper-tls
+      hosts:
+        - proxy-hopper.example.com
+```
+
+## Prometheus metrics
+
+Enable the ServiceMonitor for Prometheus Operator:
+
+```yaml
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    additionalLabels:
+      release: prometheus
+```
+
+## Upgrading
+
+```bash
+helm upgrade proxy-hopper oci://ghcr.io/cams-data/helm/proxy-hopper \
+  --namespace proxy-hopper \
+  --reuse-values \
+  --version <new-version>
+```
+
+## Uninstall
+
+```bash
+helm uninstall proxy-hopper --namespace proxy-hopper
+```
+
+## Production checklist
 
 <AccordionGroup>
-  <Accordion title="Replace bundled Redis with a managed service">
-    The bundled Redis StatefulSet is suitable for getting started. For production, replace it with a managed Redis service (AWS ElastiCache, GCP Memorystore, Redis Cloud) and update `secret.yaml` with the new URL.
+  <Accordion title="Use an existing Secret for config">
+    Avoid putting credentials in `config.inline` in plain values files. Use `config.existingSecret` referencing a Secret managed by your secrets operator (e.g. External Secrets, Sealed Secrets).
   </Accordion>
   <Accordion title="Set resource requests and limits">
-    Set `requests` and `limits` in `deployment.yaml` based on observed usage. Proxy Hopper is I/O-bound — CPU usage is low, but memory scales with the number of open connections.
+    Proxy Hopper is I/O-bound — CPU usage is low but memory scales with open connections. Set `resources.requests` and `resources.limits` based on observed usage.
+  </Accordion>
+  <Accordion title="Use a managed Redis for production">
+    The bundled Redis subchart is convenient but not hardened for production. For serious workloads use a managed service (AWS ElastiCache, GCP Memorystore, Redis Cloud) and reference it via `backend.redis.url`.
   </Accordion>
   <Accordion title="Add a PodDisruptionBudget">
-    Configure a `PodDisruptionBudget` to maintain minimum availability during node drain or rolling upgrades.
-  </Accordion>
-  <Accordion title="Enable Redis AUTH">
-    Add a password to the Redis secret and the Redis config if your cluster environment requires it.
-  </Accordion>
-  <Accordion title="Use a private registry">
-    If pulling from a private registry, configure `imagePullSecrets` in `deployment.yaml`.
+    Configure a PDB to maintain minimum availability during node drain or rolling upgrades. This is not included in the chart but can be added manually.
   </Accordion>
 </AccordionGroup>
-
-## Helm chart
-
-<Note>
-  A Helm chart is on the roadmap. Until then, use the raw manifests above.
-</Note>
