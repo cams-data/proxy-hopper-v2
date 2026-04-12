@@ -7,9 +7,9 @@ on PROXY_HOPPER_METRICS_PORT (default 9090).  No web framework is required.
 Metrics exposed
 ---------------
 Request pipeline
-  proxy_hopper_requests_total{target, outcome}                           Counter
+  proxy_hopper_requests_total{target, outcome, tag}                      Counter
   proxy_hopper_request_duration_seconds{target}                          Histogram
-  proxy_hopper_responses_total{target, status_code}                      Counter
+  proxy_hopper_responses_total{target, status_code, tag}                 Counter
   proxy_hopper_retries_total{target}                                     Counter
   proxy_hopper_retry_exhaustions_total{target}                           Counter
 
@@ -60,9 +60,9 @@ if TYPE_CHECKING:
 
 class _NoopMetrics:
     """Null-object metrics collector used when prometheus is disabled or unavailable."""
-    def record_request(self, target: str, outcome: str, duration: float) -> None:
+    def record_request(self, target: str, outcome: str, duration: float, *, tag: str = "") -> None:
         pass
-    def record_response(self, target: str, status_code: int) -> None:
+    def record_response(self, target: str, status_code: int, *, tag: str = "") -> None:
         pass
     def record_retry(self, target: str) -> None:
         pass
@@ -99,8 +99,8 @@ class PrometheusMetrics:
         # --- Request pipeline ---
         self._requests = Counter(
             "proxy_hopper_requests_total",
-            "Total outbound proxy requests by target and outcome",
-            ["target", "outcome"],
+            "Total outbound proxy requests by target, outcome, and tag",
+            ["target", "outcome", "tag"],
         )
         self._duration = Histogram(
             "proxy_hopper_request_duration_seconds",
@@ -110,8 +110,8 @@ class PrometheusMetrics:
         )
         self._responses = Counter(
             "proxy_hopper_responses_total",
-            "Total responses returned to clients, by target and HTTP status code",
-            ["target", "status_code"],
+            "Total responses returned to clients, by target, HTTP status code, and tag",
+            ["target", "status_code", "tag"],
         )
         self._retries = Counter(
             "proxy_hopper_retries_total",
@@ -193,12 +193,12 @@ class PrometheusMetrics:
             ["address", "provider", "region"],
         )
 
-    def record_request(self, target: str, outcome: str, duration: float) -> None:
-        self._requests.labels(target=target, outcome=outcome).inc()
+    def record_request(self, target: str, outcome: str, duration: float, *, tag: str = "") -> None:
+        self._requests.labels(target=target, outcome=outcome, tag=tag).inc()
         self._duration.labels(target=target).observe(duration)
 
-    def record_response(self, target: str, status_code: int) -> None:
-        self._responses.labels(target=target, status_code=str(status_code)).inc()
+    def record_response(self, target: str, status_code: int, *, tag: str = "") -> None:
+        self._responses.labels(target=target, status_code=str(status_code), tag=tag).inc()
 
     def record_retry(self, target: str) -> None:
         self._retries.labels(target=target).inc()

@@ -229,7 +229,7 @@ async def _run(targets, providers, server) -> None:
         TargetManager(t, pool_backend, providers=providers, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
         for t in targets
     ]
-    proxy = ProxyServer(managers, host=server.host, port=server.port, enabled_modes=server.modes)
+    proxy = ProxyServer(managers, host=server.host, port=server.port)
 
     prober = None
     if server.probe:

@@ -1,37 +1,85 @@
 ---
-title: "Proxy modes"
-description: "Proxy Hopper supports three modes for receiving requests from your application. All three use the same IP rotation, rate limiting, and retry logic."
+title: "Forwarding mode"
+description: "Proxy Hopper uses URL forwarding mode — the only integration mode. It gives full retry and IP rotation for every HTTPS request."
 ---
 
-A proxy mode determines how your HTTP client sends requests to Proxy Hopper and how Proxy Hopper forwards them onward. The choice affects whether HTTPS retries are possible.
+Proxy Hopper routes requests using **URL forwarding mode**. Set `X-Proxy-Hopper-Target` to the real destination and send requests to Proxy Hopper as if it were the target server.
 
-| Mode | Protocol | HTTPS retries | Best for |
-|---|---|---|---|
-| [HTTP proxy](/concepts/proxy-modes/http-proxy) | Standard proxy protocol | Yes | General HTTP traffic |
-| [CONNECT tunnel](/concepts/proxy-modes/connect-tunnel) | HTTP CONNECT | No | HTTPS with standard proxy settings |
-| [URL forwarding](/concepts/proxy-modes/url-forwarding) | Custom header | Yes | HTTPS APIs where retries matter |
-
-## How to choose
-
-**Use HTTP proxy** if your traffic is plain HTTP, or if you control your HTTP client and HTTPS retry support isn't required.
-
-**Use CONNECT tunnel** if you need HTTPS and your client only supports standard proxy settings (e.g. `https_proxy` env var). Understand that Proxy Hopper cannot retry failed HTTPS requests in this mode — the TLS handshake happens inside the tunnel, which Proxy Hopper cannot inspect.
-
-**Use URL forwarding** if you're hitting HTTPS APIs and want full retry support. This is the recommended mode for scraping and API polling workloads where resilience matters most.
-
-## Enabling and disabling modes
-
-All three modes are enabled by default. Restrict to specific modes via config:
-
-```yaml
-server:
-  modes:
-    - forwarding
-    - connect_tunnel
+```
+Your app ─── X-Proxy-Hopper-Target: https://api.example.com ──► Proxy Hopper ──► external proxy IP ──► api.example.com
+              GET /v1/search HTTP/1.1
 ```
 
-Or via environment variable:
+Proxy Hopper strips the control header, reconstructs the full URL, and makes the HTTPS request itself — owning the connection end-to-end. This means it can **retry** on 429 or 5xx by rotating to a different IP, without the client ever knowing.
 
-```bash
-PROXY_HOPPER_MODES=forwarding,connect_tunnel
+## Why not HTTP proxy / CONNECT tunnel?
+
+CONNECT tunnels establish a raw TCP relay. The TLS handshake happens inside the tunnel, which Proxy Hopper cannot inspect — so it can never retry a failed HTTPS request. The IP is already burned by the time the failure is visible.
+
+URL forwarding avoids this entirely. Proxy Hopper owns the HTTPS request from the start.
+
+## Basic usage
+
+<CodeGroup>
+
+```bash curl
+curl -H "X-Proxy-Hopper-Target: https://api.example.com" \
+     http://localhost:8080/v1/endpoint?q=search
 ```
+
+```python requests
+import requests
+session = requests.Session()
+session.headers["X-Proxy-Hopper-Target"] = "https://api.example.com"
+resp = session.get("http://localhost:8080/v1/endpoint", params={"q": "search"})
+# → forwards to https://api.example.com/v1/endpoint?q=search
+```
+
+```python aiohttp
+import aiohttp
+async with aiohttp.ClientSession(
+    headers={"X-Proxy-Hopper-Target": "https://api.example.com"}
+) as session:
+    async with session.get("http://localhost:8080/v1/endpoint") as resp:
+        print(resp.status)
+```
+
+</CodeGroup>
+
+The `X-Proxy-Hopper-Target` value may include a base path (`https://api.example.com/v2`) which is prepended to the request path. Standard URL-building tools work normally — the header is never affected by URL manipulation.
+
+## Per-request control headers
+
+All `X-Proxy-Hopper-*` headers are stripped before the request reaches the upstream server.
+
+| Header | Description |
+|---|---|
+| `X-Proxy-Hopper-Target: https://api.example.com` | **Required.** Target scheme + host (+ optional base path). |
+| `X-Proxy-Hopper-Tag: <string>` | Optional label propagated to Prometheus metrics as the `tag` label. Use it to identify which endpoints consume IPs fastest. |
+| `X-Proxy-Hopper-Retries: <int>` | Override the target's `numRetries` for this request only. Must be a non-negative integer; invalid values fall back to the target default. |
+
+### Tag example
+
+```python
+session.headers["X-Proxy-Hopper-Tag"] = "search-api"
+# → proxy_hopper_requests_total{target="...", outcome="rate_limited", tag="search-api"}
+```
+
+```promql
+# Which endpoint is burning through IPs?
+sum by (tag) (rate(proxy_hopper_requests_total{outcome="rate_limited"}[5m]))
+```
+
+### Retries example
+
+```python
+# Disable retries for non-idempotent calls
+session.headers["X-Proxy-Hopper-Retries"] = "0"
+
+# Increase retries for a flaky endpoint
+session.headers["X-Proxy-Hopper-Retries"] = "10"
+```
+
+## Extensibility
+
+The `RequestHandler` base class makes it straightforward to add custom handlers — auth injection, path rewriting, custom protocols — without modifying Proxy Hopper's core. See the docstring in `handlers.py` for details.

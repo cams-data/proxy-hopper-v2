@@ -25,14 +25,16 @@ Metrics are served at `http://localhost:9090/metrics`.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `proxy_hopper_requests_total` | Counter | `target`, `outcome` | Total proxied requests |
+| `proxy_hopper_requests_total` | Counter | `target`, `outcome`, `tag` | Total proxied requests |
 | `proxy_hopper_request_duration_seconds` | Histogram | `target` | Outbound request latency |
-| `proxy_hopper_responses_total` | Counter | `target`, `status_code` | Upstream HTTP responses by status code |
+| `proxy_hopper_responses_total` | Counter | `target`, `status_code`, `tag` | Upstream HTTP responses by status code |
 | `proxy_hopper_retries_total` | Counter | `target` | Retry attempts |
 | `proxy_hopper_retry_exhaustions_total` | Counter | `target` | Requests that exhausted all retries |
 | `proxy_hopper_active_connections` | Gauge | — | Open client connections |
 
 `outcome` values: `success`, `rate_limited`, `server_error`, `connection_error`, `no_match`.
+
+The `tag` label is set from the `X-Proxy-Hopper-Tag` request header (empty string if not provided).
 
 ### Queue metrics
 
@@ -63,6 +65,24 @@ Metrics are served at `http://localhost:9090/metrics`.
 Probe `reason` values: `timeout`, `proxy_unreachable`, `connection_error`, `http_error`.
 
 ## Labels
+
+### `tag` label
+
+The `tag` label on `proxy_hopper_requests_total` and `proxy_hopper_responses_total` comes from the `X-Proxy-Hopper-Tag` request header. Set it to identify which endpoints are consuming IPs or triggering quarantine events:
+
+```python
+session.headers["X-Proxy-Hopper-Tag"] = "search-api"
+```
+
+```promql
+# Which endpoint hits rate limits most?
+sum by (tag) (rate(proxy_hopper_requests_total{outcome="rate_limited"}[5m]))
+
+# Response status breakdown by endpoint
+sum by (tag, status_code) (rate(proxy_hopper_responses_total[5m]))
+```
+
+### `provider` and `region` labels
 
 The `provider` and `region` labels on IP-level and probe metrics come from `proxyProviders` — enabling per-provider and per-region queries:
 

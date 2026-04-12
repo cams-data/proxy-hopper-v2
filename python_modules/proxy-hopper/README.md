@@ -1,10 +1,16 @@
 # proxy-hopper
 
-Rotating HTTP/HTTPS proxy server. Route outbound traffic through a pool of external proxy IP addresses — with retries, failure tracking, and automatic quarantine of broken IPs. Supports three client integration modes: standard HTTP proxy, HTTPS CONNECT tunnel, and URL-forwarding (full retry support for HTTPS).
+Rotating HTTPS proxy server. Route outbound traffic through a pool of external proxy IP addresses — with retries, failure tracking, and automatic quarantine of broken IPs.
+
+Clients integrate via the **forwarding mode**: set `X-Proxy-Hopper-Target` to the real destination and send requests to proxy-hopper as if it were the target server. Proxy-hopper owns the full HTTPS request, enabling retries across different IPs on 429 / 5xx responses — something a CONNECT tunnel cannot do.
 
 ## Installation
 
 ```bash
+# Docker (recommended)
+docker pull ghcr.io/cams-data/proxy-hopper:latest
+
+# From source
 pip install proxy-hopper
 ```
 
@@ -103,48 +109,30 @@ server:
 ### 2. Start the server
 
 ```bash
+# Docker
+docker run -v $(pwd)/config.yaml:/config.yaml \
+  ghcr.io/cams-data/proxy-hopper:latest \
+  proxy-hopper run --config /config.yaml
+
+# From source
 proxy-hopper run --config config.yaml
 ```
 
 ### 3. Configure your HTTP client
 
-Proxy Hopper supports three integration modes. All three use the same IP rotation and retry logic.
-
-#### HTTP proxy / CONNECT tunnel (standard)
-
-Configure your client to use `http://localhost:8080` as its proxy. Works with any HTTP library that supports proxy settings.
+Set `X-Proxy-Hopper-Target` to the target scheme + host, then send requests to proxy-hopper as if it were the target server. No proxy settings needed — path, query string, method, and body pass through unchanged.
 
 ```python
 # requests
-import requests
-session = requests.Session()
-session.proxies = {"http": "http://localhost:8080", "https": "http://localhost:8080"}
-resp = session.get("https://example.com")
-
-# aiohttp
-import aiohttp
-async with aiohttp.ClientSession() as session:
-    async with session.get("https://example.com", proxy="http://localhost:8080") as resp:
-        print(resp.status)
-```
-
-```bash
-curl --proxy http://localhost:8080 https://example.com
-```
-
-#### URL-forwarding mode (recommended for HTTPS APIs)
-
-Set the `X-Proxy-Hopper-Target` header to the target scheme and host, then send requests to proxy-hopper as if it were the target server. No proxy settings needed — path, query string, method, and body pass through unchanged.
-
-```python
-# requests — set a session-level header, then use normal URLs
 import requests
 session = requests.Session()
 session.headers["X-Proxy-Hopper-Target"] = "https://api.example.com"
 
 resp = session.get("http://localhost:8080/v1/endpoint", params={"q": "search"})
 # → forwards to https://api.example.com/v1/endpoint?q=search
+```
 
+```python
 # aiohttp
 import aiohttp
 async with aiohttp.ClientSession(
@@ -161,9 +149,30 @@ curl -H "X-Proxy-Hopper-Target: https://api.example.com" \
 
 The header value may include a base path (`https://api.example.com/v2`) which is prepended to the request path. `urljoin` and all standard URL-building tools work normally — the header is never affected by URL manipulation.
 
-> **Why forwarding mode?** HTTPS CONNECT tunnels are opaque byte relays — Proxy Hopper cannot intercept or retry a mid-flight failure. In forwarding mode, Proxy Hopper owns the full HTTPS request, enabling retries across different IPs on 429 or 5xx responses from the target API.
+### 4. Per-request control headers
 
-### 4. Validate a config file
+All `X-Proxy-Hopper-*` headers are stripped before the request reaches the upstream server.
+
+| Header | Description |
+|---|---|
+| `X-Proxy-Hopper-Target: https://api.example.com` | **Required.** Target scheme + host (+ optional base path). |
+| `X-Proxy-Hopper-Tag: <string>` | Optional label propagated to Prometheus metrics as the `tag` label. Use it to break down metrics by endpoint or use-case. |
+| `X-Proxy-Hopper-Retries: <int>` | Override the target's `numRetries` for this request only. Must be a non-negative integer; invalid values fall back to the target default. |
+
+**Tag example** — identify which endpoints burn through IPs fastest:
+
+```python
+session.headers["X-Proxy-Hopper-Tag"] = "search-api"
+# proxy_hopper_requests_total{target="google-apis", outcome="rate_limited", tag="search-api"}
+```
+
+**Retries example** — disable retries for idempotency-sensitive calls:
+
+```python
+session.headers["X-Proxy-Hopper-Retries"] = "0"
+```
+
+### 5. Validate a config file
 
 ```bash
 proxy-hopper validate --config config.yaml
@@ -227,7 +236,7 @@ ipPools:
 | `defaultProxyPort` | int | `8080` | Port applied to bare IPs in `ipList` |
 | `minRequestInterval` | duration | `1s` | **Primary rate-limit knob.** How long an IP is held off the pool after any request before it can be reused. |
 | `maxQueueWait` | duration | `30s` | How long a request waits for a free IP before failing |
-| `numRetries` | int | `3` | Retry attempts using a different IP on failure |
+| `numRetries` | int | `3` | Retry attempts using a different IP on failure (overridable per-request with `X-Proxy-Hopper-Retries`) |
 | `ipFailuresUntilQuarantine` | int | `5` | Consecutive failures before an IP is quarantined |
 | `quarantineTime` | duration | `120s` | How long a quarantined IP sits out before returning to the pool |
 
@@ -256,7 +265,6 @@ All server fields can also be set as `PROXY_HOPPER_*` env vars (e.g. `PROXY_HOPP
 | `probeInterval` | `PROXY_HOPPER_PROBE_INTERVAL` | `60` | Seconds between probe rounds |
 | `probeTimeout` | `PROXY_HOPPER_PROBE_TIMEOUT` | `10` | Per-probe HTTP timeout (seconds) |
 | `probeUrls` | `PROXY_HOPPER_PROBE_URLS` | Cloudflare + Google | Endpoints to probe through each IP. Comma-separated as env var. |
-| `modes` | `PROXY_HOPPER_MODES` | all | Enabled interaction modes. Comma-separated as env var. Valid values: `connect_tunnel`, `http_proxy`, `forwarding`. |
 
 ### CLI flags
 
@@ -290,32 +298,29 @@ proxy-hopper run --config config.yaml [OPTIONS]
 │  ProxyServer  (raw asyncio TCP)                              │
 │                                                              │
 │  _dispatch → RequestHandler (ABC)                           │
-│    ├── ConnectTunnelHandler   CONNECT method → blind relay   │
-│    ├── ForwardingHandler      /https/host/path → full retry  │
-│    └── HttpProxyHandler       http://... → full retry        │
-└──────────────────────────────┬───────────────────────────────┘
-                               │ submit(PendingRequest)
-          ┌────────────────────▼────────────────────┐
-          │    TargetManager  (one per target)       │
-          │    asyncio queue + dispatcher            │
-          │    aiohttp outbound requests + retries   │
-          └────────────────────┬────────────────────┘
-                               │ acquire / record_success / record_failure
-          ┌────────────────────▼────────────────────┐
-          │    IPPool  (one per target)              │
-          │    quarantine policy, cooldown sweeps    │
-          └────────────────────┬────────────────────┘
-                               │ push / pop / counters
-          ┌────────────────────▼────────────────────┐
-          │    IPPoolBackend                         │
-          │    Memory | Redis                        │
-          └─────────────────────────────────────────┘
+│    └── ForwardingHandler  X-Proxy-Hopper-Target → retry     │
+└──────────────────────────┬───────────────────────────────────┘
+                           │ submit(PendingRequest)
+        ┌──────────────────▼──────────────────────┐
+        │    TargetManager  (one per target)       │
+        │    asyncio queue + dispatcher            │
+        │    aiohttp outbound requests + retries   │
+        └──────────────────┬──────────────────────┘
+                           │ acquire / record_success / record_failure
+        ┌──────────────────▼──────────────────────┐
+        │    IPPool  (one per target)              │
+        │    quarantine policy, cooldown sweeps    │
+        └──────────────────┬──────────────────────┘
+                           │ push / pop / counters
+        ┌──────────────────▼──────────────────────┐
+        │    IPPoolBackend                         │
+        │    Memory | Redis                        │
+        └─────────────────────────────────────────┘
 ```
 
 **Key design points:**
 
-- **`RequestHandler` ABC** — each interaction mode is a self-contained class. Adding a new mode (GraphQL gateway, gRPC, etc.) requires only a new subclass registered in `handlers.py` — `ProxyServer` needs no changes.
-- **`ConnectTunnelHandler`** is the only mode that cannot retry mid-flight failures, because the client has already committed its TLS state once the tunnel is established. Use forwarding mode for full retry support over HTTPS.
+- **`RequestHandler` ABC** — the forwarding mode is a `RequestHandler` subclass. Adding a new mode (auth injection, path rewriting, custom protocols) requires only a new subclass registered in `handlers.py` — `ProxyServer` needs no changes.
 - **`IPPoolBackend`** — pure storage interface. Two implementations: in-memory and Redis.
 - **`IPPool`** — all quarantine and cooldown policy. Never touches the backend directly.
 - **`TargetManager`** — dispatches requests, runs aiohttp forwarding, handles retries. Never touches the backend directly.
@@ -356,9 +361,9 @@ proxy-hopper run --config config.yaml --metrics --metrics-port 9090
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `proxy_hopper_requests_total` | Counter | `target`, `outcome` | Total proxied requests |
+| `proxy_hopper_requests_total` | Counter | `target`, `outcome`, `tag` | Total proxied requests |
 | `proxy_hopper_request_duration_seconds` | Histogram | `target` | Outbound request latency |
-| `proxy_hopper_responses_total` | Counter | `target`, `status_code` | Upstream HTTP responses by status code |
+| `proxy_hopper_responses_total` | Counter | `target`, `status_code`, `tag` | Upstream HTTP responses by status code |
 | `proxy_hopper_retries_total` | Counter | `target` | Retry attempts |
 | `proxy_hopper_retry_exhaustions_total` | Counter | `target` | Requests that exhausted all retries |
 | `proxy_hopper_queue_depth` | Gauge | `target` | Requests waiting for an IP |
@@ -376,7 +381,12 @@ proxy-hopper run --config config.yaml --metrics --metrics-port 9090
 
 `outcome` values: `success`, `rate_limited`, `server_error`, `connection_error`, `no_match`.
 
-Probe `reason` values: `timeout`, `proxy_unreachable`, `connection_error`, `http_error`.
+The `tag` label is set from the `X-Proxy-Hopper-Tag` request header (empty string if not provided). Use it to break down metrics by API endpoint:
+
+```promql
+# Rate-limited requests by endpoint
+sum by (tag) (rate(proxy_hopper_requests_total{outcome="rate_limited"}[5m]))
+```
 
 The `provider` and `region` labels on IP-level and probe metrics come from `proxyProviders` — enabling per-provider and per-region queries such as `avg by (region) (proxy_hopper_probe_duration_seconds)`.
 

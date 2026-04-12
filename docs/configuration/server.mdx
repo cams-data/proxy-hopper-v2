@@ -22,7 +22,6 @@ All server fields can be set in three places (highest priority wins — see [con
 | `probeInterval` | `PROXY_HOPPER_PROBE_INTERVAL` | `60` | Seconds between probe rounds |
 | `probeTimeout` | `PROXY_HOPPER_PROBE_TIMEOUT` | `10` | Per-probe HTTP timeout (seconds) |
 | `probeUrls` | `PROXY_HOPPER_PROBE_URLS` | Cloudflare + Google | Endpoints to probe through each IP. Comma-separated as env var. |
-| `modes` | `PROXY_HOPPER_MODES` | all | Enabled interaction modes. Comma-separated as env var. Valid values: `connect_tunnel`, `http_proxy`, `forwarding`. |
 
 ## Example
 
@@ -42,10 +41,6 @@ server:
   probeUrls:
     - https://1.1.1.1
     - https://www.google.com
-  modes:
-    - connect_tunnel
-    - http_proxy
-    - forwarding
 ```
 
 ## CLI flags

@@ -382,7 +382,7 @@ class TargetManager:
                 )
 
         finally:
-            get_metrics().record_request(self._config.name, outcome, time.monotonic() - start)
+            get_metrics().record_request(self._config.name, outcome, time.monotonic() - start, tag=request.tag)
 
     # ------------------------------------------------------------------
     # Metrics updater

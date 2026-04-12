@@ -51,6 +51,7 @@ class PendingRequest:
     arrival_time: float            # monotonic seconds
     max_queue_wait: float
     num_retries: int
+    tag: str = ""                  # X-Proxy-Hopper-Tag value (propagated to metrics)
     failure_count: int = 0
 
     @property
@@ -76,6 +77,7 @@ class PendingRequest:
             arrival_time=self.arrival_time,
             max_queue_wait=self.max_queue_wait,
             num_retries=self.num_retries,
+            tag=self.tag,
             failure_count=self.failure_count + 1,
         )
 

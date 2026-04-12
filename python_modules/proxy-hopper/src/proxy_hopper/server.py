@@ -6,13 +6,6 @@ request line and headers are parsed, ``_dispatch`` delegates to the first
 
 All interaction-mode logic lives in ``handlers.py``.  To add a new mode,
 see the docstring at the top of that module.
-
-HTTPS / CONNECT note
---------------------
-When a client sends CONNECT hostname:443 the server can only see the
-hostname and port — *not* the request path — because the subsequent traffic
-is TLS-encrypted.  Regex matching for CONNECT requests therefore operates
-on the ``host:port`` string only.
 """
 
 from __future__ import annotations
@@ -22,10 +15,10 @@ import logging
 from typing import TYPE_CHECKING
 
 from .handlers import (
-    RequestHandler,   # noqa: F401 — re-exported; useful for type hints in tests
+    RequestHandler,    # noqa: F401 — re-exported; useful for type hints in tests
     _build_handlers,
     _find_first_manager,
-    _reason,           # noqa: F401 — re-exported; imported directly by tests
+    _reason,            # noqa: F401 — re-exported; imported directly by tests
     _write_error,
 )
 from .metrics import get_metrics
@@ -165,10 +158,6 @@ class ProxyServer:
         for handler in self._handlers:
             if handler.can_handle(method, target, http_version, headers):
                 await handler.handle(reader, writer, method, target, http_version, headers)
-                # CONNECT tunnels take over the raw socket — never loop after one.
-                from .handlers import ConnectTunnelHandler
-                if isinstance(handler, ConnectTunnelHandler):
-                    return False
                 return not client_wants_close
 
         logger.warning(

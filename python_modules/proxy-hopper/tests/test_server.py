@@ -135,14 +135,18 @@ class TestProxyServerHTTP:
         port = server._server.sockets[0].getsockname()[1]
         return server, port
 
-    async def test_unmatched_url_returns_502(self):
+    async def test_unmatched_target_returns_502(self):
         cfg = make_target_config(r".*example\.com.*")
         backend = MemoryIPPoolBackend()
         mgr = TargetManager(cfg, backend)
         server, port = await self._start_server_on_free_port([mgr])
 
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(b"GET http://notmatched.org/ HTTP/1.1\r\nHost: notmatched.org\r\n\r\n")
+        writer.write(
+            b"GET /path HTTP/1.1\r\n"
+            b"Host: localhost:8080\r\n"
+            b"X-Proxy-Hopper-Target: https://notmatched.org\r\n\r\n"
+        )
         await writer.drain()
 
         data = await asyncio.wait_for(reader.read(4096), timeout=2.0)
@@ -152,7 +156,7 @@ class TestProxyServerHTTP:
         server._server.close()
         await server._server.wait_closed()
 
-    async def test_matched_url_routes_to_manager(self):
+    async def test_matched_target_routes_to_manager(self):
         cfg = make_target_config(r".*example\.com.*")
         backend = MemoryIPPoolBackend()
         mgr = TargetManager(cfg, backend)
@@ -169,7 +173,11 @@ class TestProxyServerHTTP:
             server, port = await self._start_server_on_free_port([mgr])
 
             reader, writer = await asyncio.open_connection("127.0.0.1", port)
-            writer.write(b"GET http://example.com/path HTTP/1.1\r\nHost: example.com\r\n\r\n")
+            writer.write(
+                b"GET /path HTTP/1.1\r\n"
+                b"Host: localhost:8080\r\n"
+                b"X-Proxy-Hopper-Target: https://example.com\r\n\r\n"
+            )
             await writer.drain()
 
             data = await asyncio.wait_for(reader.read(4096), timeout=2.0)

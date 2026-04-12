@@ -1,16 +1,17 @@
 ---
 title: "Introduction"
-description: "A rotating HTTP/HTTPS proxy server that routes outbound requests through a pool of external proxy IP addresses."
+description: "A rotating HTTPS proxy server that routes outbound requests through a pool of external proxy IP addresses — with full retry support."
 ---
 
 ## What is Proxy Hopper?
 
-Proxy Hopper sits between your application and the internet. Configure your HTTP client to use it as a proxy, and Proxy Hopper handles picking an IP from your pool, retrying on failure, and automatically quarantining broken proxies.
+Proxy Hopper sits between your application and the internet. It picks an IP from your pool, makes the HTTPS request itself, and retries on failure by rotating to a different IP — automatically quarantining broken proxies along the way.
 
 ```
-Your app  ──────────────────►  Proxy Hopper  ──►  external proxy IP  ──►  target site
-          HTTP proxy / CONNECT   (rotating)          (from your pool)
+Your app ─── X-Proxy-Hopper-Target: https://api.example.com ──► Proxy Hopper ──► proxy IP ──► api.example.com
 ```
+
+Because Proxy Hopper owns the full HTTPS connection, it can retry on 429 or 5xx responses. A CONNECT tunnel cannot — the TLS handshake happens inside the tunnel, out of reach.
 
 ## Key features
 
@@ -21,25 +22,13 @@ Your app  ──────────────────►  Proxy Hoppe
   <Card title="Automatic quarantine" icon="shield">
     IPs that accumulate failures are quarantined for a configurable period, then released back into rotation automatically.
   </Card>
-  <Card title="Three integration modes" icon="plug">
-    HTTP proxy, HTTPS CONNECT tunnel, and URL-forwarding — all using the same rotation and retry logic.
+  <Card title="Per-request control" icon="sliders">
+    Override retries or attach a metrics tag on individual requests using `X-Proxy-Hopper-*` headers — no config changes required.
   </Card>
   <Card title="Redis HA" icon="server">
     In-memory backend for single-instance deployments. Redis backend for multi-instance HA with shared pool state.
   </Card>
 </CardGroup>
-
-## Integration modes
-
-| Mode | How to use | Best for |
-|---|---|---|
-| **HTTP proxy** | Set `http_proxy=http://proxy-hopper:8080` | Any HTTP client with proxy support |
-| **CONNECT tunnel** | Set `https_proxy=http://proxy-hopper:8080` | HTTPS via standard proxy settings |
-| **URL forwarding** | Change base URL to `http://proxy-hopper:8080/https/api.example.com` | Full retry support for HTTPS — Proxy Hopper owns the request end-to-end |
-
-<Note>
-  **Why forwarding mode?** CONNECT tunnels are opaque byte relays — Proxy Hopper cannot retry a mid-flight HTTPS failure. In forwarding mode, Proxy Hopper owns the full HTTPS request, enabling retries and IP rotation on 429 or 5xx responses.
-</Note>
 
 ## Next steps
 

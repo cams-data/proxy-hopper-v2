@@ -166,10 +166,6 @@ Full config file reference
       probeUrls:                 # PROXY_HOPPER_PROBE_URLS      (comma-separated as env var)
         - http://1.1.1.1
         - http://www.google.com
-      modes:                     # PROXY_HOPPER_MODES           (comma-separated as env var)
-        - connect_tunnel         # HTTPS CONNECT tunnel (blind byte relay)
-        - http_proxy             # Traditional HTTP proxy (absolute-form URLs)
-        - forwarding             # URL-rewriting forwarding (/https/host/path)
 """
 
 from __future__ import annotations
@@ -184,8 +180,6 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
-
-from .handlers import VALID_MODES
 
 
 # ---------------------------------------------------------------------------
@@ -351,17 +345,6 @@ class ServerConfig(BaseSettings):
     probe_urls: list[str] = Field(
         default_factory=lambda: ["http://1.1.1.1", "http://www.google.com"]
     )
-    modes: set[str] = Field(default_factory=lambda: set(VALID_MODES))
-
-    @field_validator("modes")
-    @classmethod
-    def validate_modes(cls, v: set[str]) -> set[str]:
-        unknown = v - VALID_MODES
-        if unknown:
-            raise ValueError(
-                f"Unknown mode(s): {unknown!r}. Valid modes: {sorted(VALID_MODES)}"
-            )
-        return v
 
     @classmethod
     def settings_customise_sources(
@@ -376,7 +359,7 @@ class ServerConfig(BaseSettings):
         # list[str] env vars (e.g. PROXY_HOPPER_PROBE_URLS=a,b,c) instead of
         # requiring JSON array syntax (["a","b","c"]).
         class _CommaSplitEnvSource(EnvSettingsSource):
-            _COMMA_FIELDS = {"probe_urls", "modes"}
+            _COMMA_FIELDS = {"probe_urls"}
 
             def prepare_field_value(self, field_name, field, value, value_is_complex):
                 if field_name in self._COMMA_FIELDS and isinstance(value, str):

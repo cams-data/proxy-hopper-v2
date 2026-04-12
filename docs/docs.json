@@ -51,11 +51,9 @@
             "group": "Concepts",
             "pages": [
               {
-                "group": "Proxy modes",
+                "group": "Forwarding mode",
                 "pages": [
                   "concepts/proxy-modes",
-                  "concepts/proxy-modes/http-proxy",
-                  "concepts/proxy-modes/connect-tunnel",
                   "concepts/proxy-modes/url-forwarding"
                 ]
               },
