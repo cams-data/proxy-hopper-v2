@@ -74,6 +74,12 @@ async def backend(backend_name) -> AsyncIterator[IPPoolBackend]:
     # Stash on the backend so tests can inspect it
     b._is_real_redis = is_real_redis  # type: ignore[attr-defined]
     await b.start()
+    # Flush real Redis before each test so state from a previous test
+    # (push_ip, increment_failures, quarantine_add, init_target) does not
+    # bleed into the next one.  Fakeredis uses a fresh FakeServer() per
+    # fixture call so it is already isolated without this.
+    if is_real_redis:
+        await b._redis.flushdb()
     yield b
     await b.stop()
 
