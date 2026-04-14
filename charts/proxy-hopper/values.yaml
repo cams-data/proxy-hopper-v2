@@ -72,9 +72,32 @@ autoscaling:
 # 2. Existing ConfigMap — reference a ConfigMap you manage separately.
 # 3. Existing Secret — reference a Secret (for configs containing credentials).
 #
+# IMPORTANT: when auth is enabled (auth.enabled: true inside config.yaml),
+# use approach 3 (existingSecret) so credentials are never stored in a plain
+# ConfigMap.  Create the Secret with:
+#
+#   kubectl create secret generic proxy-hopper-config \
+#     --from-file=config.yaml=./config-with-auth.yaml
+#
 config:
   # Inline config block. Ignored if existingConfigMap or existingSecret is set.
   inline: |
+    # Authentication is disabled by default. To enable, add an auth: block here.
+    # When using auth, switch to config.existingSecret (see values.yaml comment).
+    #
+    # auth:
+    #   enabled: true
+    #   admin:
+    #     username: admin
+    #     passwordHash: "$2b$12$..."   # proxy-hopper hash-password <password>
+    #   # API keys are for proxy access only — not the admin API.
+    #   # targets: ["*"] allows all targets; list named targets to restrict.
+    #   apiKeys:
+    #     - name: my-service
+    #       key: "ph_changeme"
+    #       targets: ["*"]
+    #   jwtSecret: "change-me-to-a-long-random-string"
+
     targets:
       - name: general
         regex: '.*'
@@ -91,6 +114,7 @@ config:
   # existingConfigMap: ""
 
   # Reference an existing Secret. Key must be "config.yaml".
+  # Recommended when auth is enabled — keeps credentials out of ConfigMaps.
   # existingSecret: ""
 
 # ── Backend ─────────────────────────────────────────────────────────────────
@@ -115,6 +139,24 @@ metrics:
     interval: 30s
     scrapeTimeout: 10s
     additionalLabels: {}
+
+# ── Admin API ────────────────────────────────────────────────────────────────
+# The admin API exposes a management REST interface on a separate port.
+# It provides POST /auth/login (local credentials), GET /health, and
+# GET /api/v1/status.  It is the foundation for the future GraphQL + web UI.
+#
+# Auth config (apiKeys, admin user, OIDC, jwtSecret) lives inside config.yaml,
+# not here.  Enable the admin server here; configure *who* can access it there.
+admin:
+  enabled: false
+  # Port the admin API listens on inside the container.
+  # Must match server.adminPort in config.yaml (or PROXY_HOPPER_ADMIN_PORT).
+  port: 8081
+  # Expose the admin port via the proxy Service (adds a named port "admin").
+  # Set to false if you want the admin API reachable only inside the cluster
+  # via direct pod access or a separate, more restricted Service.
+  service:
+    enabled: true
 
 # ── Redis subchart ───────────────────────────────────────────────────────────
 # Uses the Bitnami Redis chart as an optional dependency.

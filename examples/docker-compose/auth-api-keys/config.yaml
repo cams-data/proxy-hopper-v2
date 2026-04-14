@@ -1,0 +1,90 @@
+# =============================================================================
+# Proxy Hopper — API key auth example config
+# =============================================================================
+#
+# This example enables authentication using static API keys and a local admin
+# user.  All proxy requests must supply a valid key in the request header:
+#
+#   X-Proxy-Hopper-Auth: Bearer <key>
+#
+# The admin API is exposed on port 8081 and lets you log in with a username
+# and password to receive a short-lived JWT, which can also be used as a
+# Bearer token for the proxy.
+#
+# Steps to customise:
+#   1. Generate a password hash:
+#        docker compose run --rm proxy-hopper hash-password mysecret
+#      or, if proxy-hopper is installed locally:
+#        proxy-hopper hash-password mysecret
+#   2. Replace the passwordHash placeholder below with the output.
+#   3. Replace the API key values with strong random strings.
+#   4. Replace the placeholder proxy IPs in the targets section.
+#   5. docker compose up --build
+# =============================================================================
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+auth:
+  enabled: true
+
+  # JWT settings for locally-issued tokens (login via /auth/login).
+  # Set jwtSecret to a long random string; omit to auto-generate at startup
+  # (tokens will not survive a restart if auto-generated).
+  jwtSecret: "change-me-to-a-long-random-string"
+  jwtExpiryMinutes: 60
+
+  # Local admin user — logs in via POST /auth/login on the admin API.
+  # Generate a hash:  proxy-hopper hash-password <your-password>
+  admin:
+    username: admin
+    passwordHash: "$2b$12$REPLACE_ME_RUN_hash-password_COMMAND"
+    role: admin
+
+  # Static API keys — for services / scripts that call the proxy.
+  # Each key is sent as:  X-Proxy-Hopper-Auth: Bearer <key>
+  # API keys cannot access the admin API — they are for proxy use only.
+  # targets: ["*"] allows all targets; list named targets to restrict.
+  apiKeys:
+    - name: my-scraper
+      key: "ph_scraper_CHANGEME_use_a_long_random_value"
+      targets: ["*"]                # allow all targets
+
+    - name: restricted-pipeline
+      key: "ph_pipeline_CHANGEME_use_a_long_random_value"
+      targets: [general]            # only the "general" target
+
+# =============================================================================
+# TARGETS  (required)
+# =============================================================================
+
+targets:
+  - name: general
+    regex: '.*'
+    ipList:
+      - "203.0.113.10:3128"         # replace with your real proxy IPs
+      - "203.0.113.11:3128"
+      - "203.0.113.12:3128"
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+    defaultProxyPort: 3128
+
+# =============================================================================
+# SERVER SETTINGS
+# =============================================================================
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  logLevel: INFO
+  logFormat: text
+  backend: memory
+
+  # Enable the admin REST API (login + status endpoints).
+  admin: true
+  adminPort: 8081
+  adminHost: 0.0.0.0

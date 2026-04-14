@@ -166,12 +166,86 @@ Full config file reference
       probeUrls:                 # PROXY_HOPPER_PROBE_URLS      (comma-separated as env var)
         - http://1.1.1.1
         - http://www.google.com
+      admin: false               # PROXY_HOPPER_ADMIN           — enable the admin REST API
+      adminPort: 8081            # PROXY_HOPPER_ADMIN_PORT
+      adminHost: 0.0.0.0        # PROXY_HOPPER_ADMIN_HOST
+
+    # ---------------------------------------------------------------------------
+    # Auth (optional)
+    # ---------------------------------------------------------------------------
+    # Controls who can use the proxy and who can access the admin API.
+    # When enabled, every proxy request must supply a valid credential in the
+    # ``X-Proxy-Hopper-Auth: Bearer <token>`` header.
+    #
+    # SECURITY: when auth is enabled, store this block in a Secret (not a plain
+    # ConfigMap) so credentials are not readable by unauthorised cluster users.
+    # Use ``config.existingSecret`` in the Helm chart or mount a Secret volume.
+    #
+    # Field reference
+    # ~~~~~~~~~~~~~~~
+    # enabled           Master switch.  Default: false.
+    # jwtSecret         HS256 signing secret for locally-issued tokens.
+    #                   Omit (or leave blank) to auto-generate a random secret
+    #                   at startup — tokens do not survive restarts in that case.
+    # jwtExpiryMinutes  Lifetime of locally-issued tokens.  Default: 60.
+    #
+    # admin             Local admin user (username/password login via admin API).
+    #   username        Login username.
+    #   passwordHash    bcrypt hash — generate with: proxy-hopper hash-password <pw>
+    #   role            Role assigned on login.  Default: admin.
+    #
+    # apiKeys           Static Bearer tokens for M2M proxy access.
+    #                   API keys can only be used to make proxy requests — they
+    #                   have no access to the admin API.
+    #   name            Human-readable label shown in logs.
+    #   key             The raw key value (sent as the Bearer token).
+    #   targets         List of target names this key may access.
+    #                   Use ["*"] (default) to allow all targets.
+    #
+    # oidc              Validate externally-issued JWTs (Authentik, Keycloak, etc.).
+    #   issuer          OIDC issuer URL.  JWKS fetched from issuer/.well-known/…
+    #   audience        Expected ``aud`` claim.  Leave blank to skip check.
+    #   rolesClaim      JWT claim that carries the role name.
+    #                   Default: proxy_hopper_role.
+    #
+    # roles             Custom role definitions (supplement the built-in roles).
+    #   Built-in roles: admin (read+write+admin), operator (read+write), viewer (read).
+    #   name            Role identifier referenced from apiKeys / admin / OIDC claim.
+    #   permissions     List of: read, write, admin.
+    #   targets         (optional) Restrict role to named targets only.
+    #                   Omit to allow all targets.
+
+    auth:
+      enabled: true
+      jwtSecret: "change-me-to-a-long-random-string"
+      jwtExpiryMinutes: 60
+
+      admin:
+        username: admin
+        passwordHash: "$2b$12$..."   # proxy-hopper hash-password <password>
+        role: admin
+
+      apiKeys:
+        - name: my-service
+          key: "ph_changeme"
+          targets: ["*"]            # ["*"] = all targets (default), or list named targets
+
+      oidc:
+        issuer: "https://auth.example.com/application/o/proxy-hopper/"
+        audience: "proxy-hopper"
+        rolesClaim: proxy_hopper_role
+
+      roles:
+        - name: scraper
+          permissions: [read, write]
+          targets: [general]          # only this target
 """
 
 from __future__ import annotations
 
 import random
 import re
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
@@ -220,13 +294,62 @@ def _parse_address(entry: str, default_port: int) -> tuple[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Auth models
+# Auth models — proxy provider credentials (upstream proxy auth)
 # ---------------------------------------------------------------------------
 
 class BasicAuth(BaseModel):
     type: str = "basic"
     username: str
     password: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Auth config — proxy-hopper access control
+# ---------------------------------------------------------------------------
+
+class Permission(str, Enum):
+    """Permissions that can be assigned to roles."""
+    read = "read"
+    write = "write"
+    admin = "admin"
+
+
+class RoleConfig(BaseModel):
+    """Custom role definition. If not defined, built-in roles apply."""
+    permissions: list[str] = Field(default_factory=list)
+    targets: list[str] = Field(default_factory=lambda: ["*"])
+
+
+class ApiKeyConfig(BaseModel):
+    """A named API key for machine-to-machine proxy access."""
+    name: str
+    key: str
+    targets: list[str] = Field(default_factory=lambda: ["*"])
+
+
+class AdminUserConfig(BaseModel):
+    """Local admin user credentials for the management UI."""
+    username: str
+    password_hash: str
+    role: str = "admin"
+
+
+class OidcConfig(BaseModel):
+    """OIDC provider configuration for SSO."""
+    issuer: str
+    audience: Optional[str] = None
+    roles_claim: str = "proxy_hopper_role"
+
+
+class AuthConfig(BaseModel):
+    """Top-level auth configuration block."""
+    enabled: bool = False
+    admin: Optional[AdminUserConfig] = None
+    api_keys: list[ApiKeyConfig] = Field(default_factory=list)
+    oidc: Optional[OidcConfig] = None
+    jwt_secret: str = ""
+    jwt_expiry_minutes: int = 60
+    roles: dict[str, RoleConfig] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +468,9 @@ class ServerConfig(BaseSettings):
     probe_urls: list[str] = Field(
         default_factory=lambda: ["http://1.1.1.1", "http://www.google.com"]
     )
+    admin: bool = False
+    admin_port: int = 8081
+    admin_host: str = "0.0.0.0"
 
     @classmethod
     def settings_customise_sources(
@@ -415,6 +541,22 @@ _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
     "probeInterval": "probe_interval",
     "probeTimeout": "probe_timeout",
     "probeUrls": "probe_urls",
+    "adminPort": "admin_port",
+    "adminHost": "admin_host",
+}
+
+_AUTH_CAMEL_TO_SNAKE: dict[str, str] = {
+    "apiKeys": "api_keys",
+    "jwtSecret": "jwt_secret",
+    "jwtExpiryMinutes": "jwt_expiry_minutes",
+}
+
+_AUTH_ADMIN_CAMEL_TO_SNAKE: dict[str, str] = {
+    "passwordHash": "password_hash",
+}
+
+_AUTH_OIDC_CAMEL_TO_SNAKE: dict[str, str] = {
+    "rolesClaim": "roles_claim",
 }
 
 _DURATION_FIELDS = {"min_request_interval", "max_queue_wait", "quarantine_time"}
@@ -449,6 +591,32 @@ def _normalise_server(raw: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Auth normalisation
+# ---------------------------------------------------------------------------
+
+def _parse_auth(raw: dict) -> "AuthConfig":
+    """Normalise and parse the top-level auth: YAML block."""
+    if not raw:
+        return AuthConfig()
+
+    out = {_AUTH_CAMEL_TO_SNAKE.get(k, k): v for k, v in raw.items()}
+
+    if "admin" in out and isinstance(out["admin"], dict):
+        out["admin"] = {_AUTH_ADMIN_CAMEL_TO_SNAKE.get(k, k): v for k, v in out["admin"].items()}
+
+    if "oidc" in out and isinstance(out["oidc"], dict):
+        out["oidc"] = {_AUTH_OIDC_CAMEL_TO_SNAKE.get(k, k): v for k, v in out["oidc"].items()}
+
+    # api_keys: list of dicts — no camelCase fields currently, but normalise for future safety
+    if "api_keys" in out and isinstance(out["api_keys"], list):
+        out["api_keys"] = [
+            {k: v for k, v in ak.items()} for ak in out["api_keys"]
+        ]
+
+    return AuthConfig(**out)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -457,6 +625,7 @@ class ProxyHopperConfig(BaseModel):
     server: ServerConfig
     targets: list[TargetConfig]
     providers: list[ProxyProvider] = Field(default_factory=list)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
 
 
 def load_config(path: Path | str) -> ProxyHopperConfig:
@@ -582,4 +751,7 @@ def load_config(path: Path | str) -> ProxyHopperConfig:
     yaml_server = _normalise_server(raw.get("server") or {})
     server = ServerConfig(**yaml_server)
 
-    return ProxyHopperConfig(server=server, targets=targets, providers=providers)
+    # --- Auth config --------------------------------------------------------
+    auth = _parse_auth(raw.get("auth") or {})
+
+    return ProxyHopperConfig(server=server, targets=targets, providers=providers, auth=auth)

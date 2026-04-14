@@ -55,6 +55,14 @@ def main() -> None:
     """Proxy Hopper — rotating proxy server."""
 
 
+@main.command("hash-password")
+@click.argument("password")
+def hash_password_cmd(password: str) -> None:
+    """Hash PASSWORD for use in auth.admin.passwordHash config."""
+    from .auth import hash_password
+    click.echo(hash_password(password))
+
+
 @main.command()
 @click.option("--config", "-c", required=False, default=None,
               envvar="PROXY_HOPPER_CONFIG",
@@ -168,9 +176,9 @@ def run(
     # --- Run ---
     try:
         import uvloop
-        uvloop.run(_run(cfg.targets, cfg.providers, server))
+        uvloop.run(_run(cfg.targets, cfg.providers, server, cfg))
     except ImportError:
-        asyncio.run(_run(cfg.targets, cfg.providers, server))
+        asyncio.run(_run(cfg.targets, cfg.providers, server, cfg))
 
 
 @main.command()
@@ -203,11 +211,20 @@ def validate(config: Path) -> None:
 # Async run helper
 # ---------------------------------------------------------------------------
 
-async def _run(targets, providers, server) -> None:
+async def _run(targets, providers, server, cfg=None) -> None:
+    from .auth import make_runtime_secret
+    from .config import AuthConfig, ProxyHopperConfig
     from .server import ProxyServer
     from .target_manager import TargetManager
 
     log = logging.getLogger(__name__)
+
+    # Build a minimal cfg if called without one (e.g. from tests or legacy callers).
+    if cfg is None:
+        cfg = ProxyHopperConfig(server=server, targets=targets, auth=AuthConfig())
+
+    # Resolve JWT signing secret once; shared between proxy auth and admin API.
+    runtime_secret = make_runtime_secret(cfg.auth.jwt_secret)
 
     if server.backend == "redis":
         try:
@@ -229,7 +246,13 @@ async def _run(targets, providers, server) -> None:
         TargetManager(t, pool_backend, providers=providers, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
         for t in targets
     ]
-    proxy = ProxyServer(managers, host=server.host, port=server.port)
+    proxy = ProxyServer(
+        managers,
+        host=server.host,
+        port=server.port,
+        auth_config=cfg.auth if cfg.auth.enabled else None,
+        runtime_secret=runtime_secret,
+    )
 
     prober = None
     if server.probe:
@@ -244,17 +267,30 @@ async def _run(targets, providers, server) -> None:
         )
         await prober.start()
 
+    # Start admin API if enabled
+    admin_task = None
+    if server.admin:
+        from .admin import run_admin_server
+        admin_task = asyncio.create_task(
+            run_admin_server(cfg, runtime_secret),
+            name="ph:admin",
+        )
+
     try:
         await proxy.start()
         log.info(
-            "Proxy Hopper running on %s:%d (backend=%s)",
+            "Proxy Hopper running on %s:%d (backend=%s, auth=%s)",
             server.host, server.port, server.backend,
+            "enabled" if cfg.auth.enabled else "disabled",
         )
         await proxy.serve_forever()
     except (KeyboardInterrupt, asyncio.CancelledError):
         log.info("Shutting down…")
     finally:
         await proxy.stop()
+        if admin_task is not None:
+            admin_task.cancel()
+            await asyncio.gather(admin_task, return_exceptions=True)
         if prober:
             await prober.stop()
         await pool_backend.stop()

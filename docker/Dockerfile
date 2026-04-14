@@ -8,6 +8,8 @@ RUN WHEEL=$(echo /tmp/wheels/proxy_hopper-*.whl) && \
 VOLUME ["/etc/proxy-hopper"]
 
 EXPOSE 8080
+# Admin API port — only active when server.admin=true / PROXY_HOPPER_ADMIN=true
+EXPOSE 8081
 
 ENTRYPOINT ["proxy-hopper", "run"]
 CMD ["--config", "/etc/proxy-hopper/config.yaml"]

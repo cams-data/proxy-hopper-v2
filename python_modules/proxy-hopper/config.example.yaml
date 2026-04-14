@@ -1,9 +1,8 @@
-# Proxy Hopper — targets configuration
+# Proxy Hopper — example configuration
 #
-# Server settings (host, port, log level, metrics) are configured via
-# environment variables or CLI flags, not this file.  This file contains
-# only the targets list because it tends to be deployment-specific and
-# secrets-free, making it safe to version-control separately.
+# Server settings (host, port, log level, metrics) can be set here under
+# the optional `server:` block, via PROXY_HOPPER_* environment variables,
+# or as CLI flags.  CLI flags take the highest priority.
 #
 # Environment variables (all optional, shown with defaults):
 #   PROXY_HOPPER_HOST=0.0.0.0
@@ -11,6 +10,76 @@
 #   PROXY_HOPPER_LOG_LEVEL=INFO
 #   PROXY_HOPPER_METRICS=false
 #   PROXY_HOPPER_METRICS_PORT=9090
+#   PROXY_HOPPER_ADMIN=false
+#   PROXY_HOPPER_ADMIN_PORT=8081
+
+# =============================================================================
+# AUTHENTICATION  (optional — disabled by default)
+# =============================================================================
+# When auth.enabled is false, the proxy and admin API accept all requests.
+# When enabled, every proxy request must carry:
+#   X-Proxy-Hopper-Auth: Bearer <token>
+# and every admin API request must carry:
+#   Authorization: Bearer <token>
+#
+# Tokens can be: a static API key, a locally-issued JWT (from POST /auth/login),
+# or an OIDC access token from a configured SSO provider.
+#
+# Hash a password for auth.admin.passwordHash:
+#   proxy-hopper hash-password mysecret
+#
+# auth:
+#   enabled: false
+#
+#   # ── Local admin user (human login via admin API) ─────────────────────────
+#   # POST /auth/login with username + password to receive a JWT.
+#   admin:
+#     username: admin
+#     passwordHash: "$2b$12$..."     # proxy-hopper hash-password <password>
+#     role: admin                    # default: admin
+#
+#   # ── API keys (machine-to-machine proxy access only) ──────────────────────
+#   # Clients send: X-Proxy-Hopper-Auth: Bearer <key>
+#   # API keys cannot access the admin API — they are for proxy use only.
+#   # targets: ["*"] allows all targets (default); list named targets to restrict.
+#   apiKeys:
+#     - name: ci-pipeline
+#       key: "ph_abc123_changeme"
+#       targets: ["*"]
+#     - name: analytics-service
+#       key: "ph_xyz789_changeme"
+#       targets: [google-maps]        # restrict to specific targets
+#
+#   # ── OIDC / SSO (Authentik, Keycloak, Auth0, …) ──────────────────────────
+#   # Validates tokens signed by the provider's JWKS endpoint.
+#   # Works for both browser SSO tokens and service account tokens.
+#   oidc:
+#     issuer: "https://authentik.example.com/application/o/proxy-hopper/"
+#     audience: "proxy-hopper"        # optional but recommended
+#     rolesClaim: proxy_hopper_role   # JWT claim containing the role name
+#
+#   # ── JWT signing secret ───────────────────────────────────────────────────
+#   # Used to sign locally-issued JWTs (POST /auth/login).
+#   # If empty, a random secret is generated on startup (sessions don't survive
+#   # restart).  Set a fixed secret for persistent sessions.
+#   jwtSecret: ""
+#   jwtExpiryMinutes: 60
+#
+#   # ── Custom roles (optional, JWT/OIDC users only) ─────────────────────────
+#   # Built-in roles: admin (read+write+admin), operator (read+write), viewer (read).
+#   # Custom roles restrict which targets a JWT/OIDC user can access.
+#   # API keys use per-key targets instead of roles.
+#   roles:
+#     scraper:
+#       permissions: [read, write]
+#       targets: [google-maps]        # restrict to named targets; ["*"] = all
+#     restricted-operator:
+#       permissions: [read, write]
+#       targets: [google-maps, example-api]
+
+# =============================================================================
+# TARGETS  (required)
+# =============================================================================
 
 targets:
   - name: google-maps

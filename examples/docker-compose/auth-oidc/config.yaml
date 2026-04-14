@@ -1,0 +1,106 @@
+# =============================================================================
+# Proxy Hopper — OIDC authentication example config
+# =============================================================================
+#
+# This example enables authentication using an external OIDC provider
+# (Authentik, Keycloak, Dex, Auth0, etc.).
+#
+# Two token flows are supported:
+#   - Machine-to-machine: client credentials grant → JWT validated via JWKS
+#   - Browser/human: standard OIDC login → access token used as Bearer
+#
+# Both flows produce a JWT that is passed as:
+#   X-Proxy-Hopper-Auth: Bearer <jwt>
+#
+# Proxy Hopper validates the JWT signature against the provider's published
+# JWKS endpoint (fetched from <issuer>/.well-known/openid-configuration).
+#
+# Steps to customise:
+#   1. Replace the oidc.issuer URL with your provider's issuer.
+#   2. Set oidc.audience to the client ID / audience your provider sets on tokens.
+#   3. Configure your provider to include the role claim (see README.md).
+#   4. Optionally add a local admin user as a fallback (see below).
+#   5. Replace the placeholder proxy IPs in the targets section.
+#   6. docker compose up --build
+# =============================================================================
+
+# =============================================================================
+# AUTHENTICATION
+# =============================================================================
+
+auth:
+  enabled: true
+
+  # JWT settings for locally-issued tokens.
+  # Only needed if you also configure an admin user below (so /auth/login works).
+  # If OIDC is your only auth method you can omit jwtSecret entirely.
+  jwtSecret: "change-me-to-a-long-random-string"
+  jwtExpiryMinutes: 60
+
+  # Optional: local admin user as a fallback when the OIDC provider is
+  # unavailable, or for initial setup before OIDC is configured.
+  # Remove this block if you want OIDC to be the only auth method.
+  #
+  # Generate a hash:  proxy-hopper hash-password <your-password>
+  admin:
+    username: admin
+    passwordHash: "$2b$12$REPLACE_ME_RUN_hash-password_COMMAND"
+    role: admin
+
+  # OIDC — validate JWTs issued by your identity provider.
+  # Proxy Hopper fetches JWKS from <issuer>/.well-known/openid-configuration
+  # and caches it for 5 minutes.
+  oidc:
+    # Issuer URL — must match the `iss` claim in tokens exactly.
+    # Authentik:  https://auth.example.com/application/o/<app-slug>/
+    # Keycloak:   https://auth.example.com/realms/<realm>
+    # Dex:        https://dex.example.com
+    issuer: "https://auth.example.com/application/o/proxy-hopper/"
+
+    # Audience — must match the `aud` claim.  Usually the client ID.
+    # Leave blank ("") to skip the audience check.
+    audience: "proxy-hopper"
+
+    # JWT claim that carries the proxy-hopper role name.
+    # Configure your provider to include this claim (see README.md).
+    rolesClaim: proxy_hopper_role
+
+  # Custom roles (optional) — supplement admin/operator/viewer.
+  # roles:
+  #   - name: scraper
+  #     permissions: [read, write]
+  #     targets: [general]
+
+# =============================================================================
+# TARGETS  (required)
+# =============================================================================
+
+targets:
+  - name: general
+    regex: '.*'
+    ipList:
+      - "203.0.113.10:3128"         # replace with your real proxy IPs
+      - "203.0.113.11:3128"
+      - "203.0.113.12:3128"
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+    defaultProxyPort: 3128
+
+# =============================================================================
+# SERVER SETTINGS
+# =============================================================================
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  logLevel: INFO
+  logFormat: text
+  backend: memory
+
+  # Enable the admin REST API (login + status endpoints).
+  admin: true
+  adminPort: 8081
+  adminHost: 0.0.0.0

@@ -156,6 +156,7 @@ All `X-Proxy-Hopper-*` headers are stripped before the request reaches the upstr
 | Header | Description |
 |---|---|
 | `X-Proxy-Hopper-Target: https://api.example.com` | **Required.** Target scheme + host (+ optional base path). |
+| `X-Proxy-Hopper-Auth: Bearer <token>` | **Required when auth is enabled.** API key, local JWT, or OIDC access token. See [Authentication](#authentication). |
 | `X-Proxy-Hopper-Tag: <string>` | Optional label propagated to Prometheus metrics as the `tag` label. Use it to break down metrics by endpoint or use-case. |
 | `X-Proxy-Hopper-Retries: <int>` | Override the target's `numRetries` for this request only. Must be a non-negative integer; invalid values fall back to the target default. |
 
@@ -288,6 +289,203 @@ proxy-hopper run --config config.yaml [OPTIONS]
   --probe-timeout FLOAT    Per-probe HTTP timeout
   --probe-urls TEXT        Comma-separated probe endpoints
 ```
+
+---
+
+## Authentication
+
+Authentication is disabled by default — no token is required. Enable it with `auth.enabled: true` in your config.
+
+When enabled, every proxy request must include:
+
+```
+X-Proxy-Hopper-Auth: Bearer <token>
+```
+
+Missing or invalid tokens receive a `401`. Tokens that lack access to the matched target receive a `403`.
+
+### Token types
+
+Three token types are accepted, tried in this order:
+
+| Type | Issued by | Use case |
+|---|---|---|
+| API key | You (configured in `config.yaml`) | Services and scripts — long-lived, no login needed |
+| Local JWT | Admin API `POST /auth/login` | Human operators logging in with username + password |
+| OIDC JWT | External provider (Authentik, Keycloak, Auth0…) | SSO — browser users and service accounts |
+
+### Using an API key
+
+Define keys in `config.yaml`:
+
+```yaml
+auth:
+  enabled: true
+  apiKeys:
+    - name: my-scraper
+      key: "ph_abc123_changeme"
+      targets: ["*"]          # ["*"] = all targets; or list specific target names
+```
+
+Send the key as the Bearer token on every request:
+
+```python
+import httpx
+
+client = httpx.Client(
+    headers={
+        "X-Proxy-Hopper-Target": "https://api.example.com",
+        "X-Proxy-Hopper-Auth": "Bearer ph_abc123_changeme",
+    }
+)
+resp = client.get("http://localhost:8080/v1/endpoint")
+```
+
+```python
+import requests
+
+session = requests.Session()
+session.headers.update({
+    "X-Proxy-Hopper-Target": "https://api.example.com",
+    "X-Proxy-Hopper-Auth": "Bearer ph_abc123_changeme",
+})
+resp = session.get("http://localhost:8080/v1/endpoint")
+```
+
+```bash
+curl -H "X-Proxy-Hopper-Target: https://api.example.com" \
+     -H "X-Proxy-Hopper-Auth: Bearer ph_abc123_changeme" \
+     http://localhost:8080/v1/endpoint
+```
+
+API keys are for proxy access only — they cannot be used to call the admin API.
+
+### Using the admin API (login → JWT)
+
+When the admin API is enabled (`server.admin: true`), you can exchange a username and password for a short-lived JWT:
+
+```bash
+# 1. Login
+TOKEN=$(curl -s -X POST http://localhost:8081/auth/login \
+  -d "username=admin&password=mysecret" \
+  | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# 2. Use the JWT for proxy requests
+curl -H "X-Proxy-Hopper-Target: https://api.example.com" \
+     -H "X-Proxy-Hopper-Auth: Bearer $TOKEN" \
+     http://localhost:8080/v1/endpoint
+```
+
+```python
+import httpx
+
+# 1. Login
+resp = httpx.post(
+    "http://localhost:8081/auth/login",
+    data={"username": "admin", "password": "mysecret"},
+)
+token = resp.json()["access_token"]
+
+# 2. Use the JWT
+client = httpx.Client(
+    headers={
+        "X-Proxy-Hopper-Target": "https://api.example.com",
+        "X-Proxy-Hopper-Auth": f"Bearer {token}",
+    }
+)
+resp = client.get("http://localhost:8080/v1/endpoint")
+```
+
+JWTs expire after `auth.jwtExpiryMinutes` (default 60). Re-login when you receive a `401`.
+
+### Using an OIDC token
+
+When `auth.oidc` is configured, any valid JWT issued by your provider is accepted. Obtain a token using the appropriate grant for your use case, then send it the same way:
+
+```bash
+# Client credentials (M2M — Authentik example)
+TOKEN=$(curl -s -X POST "https://auth.example.com/application/o/token/" \
+  -d "grant_type=client_credentials&client_id=proxy-hopper&client_secret=<secret>&scope=openid" \
+  | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+curl -H "X-Proxy-Hopper-Auth: Bearer $TOKEN" \
+     -H "X-Proxy-Hopper-Target: https://api.example.com" \
+     http://localhost:8080/v1/endpoint
+```
+
+```python
+import httpx
+
+# Client credentials (M2M)
+resp = httpx.post(
+    "https://auth.example.com/application/o/token/",
+    data={
+        "grant_type": "client_credentials",
+        "client_id": "proxy-hopper",
+        "client_secret": "<secret>",
+        "scope": "openid",
+    },
+)
+token = resp.json()["access_token"]
+
+client = httpx.Client(
+    headers={
+        "X-Proxy-Hopper-Target": "https://api.example.com",
+        "X-Proxy-Hopper-Auth": f"Bearer {token}",
+    }
+)
+resp = client.get("http://localhost:8080/v1/endpoint")
+```
+
+The token is validated against the provider's JWKS endpoint (fetched from `<issuer>/.well-known/openid-configuration` and cached for 5 minutes). No token material is stored on the proxy.
+
+### Target access control
+
+**API keys** control access via a per-key `targets` list:
+
+```yaml
+apiKeys:
+  - name: scraper
+    key: "ph_scraper_key"
+    targets: [general]      # can only route through the "general" target
+  - name: unrestricted
+    key: "ph_admin_key"
+    targets: ["*"]          # can use any target
+```
+
+**JWT / OIDC tokens** control access via roles. Built-in roles:
+
+| Role | Proxy access | Admin API access |
+|---|---|---|
+| `admin` | All targets | Full |
+| `operator` | All targets | Read + write |
+| `viewer` | All targets | Read only |
+
+Custom roles can restrict access to named targets:
+
+```yaml
+auth:
+  roles:
+    scraper:
+      permissions: [read, write]
+      targets: [general]    # JWT users with role "scraper" can only use the "general" target
+```
+
+The role is read from the JWT's `role` claim (locally-issued) or the configured `auth.oidc.rolesClaim` claim (OIDC tokens).
+
+### Generating a password hash
+
+```bash
+proxy-hopper hash-password mysecret
+# $2b$12$...
+```
+
+Paste the output into `auth.admin.passwordHash` in your config.
+
+### Further reading
+
+- [auth-api-keys example](../../examples/docker-compose/auth-api-keys/) — full working example with API keys and admin login
+- [auth-oidc example](../../examples/docker-compose/auth-oidc/) — full working example with Authentik / Keycloak OIDC
 
 ---
 

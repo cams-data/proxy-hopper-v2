@@ -28,3 +28,28 @@ Redis backend is enabled.
   External Redis: {{ .Values.backend.redis.url }}
 {{- end }}
 {{- end }}
+{{- if .Values.admin.enabled }}
+
+Admin API is enabled on port {{ .Values.admin.port }}.
+{{- if eq .Values.service.type "LoadBalancer" }}
+  export ADMIN_IP=$(kubectl get svc {{ include "proxy-hopper.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "http://$ADMIN_IP:{{ .Values.admin.port }}"
+{{- else }}
+  kubectl port-forward svc/{{ include "proxy-hopper.fullname" . }} {{ .Values.admin.port }}:{{ .Values.admin.port }} -n {{ .Release.Namespace }}
+  echo "http://localhost:{{ .Values.admin.port }}"
+{{- end }}
+
+  Docs:   http://localhost:{{ .Values.admin.port }}/docs
+  Health: http://localhost:{{ .Values.admin.port }}/health
+  Status: http://localhost:{{ .Values.admin.port }}/api/v1/status  (requires auth)
+
+  Login (if auth.admin is configured in config.yaml):
+    curl -X POST http://localhost:{{ .Values.admin.port }}/auth/login \
+         -d "username=admin&password=<password>"
+
+  NOTE: auth config (apiKeys, passwordHash, jwtSecret) lives in config.yaml.
+  Use config.existingSecret to keep credentials out of ConfigMaps.
+{{- else }}
+
+Admin API is disabled (set admin.enabled=true to enable).
+{{- end }}

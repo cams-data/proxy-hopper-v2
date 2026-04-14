@@ -59,6 +59,13 @@ spec:
             - --redis-url
             - {{ include "proxy-hopper.redisUrl" . }}
             {{- end }}
+          {{- if .Values.admin.enabled }}
+          env:
+            - name: PROXY_HOPPER_ADMIN
+              value: "true"
+            - name: PROXY_HOPPER_ADMIN_PORT
+              value: {{ .Values.admin.port | quote }}
+          {{- end }}
           ports:
             - name: http
               containerPort: 8080
@@ -66,6 +73,11 @@ spec:
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+            {{- if .Values.admin.enabled }}
+            - name: admin
+              containerPort: {{ .Values.admin.port }}
               protocol: TCP
             {{- end }}
           livenessProbe:
