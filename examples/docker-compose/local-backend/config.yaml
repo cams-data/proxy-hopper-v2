@@ -121,6 +121,24 @@ targets:
     # Port used for IPs listed without an explicit port number.
     defaultProxyPort: 3128
 
+    # --- Identity (optional) -------------------------------------------------
+    # Attach a persistent browser fingerprint and cookie jar to each IP so
+    # consecutive requests through the same IP look like the same client.
+    # The identity rotates automatically on quarantine, on 429, or after N
+    # requests.  Disabled by default — uncomment to enable.
+    #
+    # identity:
+    #   enabled: true
+    #   cookies: true               # persist and replay session cookies per IP
+    #   # profile: chrome-windows   # fixed profile; omit for random per identity
+    #   #                           # options: chrome-windows, chrome-macos,
+    #   #                           #          safari-macos, firefox-linux, firefox-windows
+    #   rotateAfterRequests: 100    # voluntarily rotate after N successful requests
+    #   rotateOn429: true           # rotate immediately on a 429 response
+    #   warmup:
+    #     enabled: true             # send a GET before the identity enters service
+    #     path: /                   # path for the warmup request
+
 # =============================================================================
 # SERVER SETTINGS  (optional — all have defaults)
 # =============================================================================

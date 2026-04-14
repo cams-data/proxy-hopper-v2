@@ -120,6 +120,31 @@ Full config file reference
     #
     # Duration strings: plain numbers are seconds; append 's', 'm', or 'h' for
     # seconds, minutes, or hours (e.g. "500ms" is not supported — use "0.5s").
+    #
+    # Identity (optional — disabled by default)
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # Attaches a persistent client persona to each (IP, target) pair so that
+    # consecutive requests through the same IP look like the same browser/client
+    # to the upstream server.  Each identity carries a fingerprint header bundle
+    # (User-Agent, Accept, Accept-Language, Accept-Encoding) and an optional
+    # cookie jar that is maintained between requests.  The identity is rotated
+    # automatically when the IP is quarantined, on a 429 response, or after a
+    # configurable number of requests.
+    #
+    # identity:
+    #   enabled             Master switch.                                       [default: false]
+    #   cookies             Persist and replay session cookies per (IP, target). [default: true]
+    #   profile             Fixed fingerprint profile name, or omit for random
+    #                       selection per identity.
+    #                       Valid values: chrome-windows, chrome-macos,
+    #                       safari-macos, firefox-linux, firefox-windows.
+    #   rotateAfterRequests Voluntarily rotate identity after N successful
+    #                       requests.  Omit to disable.
+    #   rotateOn429         Rotate identity immediately on a 429 response.       [default: true]
+    #   warmup              Send a GET to this path through a fresh identity
+    #                       before it enters service (collects session cookies).
+    #     enabled           [default: true when warmup block is present]
+    #     path              URL path for the warmup request.                     [default: /]
 
     targets:
       - name: general
@@ -140,6 +165,14 @@ Full config file reference
         numRetries: 1
         ipFailuresUntilQuarantine: 2
         quarantineTime: 30m
+        identity:
+          enabled: true
+          cookies: true
+          rotateAfterRequests: 50   # shed sessions before per-session quota is hit
+          rotateOn429: true
+          warmup:
+            enabled: true
+            path: /
 
     # ---------------------------------------------------------------------------
     # Server settings (optional — all have defaults)
