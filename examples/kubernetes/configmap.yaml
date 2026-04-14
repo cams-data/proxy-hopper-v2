@@ -97,6 +97,18 @@ data:
 
         defaultProxyPort: 3128
 
+        # Identity (optional) — attach a persistent browser fingerprint and
+        # cookie jar to each IP.  Disabled by default.  Uncomment to enable.
+        # identity:
+        #   enabled: true
+        #   cookies: true             # persist session cookies per IP
+        #   # profile: chrome-windows # fixed profile; omit for random
+        #   rotateAfterRequests: 100  # rotate after N successful requests
+        #   rotateOn429: true         # rotate immediately on 429
+        #   warmup:
+        #     enabled: true
+        #     path: /
+
     # =========================================================================
     # SERVER SETTINGS  (optional)
     # =========================================================================

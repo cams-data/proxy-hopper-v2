@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from .config import ProxyProvider, TargetConfig
+from .identity import IdentityStore
 from .metrics import get_metrics
 from .models import PendingRequest, ProxyResponse
 from .pool import IPPool
@@ -47,11 +48,8 @@ class TargetManager:
         quarantine_sweep_interval: float | None = None,
     ) -> None:
         self._config = config
-        pool_kwargs: dict = {"debug": debug_quarantine}
-        if quarantine_sweep_interval is not None:
-            pool_kwargs["sweep_interval"] = quarantine_sweep_interval
-        self._pool = IPPool(config, backend, **pool_kwargs)
         self._regex = config.compiled_regex()
+
         # Build auth map: address → aiohttp.BasicAuth (from provider credentials)
         provider_map = {p.name: p for p in (providers or [])}
         self._auth_map: dict[str, aiohttp.BasicAuth | None] = {}
@@ -66,6 +64,23 @@ class TargetManager:
                     self._auth_map[ip.address] = None
             else:
                 self._auth_map[ip.address] = None
+
+        # Identity store — None when identity is disabled for this target.
+        # Must be created before IPPool so the release callback is available.
+        if config.identity.enabled:
+            self._identity_store: IdentityStore | None = IdentityStore(
+                config.name, config.identity
+            )
+        else:
+            self._identity_store = None
+
+        pool_kwargs: dict = {"debug": debug_quarantine}
+        if quarantine_sweep_interval is not None:
+            pool_kwargs["sweep_interval"] = quarantine_sweep_interval
+        if self._identity_store is not None:
+            pool_kwargs["on_quarantine_release"] = self._on_ip_released_from_quarantine
+        self._pool = IPPool(config, backend, **pool_kwargs)
+
         self._request_queue: asyncio.Queue[PendingRequest] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
         self._inflight: set[asyncio.Task] = set()
@@ -86,6 +101,11 @@ class TargetManager:
         self._session = aiohttp.ClientSession(
             auto_decompress=False,
             connector=connector,
+            # Disable aiohttp's built-in cookie jar — the identity system
+            # manages cookies per-(IP, target) manually.  Without this,
+            # aiohttp would accumulate cookies in a single shared jar across
+            # all IPs, which defeats per-identity isolation.
+            cookie_jar=aiohttp.DummyCookieJar(),
         )
         await self._pool.start()
         self._running = True
@@ -148,6 +168,25 @@ class TargetManager:
             await self._session.close()
             self._session = None
         logger.info("TargetManager '%s' stopped", self._config.name)
+
+    # ------------------------------------------------------------------
+    # Identity callbacks
+    # ------------------------------------------------------------------
+
+    async def _on_ip_released_from_quarantine(self, address: str) -> None:
+        """Called by IPPool's sweep when an IP returns from quarantine.
+
+        Rotates the identity so the IP re-enters the pool with a fresh persona.
+        Warmup (if configured) would be triggered here in a future phase.
+        """
+        if self._identity_store is None:
+            return
+        self._identity_store.rotate(address, reason="quarantine_release")
+        if self._config.identity.warmup and self._config.identity.warmup.enabled:
+            logger.debug(
+                "TargetManager '%s': warmup configured for %s — not yet implemented",
+                self._config.name, address,
+            )
 
     # ------------------------------------------------------------------
     # Public interface
@@ -256,6 +295,17 @@ class TargetManager:
 
         proxy_auth = self._auth_map.get(address)
 
+        # --- Identity: apply fingerprint headers and cookies ---
+        # get_or_create is called here (not in the dispatcher) so the identity
+        # is retrieved as close to the network call as possible.
+        identity = (
+            self._identity_store.get_or_create(address)
+            if self._identity_store is not None
+            else None
+        )
+        if identity is not None:
+            forward_headers = identity.apply_to_headers(forward_headers)
+
         try:
             logger.trace(  # type: ignore[attr-defined]
                 "TargetManager '%s': opening connection to proxy %s for %s %s",
@@ -284,7 +334,20 @@ class TargetManager:
                         self._config.name, request.method, request.url,
                         address, resp.status, outcome, elapsed,
                     )
-                    await self._pool.record_failure(address, elapsed)
+                    was_quarantined = await self._pool.record_failure(address, elapsed)
+
+                    # Identity rotation on failure:
+                    # - quarantine: rotate so IP re-enters pool with a fresh persona
+                    # - 429 + rotate_on_429: rotate immediately (session burned)
+                    if identity is not None and self._identity_store is not None:
+                        if was_quarantined:
+                            self._identity_store.rotate(address, reason="quarantine")
+                        elif (
+                            resp.status == 429
+                            and self._config.identity.rotate_on_429
+                        ):
+                            self._identity_store.rotate(address, reason="429")
+
                     if request.can_retry():
                         get_metrics().record_retry(self._config.name)
                         retry = request.clone_for_retry()
@@ -316,6 +379,15 @@ class TargetManager:
                         address, resp.status, elapsed,
                     )
                     await self._pool.record_success(address, elapsed)
+
+                    # Identity: collect any cookies from the response, then
+                    # tick the request counter and check the rotation limit.
+                    if identity is not None and self._identity_store is not None:
+                        identity.update_from_response(list(resp.raw_headers))
+                        identity.record_request()
+                        if self._identity_store.needs_rotation(address):
+                            self._identity_store.rotate(address, reason="request_limit")
+
                     if not request.future.done():
                         request.future.set_result(
                             ProxyResponse(resp.status, dict(resp.headers), body)
@@ -327,7 +399,13 @@ class TargetManager:
                 "TargetManager '%s': connection error via %s for %s %s: %s",
                 self._config.name, address, request.method, request.url, exc,
             )
-            await self._pool.record_failure(address)
+            was_quarantined = await self._pool.record_failure(address)
+            if (
+                identity is not None
+                and self._identity_store is not None
+                and was_quarantined
+            ):
+                self._identity_store.rotate(address, reason="quarantine")
             if request.can_retry():
                 get_metrics().record_retry(self._config.name)
                 logger.debug(
@@ -357,7 +435,13 @@ class TargetManager:
                 "TargetManager '%s': unexpected error via %s for %s %s",
                 self._config.name, address, request.method, request.url,
             )
-            await self._pool.record_failure(address)
+            was_quarantined = await self._pool.record_failure(address)
+            if (
+                identity is not None
+                and self._identity_store is not None
+                and was_quarantined
+            ):
+                self._identity_store.rotate(address, reason="quarantine")
             if request.can_retry():
                 get_metrics().record_retry(self._config.name)
                 logger.debug(

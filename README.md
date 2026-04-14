@@ -14,6 +14,7 @@ Your app  ──────────────────►  Proxy Hoppe
 - Each target has its own pool of external proxy IPs managed as a FIFO queue
 - IPs that accumulate failures are quarantined for a configurable period, then released back
 - All pool state can be held in-memory (single instance) or Redis (multi-instance HA)
+- Each (IP, target) pair can carry a persistent client identity — browser fingerprint headers and a cookie jar — that rotates automatically with the IP
 
 ### Interaction modes
 
@@ -69,6 +70,16 @@ targets:
     numRetries: 3
     ipFailuresUntilQuarantine: 5
     quarantineTime: 2m
+
+    # Optional: attach a persistent browser identity to each IP
+    identity:
+      enabled: true
+      cookies: true             # persist session cookies per IP
+      rotateAfterRequests: 100  # voluntarily rotate after 100 requests
+      rotateOn429: true         # rotate immediately on a 429 response
+      warmup:
+        enabled: true           # prime the identity with a GET before first use
+        path: /
 ```
 
 ```bash
@@ -103,7 +114,9 @@ curl -H "X-Proxy-Hopper-Target: https://example.com" \
 examples/
 ├── docker-compose/
 │   ├── local-backend/     # Single container, in-memory pool
-│   └── local-redis/       # proxy-hopper + Redis, scalable
+│   ├── local-redis/       # proxy-hopper + Redis, scalable
+│   ├── auth-api-keys/     # Static API key authentication
+│   └── auth-oidc/         # OIDC SSO authentication
 └── kubernetes/            # Kubernetes manifests (Deployment, HPA, Redis StatefulSet)
 python_modules/
 ├── proxy-hopper/          # Core package
@@ -117,6 +130,8 @@ python_modules/
 |---|---|
 | [docker-compose/local-backend](examples/docker-compose/local-backend/) | Single Docker container, in-memory pool — good for development and single-host deployments |
 | [docker-compose/local-redis](examples/docker-compose/local-redis/) | Docker Compose with Redis, scalable to multiple replicas |
+| [docker-compose/auth-api-keys](examples/docker-compose/auth-api-keys/) | Auth enabled with static API keys and a local admin user |
+| [docker-compose/auth-oidc](examples/docker-compose/auth-oidc/) | Auth enabled with OIDC SSO (Authentik, Keycloak, etc.) |
 | [kubernetes/](examples/kubernetes/) | Full Kubernetes setup: Deployment, HPA, Redis StatefulSet, Services |
 
 ## Running tests
