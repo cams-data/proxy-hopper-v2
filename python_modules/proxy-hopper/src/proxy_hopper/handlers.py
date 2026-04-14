@@ -47,7 +47,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlparse
 
 import aiohttp
@@ -56,6 +56,7 @@ from .metrics import get_metrics
 from .models import PendingRequest, ProxyResponse
 
 if TYPE_CHECKING:
+    from .config import AuthConfig
     from .target_manager import TargetManager
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ _HOP_BY_HOP = frozenset({
 _TARGET_HEADER  = "x-proxy-hopper-target"
 _TAG_HEADER     = "x-proxy-hopper-tag"
 _RETRIES_HEADER = "x-proxy-hopper-retries"
+_AUTH_HEADER    = "x-proxy-hopper-auth"
 
 # ---------------------------------------------------------------------------
 # Low-level I/O helpers
@@ -306,6 +308,11 @@ class ForwardingHandler(RequestHandler):
 
     Optional per-request control headers:
 
+    ``X-Proxy-Hopper-Auth: Bearer <token>``
+        Required when ``auth.enabled: true``.  Accepts an API key, a
+        locally-issued JWT, or an OIDC access token.  This header is always
+        stripped before the request is forwarded upstream.
+
     ``X-Proxy-Hopper-Tag: <string>``
         Free-form label added to Prometheus metrics (``tag`` label on
         ``proxy_hopper_requests_total`` / ``proxy_hopper_responses_total``).
@@ -317,21 +324,71 @@ class ForwardingHandler(RequestHandler):
 
         session = requests.Session()
         session.headers["X-Proxy-Hopper-Target"] = "https://api.example.com"
+        session.headers["X-Proxy-Hopper-Auth"] = "Bearer ph_mykey"
         session.headers["X-Proxy-Hopper-Tag"] = "search"
         resp = session.get("http://proxy-hopper:8080/v1/endpoint")
     """
 
-    def __init__(self, managers: list[TargetManager]) -> None:
+    def __init__(
+        self,
+        managers: list[TargetManager],
+        auth_config: Optional["AuthConfig"] = None,
+        runtime_secret: str = "",
+    ) -> None:
         self._managers = managers
+        self._auth_config = auth_config
+        self._runtime_secret = runtime_secret
 
     def can_handle(self, method, target, http_version, headers) -> bool:
         return _TARGET_HEADER in headers
 
     async def handle(self, reader, writer, method, target, http_version, headers) -> None:
+        # --- Auth check (runs before any other work) ---
+        if self._auth_config is not None and self._auth_config.enabled:
+            raw_auth = headers.get(_AUTH_HEADER, "")
+            token = raw_auth.removeprefix("Bearer ").strip()
+            if not token:
+                _write_error(
+                    writer, 401,
+                    "Authentication required — set X-Proxy-Hopper-Auth: Bearer <token>",
+                )
+                await writer.drain()
+                return
+
+            from .auth import Permission, authenticate_token, can_access_target, get_permissions
+            try:
+                user = await authenticate_token(token, self._auth_config, self._runtime_secret)
+            except ValueError as exc:
+                _write_error(writer, 401, str(exc))
+                await writer.drain()
+                return
+
+            if user.is_api_key:
+                # API keys grant proxy access unconditionally — just check target
+                pass
+            else:
+                perms = get_permissions(user.role, self._auth_config)
+                if Permission.read not in perms:
+                    _write_error(writer, 403, f"Role '{user.role}' does not have proxy access")
+                    await writer.drain()
+                    return
+
+            # Check target access — find the matching manager to get the target name
+            proxy_target_prefix = headers.get(_TARGET_HEADER, "").rstrip("/")
+            candidate_url = proxy_target_prefix + target
+            matched = _find_first_manager(self._managers, candidate_url)
+            if matched is not None and not can_access_target(user, matched._config.name, self._auth_config):
+                if user.is_api_key:
+                    _write_error(writer, 403, f"API key '{user.sub}' is not permitted to access target '{matched._config.name}'")
+                else:
+                    _write_error(writer, 403, f"Role '{user.role}' cannot access target '{matched._config.name}'")
+                await writer.drain()
+                return
+
+        # --- Parse optional per-request control headers ---
         proxy_target = headers[_TARGET_HEADER].rstrip("/")
         real_url = proxy_target + target   # "https://api.example.com" + "/v1/data?foo=bar"
 
-        # --- Parse optional per-request control headers ---
         tag = headers.get(_TAG_HEADER, "")
 
         num_retries_override: int | None = None
@@ -383,6 +440,8 @@ VALID_MODES: frozenset[str] = frozenset(_MODE_REGISTRY)
 def _build_handlers(
     managers: list[TargetManager],
     enabled_modes: set[str] | None = None,
+    auth_config: Optional["AuthConfig"] = None,
+    runtime_secret: str = "",
 ) -> list[RequestHandler]:
     """Instantiate enabled handlers in dispatch-priority order.
 
@@ -391,8 +450,13 @@ def _build_handlers(
     testing).
     """
     active = enabled_modes if enabled_modes is not None else set(VALID_MODES)
-    return [
-        _MODE_REGISTRY[name](managers)
-        for name in _HANDLER_ORDER
-        if name in active
-    ]
+    handlers = []
+    for name in _HANDLER_ORDER:
+        if name not in active:
+            continue
+        cls = _MODE_REGISTRY[name]
+        if name == "forwarding":
+            handlers.append(cls(managers, auth_config=auth_config, runtime_secret=runtime_secret))
+        else:
+            handlers.append(cls(managers))
+    return handlers

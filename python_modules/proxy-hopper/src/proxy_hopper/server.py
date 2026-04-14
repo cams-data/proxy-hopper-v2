@@ -24,6 +24,7 @@ from .handlers import (
 from .metrics import get_metrics
 
 if TYPE_CHECKING:
+    from .config import AuthConfig
     from .target_manager import TargetManager
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,8 @@ class ProxyServer:
         host: str = "0.0.0.0",
         port: int = 8080,
         enabled_modes: set[str] | None = None,
+        auth_config: "AuthConfig | None" = None,
+        runtime_secret: str = "",
     ) -> None:
         from .handlers import VALID_MODES
         self._managers = target_managers
@@ -75,6 +78,8 @@ class ProxyServer:
         self._handlers: list[RequestHandler] = _build_handlers(
             target_managers,
             enabled_modes if enabled_modes is not None else set(VALID_MODES),
+            auth_config=auth_config,
+            runtime_secret=runtime_secret,
         )
 
     # ------------------------------------------------------------------

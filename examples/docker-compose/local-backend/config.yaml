@@ -41,6 +41,32 @@
 #         count: 3      # randomly sample 3 IPs from the provider's list
 
 # =============================================================================
+# AUTHENTICATION  (optional — disabled by default)
+# =============================================================================
+# When auth.enabled is false, the proxy accepts all requests without a token.
+# Enable auth to require clients to present a Bearer token on every request.
+#
+# Hash a password:  proxy-hopper hash-password mysecret
+#
+# auth:
+#   enabled: false
+#   admin:
+#     username: admin
+#     passwordHash: "$2b$12$..."       # proxy-hopper hash-password <password>
+#   # API keys are for proxy access only — not the admin API.
+#   # targets: ["*"] allows all targets; list named targets to restrict.
+#   apiKeys:
+#     - name: my-service
+#       key: "ph_abc123_changeme"
+#       targets: ["*"]
+#   jwtSecret: "change-me-to-a-long-random-string"
+#   jwtExpiryMinutes: 60
+#
+# Uncomment in server: block below to expose the admin API:
+#   admin: true
+#   adminPort: 8081
+
+# =============================================================================
 # TARGETS  (required)
 # =============================================================================
 # Targets are evaluated top-to-bottom — the first regex match handles the
@@ -129,11 +155,10 @@ targets:
 #     - http://1.1.1.1
 #     - http://www.google.com
 #
-#   # Interaction modes — disable any you don't want to expose.
-#   # Valid values: connect_tunnel, http_proxy, forwarding
-#   # Default: all three enabled.
-#   # PROXY_HOPPER_MODES=connect_tunnel,http_proxy,forwarding
-#   modes:
-#     - connect_tunnel   # HTTPS CONNECT tunnel (blind byte relay, limited retry)
-#     - http_proxy       # traditional HTTP proxy (absolute-form URLs)
-#     - forwarding       # header-based forwarding (X-Proxy-Hopper-Target) — full retry support
+#   # Prometheus metrics
+#   metrics: false             # PROXY_HOPPER_METRICS
+#   metricsPort: 9090          # PROXY_HOPPER_METRICS_PORT
+#
+#   # Admin API (management + login endpoint, foundation for GraphQL/UI)
+#   admin: false               # PROXY_HOPPER_ADMIN
+#   adminPort: 8081            # PROXY_HOPPER_ADMIN_PORT
