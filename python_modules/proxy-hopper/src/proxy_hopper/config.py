@@ -171,6 +171,26 @@ Full config file reference
       adminHost: 0.0.0.0        # PROXY_HOPPER_ADMIN_HOST
 
     # ---------------------------------------------------------------------------
+    # Auth env var overrides (PROXY_HOPPER_AUTH_*)
+    # ---------------------------------------------------------------------------
+    # Selected auth fields can be injected via environment variables so that
+    # secrets never need to appear in a config file or ConfigMap.
+    #
+    # Auth env vars take precedence over the auth: block in the YAML file.
+    # This is the reverse of the server: block (where YAML beats env vars) and
+    # is intentional — the typical pattern is to keep non-secret config in YAML
+    # and inject secrets from the environment (Kubernetes Secret, Docker secret,
+    # CI variable, etc.).
+    #
+    # PROXY_HOPPER_AUTH_ENABLED          — "true" / "false"
+    # PROXY_HOPPER_AUTH_JWT_SECRET       — JWT signing secret
+    # PROXY_HOPPER_AUTH_JWT_EXPIRY_MINUTES — token lifetime in minutes
+    # PROXY_HOPPER_AUTH_ADMIN_PASSWORD_HASH — bcrypt hash for the admin user
+    #                                      (ignored if auth.admin is not set in YAML)
+    # PROXY_HOPPER_AUTH_OIDC_ISSUER      — OIDC issuer URL
+    # PROXY_HOPPER_AUTH_OIDC_AUDIENCE    — expected 'aud' claim
+
+    # ---------------------------------------------------------------------------
     # Auth (optional)
     # ---------------------------------------------------------------------------
     # Controls who can use the proxy and who can access the admin API.
@@ -254,6 +274,8 @@ import yaml
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import EnvSettingsSource
+
+from .identity.config import IdentityConfig, WarmupConfig  # noqa: F401  (re-exported for callers)
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +430,7 @@ class TargetConfig(BaseModel):
     ip_failures_until_quarantine: int = Field(default=5, ge=1)
     quarantine_time: float = Field(default=120.0)
     default_proxy_port: int = Field(default=8080)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
 
     @field_validator("regex")
     @classmethod
@@ -516,6 +539,13 @@ _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
     "defaultProxyPort": "default_proxy_port",
 }
 
+_IDENTITY_CAMEL_TO_SNAKE: dict[str, str] = {
+    "rotateAfterRequests": "rotate_after_requests",
+    "rotateOn429": "rotate_on_429",
+}
+
+_IDENTITY_WARMUP_CAMEL_TO_SNAKE: dict[str, str] = {}  # no camelCase fields currently
+
 _POOL_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipList": "ip_list",
     "ipRequests": "ip_requests",
@@ -562,6 +592,15 @@ _AUTH_OIDC_CAMEL_TO_SNAKE: dict[str, str] = {
 _DURATION_FIELDS = {"min_request_interval", "max_queue_wait", "quarantine_time"}
 
 
+def _normalise_identity(raw: dict) -> IdentityConfig:
+    """Normalise and parse an ``identity:`` YAML block into an ``IdentityConfig``."""
+    out = {_IDENTITY_CAMEL_TO_SNAKE.get(k, k): v for k, v in raw.items()}
+    if "warmup" in out and isinstance(out["warmup"], dict):
+        warmup_raw = {_IDENTITY_WARMUP_CAMEL_TO_SNAKE.get(k, k): v for k, v in out["warmup"].items()}
+        out["warmup"] = WarmupConfig(**warmup_raw)
+    return IdentityConfig(**out)
+
+
 def _normalise_target(raw: dict) -> dict:
     out: dict = {}
     for key, value in raw.items():
@@ -569,6 +608,8 @@ def _normalise_target(raw: dict) -> dict:
     for field in _DURATION_FIELDS:
         if field in out and isinstance(out[field], str):
             out[field] = _parse_duration(out[field])
+    if "identity" in out and isinstance(out["identity"], dict):
+        out["identity"] = _normalise_identity(out["identity"])
     return out
 
 

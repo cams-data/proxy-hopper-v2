@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import Optional
 
 from .backend.base import IPPoolBackend
@@ -47,11 +48,13 @@ class IPPool:
         backend: IPPoolBackend,
         debug: bool = False,
         sweep_interval: float = _QUARANTINE_SWEEP_INTERVAL,
+        on_quarantine_release: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._config = config
         self._backend = backend
         self._debug = debug
         self._sweep_interval = sweep_interval
+        self._on_quarantine_release = on_quarantine_release
         self._addresses = [ip.address for ip in config.resolved_ips]
         # Map address → (provider, region_tag) for enriched metric labels
         self._ip_meta: dict[str, tuple[str, str]] = {
@@ -139,12 +142,16 @@ class IPPool:
             name=f"ph:pool:cooldown:{self._config.name}:{address}",
         )
 
-    async def record_failure(self, address: str, elapsed: float = 0.0) -> None:
+    async def record_failure(self, address: str, elapsed: float = 0.0) -> bool:
         """Increment failure count; quarantine IP if threshold is reached.
 
         *elapsed* is the time already spent on the request — used to adjust the
         cooldown delay so that ``min_request_interval`` is measured from request
         send time rather than response receipt time.
+
+        Returns True if the IP was quarantined as a result of this failure,
+        False otherwise.  Callers (e.g. TargetManager) use this to trigger
+        identity rotation on quarantine.
         """
         threshold = self._config.ip_failures_until_quarantine
         failures = await self._backend.increment_failures(self._config.name, address)
@@ -163,12 +170,14 @@ class IPPool:
                 "IPPool '%s': %s quarantined for %.0fs after %d consecutive failures",
                 self._config.name, address, self._config.quarantine_time, failures,
             )
+            return True
         else:
             delay = max(0.0, self._config.min_request_interval - elapsed)
             asyncio.create_task(
                 self._return_after_cooldown(address, delay),
                 name=f"ph:pool:cooldown:{self._config.name}:{address}",
             )
+            return False
 
     async def get_status(self) -> dict:
         size, quarantined = await self._backend.pool_size_and_quarantine(self._config.name)
@@ -208,6 +217,11 @@ class IPPool:
                 self._config.name, len(expired), "y" if len(expired) == 1 else "ies",
             )
         if expired:
+            # Notify listener (e.g. IdentityStore) before returning IPs to the
+            # pool so the fresh identity is ready when the IP is next acquired.
+            if self._on_quarantine_release is not None:
+                for address in expired:
+                    await self._on_quarantine_release(address)
             await self._backend.push_ips(self._config.name, expired)
             for address in expired:
                 logger.info(
