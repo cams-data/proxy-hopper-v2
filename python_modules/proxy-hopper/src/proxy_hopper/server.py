@@ -181,7 +181,7 @@ class ProxyServer:
                 logger.warning("ProxyServer: update event for '%s' but target not found in store", event.name)
                 return
             # Find and replace the existing manager, stopping it first
-            old = next((m for m in self._managers if m.config.name == event.name), None)
+            old = next((m for m in self._managers if m._config.name == event.name), None)
             new_mgr = self._build_manager(config)
             await new_mgr.start()
             if old is not None:
@@ -194,7 +194,7 @@ class ProxyServer:
             logger.info("ProxyServer: dynamically updated target '%s'", event.name)
 
         elif event.type == "remove":
-            old = next((m for m in self._managers if m.config.name == event.name), None)
+            old = next((m for m in self._managers if m._config.name == event.name), None)
             if old is None:
                 return
             # In-place removal
