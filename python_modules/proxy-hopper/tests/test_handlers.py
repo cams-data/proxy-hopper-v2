@@ -7,8 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from proxy_hopper.backend.memory import MemoryIPPoolBackend
+from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import TargetConfig
+from proxy_hopper.pool_store import IPPoolStore
 from test_helpers import make_target_config as _make_target_config
 from proxy_hopper.handlers import (
     ForwardingHandler,
@@ -31,7 +32,7 @@ def make_manager(regex: str = r".*example\.com.*", name: str = "test") -> Target
         ip_failures_until_quarantine=3,
         quarantine_time=0.1,
     )
-    return TargetManager(cfg, MemoryIPPoolBackend())
+    return TargetManager(cfg, IPPoolStore(MemoryBackend()))
 
 
 # ---------------------------------------------------------------------------

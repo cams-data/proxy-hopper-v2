@@ -6,7 +6,7 @@ TargetManager owns:
   - HTTP forwarding logic (aiohttp) and retry decisions
 
 All IP state and policy is delegated to IPPool.  TargetManager never
-imports or touches IPPoolBackend directly.
+imports or touches IPPoolStore or Backend directly.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from .models import PendingRequest, ProxyResponse
 from .pool import IPPool
 
 if TYPE_CHECKING:
-    from .backend.base import IPPoolBackend
+    from .pool_store import IPPoolStore
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class TargetManager:
     def __init__(
         self,
         config: TargetConfig,
-        backend: "IPPoolBackend",
+        backend: "IPPoolStore",
         providers: list[ProxyProvider] | None = None,
         proxy_read_timeout: float | None = None,
         debug_quarantine: bool = False,

@@ -1,10 +1,13 @@
 """In-process asyncio backend — pure storage primitives, no business logic.
 
-Data structures per target
---------------------------
-_pools       : dict[target, asyncio.Queue[str]]   — available IP addresses
-_failures    : dict[target, dict[address, int]]   — consecutive failure counts
-_quarantine  : dict[target, dict[address, float]] — address → release epoch
+Data structures
+---------------
+_queues     : dict[key, asyncio.Queue[str]]        — FIFO queues
+_counters   : dict[key, int]                       — atomic counters
+_sorted     : dict[key, dict[member, float]]       — sorted sets (member → score)
+_kv         : dict[key, str]                       — key-value store
+_pubsub     : dict[channel, list[Queue[str]]]      — one Queue per active subscriber
+_init_keys  : set[str]                             — claimed init keys
 
 Thread / concurrency safety
 ---------------------------
@@ -20,130 +23,208 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
 
-from .base import IPPoolBackend
+from .base import Backend
 
 logger = logging.getLogger(__name__)
 
 
-class MemoryIPPoolBackend(IPPoolBackend):
+class MemoryBackend(Backend):
     """Asyncio-queue / dict backend for single-instance deployments."""
 
     def __init__(self) -> None:
-        self._pools: dict[str, asyncio.Queue[str]] = {}
-        self._failures: dict[str, dict[str, int]] = {}
-        self._quarantine: dict[str, dict[str, float]] = {}
-        self._initialised: set[str] = set()
+        self._queues: dict[str, asyncio.Queue[str]] = {}
+        self._counters: dict[str, int] = {}
+        self._sorted: dict[str, dict[str, float]] = {}
+        self._kv: dict[str, str] = {}
+        self._pubsub: dict[str, list[asyncio.Queue[str]]] = {}
+        self._init_keys: set[str] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        logger.debug("MemoryIPPoolBackend: started")
+        logger.debug("MemoryBackend: started")
 
     async def stop(self) -> None:
-        logger.debug("MemoryIPPoolBackend: stopped")
+        logger.debug("MemoryBackend: stopped")
 
     # ------------------------------------------------------------------
-    # Target initialisation
+    # Init lock
     # ------------------------------------------------------------------
 
-    async def init_target(self, target: str) -> bool:
-        if target in self._initialised:
+    async def claim_init(self, key: str) -> bool:
+        if key in self._init_keys:
             logger.trace(  # type: ignore[attr-defined]
-                "MemoryIPPoolBackend: init_target '%s' → already initialised", target
+                "MemoryBackend: claim_init '%s' → already claimed", key
             )
             return False
-        self._initialised.add(target)
-        self._pools[target] = asyncio.Queue()
-        self._failures[target] = {}
-        self._quarantine[target] = {}
+        self._init_keys.add(key)
         logger.trace(  # type: ignore[attr-defined]
-            "MemoryIPPoolBackend: init_target '%s' → initialised", target
+            "MemoryBackend: claim_init '%s' → claimed", key
         )
         return True
 
     # ------------------------------------------------------------------
-    # IP pool queue
+    # Queue
     # ------------------------------------------------------------------
 
-    async def push_ip(self, target: str, address: str) -> None:
-        await self._pools[target].put(address)
+    async def queue_push(self, key: str, value: str) -> None:
+        if key not in self._queues:
+            self._queues[key] = asyncio.Queue()
+        await self._queues[key].put(value)
         logger.trace(  # type: ignore[attr-defined]
-            "MemoryIPPoolBackend: push_ip '%s' %s (queue size: %d)",
-            target, address, self._pools[target].qsize(),
+            "MemoryBackend: queue_push '%s' %r (size: %d)",
+            key, value, self._queues[key].qsize(),
         )
 
-    async def pop_ip(self, target: str, timeout: float) -> Optional[str]:
+    async def queue_push_many(self, key: str, values: list[str]) -> None:
+        if not values:
+            return
+        if key not in self._queues:
+            self._queues[key] = asyncio.Queue()
+        for value in values:
+            await self._queues[key].put(value)
+        logger.trace(  # type: ignore[attr-defined]
+            "MemoryBackend: queue_push_many '%s' [%d values] (size: %d)",
+            key, len(values), self._queues[key].qsize(),
+        )
+
+    async def queue_pop_blocking(self, key: str, timeout: float) -> Optional[str]:
+        if key not in self._queues:
+            self._queues[key] = asyncio.Queue()
         try:
-            result = await asyncio.wait_for(self._pools[target].get(), timeout=timeout)
+            result = await asyncio.wait_for(self._queues[key].get(), timeout=timeout)
             logger.trace(  # type: ignore[attr-defined]
-                "MemoryIPPoolBackend: pop_ip '%s' → %s", target, result
+                "MemoryBackend: queue_pop_blocking '%s' → %r", key, result
             )
             return result
         except (asyncio.TimeoutError, TimeoutError):
             logger.trace(  # type: ignore[attr-defined]
-                "MemoryIPPoolBackend: pop_ip '%s' → timeout after %.2fs", target, timeout
+                "MemoryBackend: queue_pop_blocking '%s' → timeout after %.2fs", key, timeout
             )
             return None
 
-    async def pool_size(self, target: str) -> int:
-        return self._pools[target].qsize()
+    async def queue_size(self, key: str) -> int:
+        return self._queues[key].qsize() if key in self._queues else 0
 
     # ------------------------------------------------------------------
-    # Failure counter
+    # Counter
     # ------------------------------------------------------------------
 
-    async def increment_failures(self, target: str, address: str) -> int:
+    async def counter_increment(self, key: str) -> int:
         # No await between read and write — atomically safe in asyncio
-        current = self._failures[target].get(address, 0)
-        self._failures[target][address] = current + 1
+        new = self._counters.get(key, 0) + 1
+        self._counters[key] = new
         logger.trace(  # type: ignore[attr-defined]
-            "MemoryIPPoolBackend: increment_failures '%s' %s → %d",
-            target, address, current + 1,
+            "MemoryBackend: counter_increment '%s' → %d", key, new
         )
-        return current + 1
+        return new
 
-    async def reset_failures(self, target: str, address: str) -> None:
-        self._failures[target][address] = 0
+    async def counter_set(self, key: str, value: int) -> None:
+        self._counters[key] = value
         logger.trace(  # type: ignore[attr-defined]
-            "MemoryIPPoolBackend: reset_failures '%s' %s", target, address
+            "MemoryBackend: counter_set '%s' = %d", key, value
         )
 
-    async def get_failures(self, target: str, address: str) -> int:
-        return self._failures[target].get(address, 0)
+    async def counter_get(self, key: str) -> int:
+        return self._counters.get(key, 0)
 
     # ------------------------------------------------------------------
-    # Quarantine sorted set
+    # Sorted set
     # ------------------------------------------------------------------
 
-    async def quarantine_add(
-        self, target: str, address: str, release_at: float
-    ) -> None:
-        self._quarantine[target][address] = release_at
+    async def sorted_set_add(self, key: str, member: str, score: float) -> None:
+        if key not in self._sorted:
+            self._sorted[key] = {}
+        self._sorted[key][member] = score
         logger.trace(  # type: ignore[attr-defined]
-            "MemoryIPPoolBackend: quarantine_add '%s' %s (release_at=%.3f)",
-            target, address, release_at,
+            "MemoryBackend: sorted_set_add '%s' member=%r score=%.3f", key, member, score
         )
 
-    async def quarantine_pop_expired(
-        self, target: str, now: float
+    async def sorted_set_pop_by_max_score(
+        self, key: str, max_score: float
     ) -> list[str]:
-        # Identify and atomically remove in one pass — safe in asyncio
-        expired = [
-            addr
-            for addr, release_at in self._quarantine[target].items()
-            if release_at <= now
-        ]
-        for addr in expired:
-            del self._quarantine[target][addr]
+        if key not in self._sorted:
+            return []
+        # Identify and remove in one pass — atomically safe in asyncio
+        expired = [m for m, s in self._sorted[key].items() if s <= max_score]
+        for m in expired:
+            del self._sorted[key][m]
         logger.trace(  # type: ignore[attr-defined]
-            "MemoryIPPoolBackend: quarantine_pop_expired '%s' → %d expired: %s",
-            target, len(expired), expired,
+            "MemoryBackend: sorted_set_pop_by_max_score '%s' max=%.3f → %d: %s",
+            key, max_score, len(expired), expired,
         )
         return expired
 
-    async def quarantine_list(self, target: str) -> list[str]:
-        return list(self._quarantine[target].keys())
+    async def sorted_set_members(self, key: str) -> list[str]:
+        return list(self._sorted[key].keys()) if key in self._sorted else []
+
+    # ------------------------------------------------------------------
+    # Key-value store
+    # ------------------------------------------------------------------
+
+    async def kv_set(self, key: str, value: str) -> None:
+        self._kv[key] = value
+        logger.trace(  # type: ignore[attr-defined]
+            "MemoryBackend: kv_set '%s'", key
+        )
+
+    async def kv_get(self, key: str) -> Optional[str]:
+        return self._kv.get(key)
+
+    async def kv_delete(self, key: str) -> None:
+        self._kv.pop(key, None)
+        logger.trace(  # type: ignore[attr-defined]
+            "MemoryBackend: kv_delete '%s'", key
+        )
+
+    async def kv_list(self, prefix: str) -> list[tuple[str, str]]:
+        return [(k, v) for k, v in self._kv.items() if k.startswith(prefix)]
+
+    # ------------------------------------------------------------------
+    # Pub/sub
+    # ------------------------------------------------------------------
+
+    async def publish(self, channel: str, message: str) -> None:
+        subscribers = self._pubsub.get(channel, [])
+        for q in subscribers:
+            await q.put(message)
+        logger.trace(  # type: ignore[attr-defined]
+            "MemoryBackend: publish '%s' → %d subscriber(s)", channel, len(subscribers)
+        )
+
+    @asynccontextmanager
+    async def subscribe(self, channel: str) -> AsyncIterator[AsyncIterator[str]]:  # type: ignore[override]
+        q: asyncio.Queue[str] = asyncio.Queue()
+        if channel not in self._pubsub:
+            self._pubsub[channel] = []
+        self._pubsub[channel].append(q)
+        logger.trace(  # type: ignore[attr-defined]
+            "MemoryBackend: subscribe '%s' (now %d subscriber(s))",
+            channel, len(self._pubsub[channel]),
+        )
+
+        async def _iter() -> AsyncIterator[str]:
+            while True:
+                yield await q.get()
+
+        try:
+            yield _iter()
+        finally:
+            self._pubsub[channel].remove(q)
+            logger.trace(  # type: ignore[attr-defined]
+                "MemoryBackend: unsubscribe '%s' (now %d subscriber(s))",
+                channel, len(self._pubsub[channel]),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible alias
+# ---------------------------------------------------------------------------
+
+#: Deprecated alias — use MemoryBackend directly.
+MemoryIPPoolBackend = MemoryBackend

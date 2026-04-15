@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from proxy_hopper.backend.memory import MemoryIPPoolBackend
+from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import TargetConfig
+from proxy_hopper.pool_store import IPPoolStore
 from test_helpers import make_target_config as _make_target_config
 from proxy_hopper.models import PendingRequest, ProxyResponse
 from proxy_hopper.server import (
@@ -96,7 +97,7 @@ class TestFindManager:
         managers = []
         for regex in regexes:
             cfg = make_target_config(regex=regex)
-            backend = MemoryIPPoolBackend()
+            backend = IPPoolStore(MemoryBackend())
             managers.append(TargetManager(cfg, backend))
         return ProxyServer(managers)
 
@@ -114,7 +115,7 @@ class TestFindManager:
         cfg1 = make_target_config(r".*example\.com.*")
         cfg1 = TargetConfig(**{**cfg1.model_dump(), "name": "first"})
         cfg2 = TargetConfig(**{**make_target_config(r".*example\.com.*").model_dump(), "name": "second"})
-        b1, b2 = MemoryIPPoolBackend(), MemoryIPPoolBackend()
+        b1, b2 = IPPoolStore(MemoryBackend()), IPPoolStore(MemoryBackend())
         m1, m2 = TargetManager(cfg1, b1), TargetManager(cfg2, b2)
         server = ProxyServer([m1, m2])
         assert server._find_manager("http://example.com/") is m1
@@ -137,7 +138,7 @@ class TestProxyServerHTTP:
 
     async def test_unmatched_target_returns_502(self):
         cfg = make_target_config(r".*example\.com.*")
-        backend = MemoryIPPoolBackend()
+        backend = IPPoolStore(MemoryBackend())
         mgr = TargetManager(cfg, backend)
         server, port = await self._start_server_on_free_port([mgr])
 
@@ -158,7 +159,7 @@ class TestProxyServerHTTP:
 
     async def test_matched_target_routes_to_manager(self):
         cfg = make_target_config(r".*example\.com.*")
-        backend = MemoryIPPoolBackend()
+        backend = IPPoolStore(MemoryBackend())
         mgr = TargetManager(cfg, backend)
 
         fake_response = ProxyResponse(
@@ -196,7 +197,7 @@ class TestProxyServerHTTP:
 class TestProxyServerLifecycle:
     async def test_start_and_stop(self):
         cfg = make_target_config()
-        backend = MemoryIPPoolBackend()
+        backend = IPPoolStore(MemoryBackend())
         mgr = TargetManager(cfg, backend)
         server = ProxyServer([mgr], host="127.0.0.1", port=0)
         await server.start()

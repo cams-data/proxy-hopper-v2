@@ -1,28 +1,37 @@
-"""Abstract backend interface — pure storage primitives, zero business logic.
+"""Backend ABC — storage primitives, zero business logic.
 
-The backend knows nothing about:
-  - Quarantine thresholds (that is config / IPPool logic)
-  - Cooldown intervals (same)
-  - When to retry or fail a request (TargetManager / IPPool logic)
+The backend abstracts the underlying storage engine (asyncio in-process vs
+Redis).  It knows nothing about:
+  - Quarantine thresholds or cooldowns          → IPPool / IPPoolStore
+  - What keys mean (target names, IP addresses) → IPPoolStore / DynamicConfigStore
+  - Configuration objects                        → DynamicConfigStore
 
-It only knows how to operate on its underlying storage (asyncio queues,
-dicts, Redis lists, sorted sets, etc.).  Every method maps 1-to-1 with a
-concrete storage operation.
+Primitive groups
+----------------
+  Lifecycle         start / stop
+  Init lock         claim_init  — first-caller-wins (SETNX semantics)
+  Queue             queue_push / queue_push_many / queue_pop_blocking / queue_size
+  Counter           counter_increment / counter_set / counter_get
+  Sorted set        sorted_set_add / sorted_set_pop_by_max_score / sorted_set_members
+  Compound read     queue_size_and_sorted_set_members — single round trip where possible
+  Key-value         kv_set / kv_get / kv_delete / kv_list
+  Pub/sub           publish / subscribe
 
 Implementations
 ---------------
-MemoryIPPoolBackend  — asyncio queues + plain dicts; single-process only.
-RedisIPPoolBackend   — Redis List / Hash / Sorted Set; multi-instance HA.
+MemoryBackend    — asyncio queues + dicts; single-process only
+RedisBackend     — Redis lists, sorted sets, strings, pub/sub; HA multi-instance
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
 
 
-class IPPoolBackend(ABC):
-    """Storage primitives for IP pool management.
+class Backend(ABC):
+    """Storage primitives for all persistent proxy-hopper state.
 
     All methods are async to accommodate both local (asyncio) and remote
     (Redis) implementations under the same interface.
@@ -41,98 +50,168 @@ class IPPoolBackend(ABC):
         """Release resources gracefully."""
 
     # ------------------------------------------------------------------
-    # Target initialisation
+    # Init lock — first-caller-wins across all instances
     # ------------------------------------------------------------------
 
     @abstractmethod
-    async def init_target(self, target: str) -> bool:
-        """Claim initialisation ownership for *target*.
+    async def claim_init(self, key: str) -> bool:
+        """Atomically claim initialisation ownership for *key*.
 
-        Returns True if the caller should seed the IP pool (i.e. this is the
-        first call for this target in this storage scope).
+        Returns True for the first caller; False for all subsequent callers,
+        even across multiple processes/instances.
 
-        Memory backend: always True — fresh process state.
-        Redis backend:  uses SETNX — True only on the first call across all
-                        running instances.
+        Memory: set-membership check (always unique per process).
+        Redis:  SETNX with a 24-hour TTL so a full Redis flush allows
+                re-seeding without a process restart.
         """
 
     # ------------------------------------------------------------------
-    # IP pool queue
+    # Queue — ordered FIFO, blocking pop
     # ------------------------------------------------------------------
 
     @abstractmethod
-    async def push_ip(self, target: str, address: str) -> None:
-        """Add *address* to the tail of the available IP pool for *target*."""
+    async def queue_push(self, key: str, value: str) -> None:
+        """Append *value* to the tail of the queue at *key*."""
+
+    async def queue_push_many(self, key: str, values: list[str]) -> None:
+        """Append multiple values in one operation.
+
+        Default: sequential calls to queue_push.
+        Backends may override for a single-round-trip bulk insert (e.g. Redis RPUSH).
+        """
+        for value in values:
+            await self.queue_push(key, value)
 
     @abstractmethod
-    async def pop_ip(self, target: str, timeout: float) -> Optional[str]:
-        """Remove and return the next available IP for *target*.
+    async def queue_pop_blocking(self, key: str, timeout: float) -> Optional[str]:
+        """Remove and return the head of the queue, blocking up to *timeout* seconds.
 
-        Blocks up to *timeout* seconds.  Returns None on timeout.
+        Returns None on timeout.
+
+        Memory: asyncio.wait_for on Queue.get().
+        Redis:  BLPOP with float timeout (sub-second precision, Redis ≥ 6.0).
         """
 
     @abstractmethod
-    async def pool_size(self, target: str) -> int:
-        """Return the number of IPs currently in the available pool."""
+    async def queue_size(self, key: str) -> int:
+        """Return the number of items currently in the queue."""
 
     # ------------------------------------------------------------------
-    # Failure counter (per IP per target)
-    # ------------------------------------------------------------------
-
-    @abstractmethod
-    async def increment_failures(self, target: str, address: str) -> int:
-        """Atomically increment and return the new consecutive failure count."""
-
-    @abstractmethod
-    async def reset_failures(self, target: str, address: str) -> None:
-        """Reset the consecutive failure counter to zero."""
-
-    @abstractmethod
-    async def get_failures(self, target: str, address: str) -> int:
-        """Return the current consecutive failure count (0 if never set)."""
-
-    # ------------------------------------------------------------------
-    # Quarantine sorted set
+    # Counter — atomic increment / set / get
     # ------------------------------------------------------------------
 
     @abstractmethod
-    async def quarantine_add(
-        self, target: str, address: str, release_at: float
-    ) -> None:
-        """Add *address* to quarantine with a release epoch timestamp as score."""
+    async def counter_increment(self, key: str) -> int:
+        """Atomically increment the counter at *key* and return the new value.
+
+        Counter is initialised to 0 if it does not exist.
+        Memory: no-await dict update (atomic in asyncio).
+        Redis:  INCR (atomic).
+        """
 
     @abstractmethod
-    async def quarantine_pop_expired(
-        self, target: str, now: float
+    async def counter_set(self, key: str, value: int) -> None:
+        """Set the counter at *key* to *value*."""
+
+    @abstractmethod
+    async def counter_get(self, key: str) -> int:
+        """Return the current counter value (0 if key does not exist)."""
+
+    # ------------------------------------------------------------------
+    # Sorted set — score-ordered, atomic pop below threshold
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def sorted_set_add(self, key: str, member: str, score: float) -> None:
+        """Add *member* with *score* to the sorted set at *key*.
+
+        If *member* already exists its score is updated.
+        """
+
+    @abstractmethod
+    async def sorted_set_pop_by_max_score(
+        self, key: str, max_score: float
     ) -> list[str]:
-        """Atomically claim all quarantine entries whose release time <= *now*.
+        """Atomically claim and remove all members with score <= *max_score*.
 
-        Each expired entry is returned by exactly one caller even when called
-        concurrently from multiple coroutines or processes.  Entries that
-        another caller has already claimed are silently skipped.
+        Each member is returned by exactly one caller even under concurrent
+        access from multiple coroutines or instances.
+
+        Memory: single-pass dict comprehension + deletion (asyncio-atomic).
+        Redis:  Lua script — ZRANGEBYSCORE + ZREM in one server-side call,
+                eliminating the race window and reducing N round trips to 1.
         """
 
     @abstractmethod
-    async def quarantine_list(self, target: str) -> list[str]:
-        """Return all currently quarantined addresses (for status / metrics)."""
-
-    async def pool_size_and_quarantine(self, target: str) -> tuple[int, list[str]]:
-        """Return (pool_size, quarantine_list) in one operation.
-
-        Default implementation calls both methods sequentially.
-        Backends may override to fetch both in a single round trip.
-        """
-        return await self.pool_size(target), await self.quarantine_list(target)
+    async def sorted_set_members(self, key: str) -> list[str]:
+        """Return all current members of the sorted set (for status/metrics)."""
 
     # ------------------------------------------------------------------
-    # Bulk operations
+    # Compound read — queue size + sorted set members in one shot
     # ------------------------------------------------------------------
 
-    async def push_ips(self, target: str, addresses: list[str]) -> None:
-        """Add multiple addresses to the pool in one operation.
+    async def queue_size_and_sorted_set_members(
+        self, queue_key: str, set_key: str
+    ) -> tuple[int, list[str]]:
+        """Return (queue_size, sorted_set_members) for the given keys.
 
-        Default implementation calls push_ip sequentially.
-        Backends may override for a single-round-trip bulk insert.
+        Default: two sequential calls.
+        Redis backend overrides this with a single pipelined round trip.
         """
-        for address in addresses:
-            await self.push_ip(target, address)
+        return await self.queue_size(queue_key), await self.sorted_set_members(set_key)
+
+    # ------------------------------------------------------------------
+    # Key-value store — for dynamic config persistence
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def kv_set(self, key: str, value: str) -> None:
+        """Store a string *value* under *key*, overwriting any existing value."""
+
+    @abstractmethod
+    async def kv_get(self, key: str) -> Optional[str]:
+        """Return the value stored at *key*, or None if the key does not exist."""
+
+    @abstractmethod
+    async def kv_delete(self, key: str) -> None:
+        """Delete *key*. No-op if the key does not exist."""
+
+    @abstractmethod
+    async def kv_list(self, prefix: str) -> list[tuple[str, str]]:
+        """Return all (key, value) pairs whose key starts with *prefix*."""
+
+    # ------------------------------------------------------------------
+    # Pub/sub — lightweight change notification
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def publish(self, channel: str, message: str) -> None:
+        """Publish *message* to *channel*.
+
+        All active subscribers on *channel* receive the message.
+        """
+
+    @abstractmethod
+    def subscribe(self, channel: str) -> "AsyncIteratorContextManager":
+        """Return an async context manager that yields messages from *channel*.
+
+        Usage::
+
+            async with backend.subscribe("my-channel") as messages:
+                async for msg in messages:
+                    handle(msg)
+
+        The subscription is cleaned up when the context manager exits.
+        """
+
+
+class AsyncIteratorContextManager:
+    """Type alias hint — an object usable as both async context manager and iterator."""
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible aliases
+# ---------------------------------------------------------------------------
+
+#: Deprecated alias — use Backend directly.
+IPPoolBackend = Backend

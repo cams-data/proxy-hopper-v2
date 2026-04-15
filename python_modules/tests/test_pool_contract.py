@@ -111,7 +111,7 @@ class TestRecordFailure:
 
 class TestQuarantineSweep:
     def _skip_if_fakeredis(self, backend):
-        if not getattr(backend, "_is_real_redis", True) and hasattr(backend, "_quarantine_pop"):
+        if not getattr(backend, "_is_real_redis", True) and hasattr(getattr(backend, "_backend", None), "_sorted_set_pop"):
             pytest.skip("quarantine sweep requires real Redis (fakeredis lacks EVALSHA)")
 
     async def test_sweep_releases_expired_ip(self, pool, backend):

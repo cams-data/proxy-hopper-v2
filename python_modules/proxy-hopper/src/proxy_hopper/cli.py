@@ -228,23 +228,41 @@ async def _run(targets, providers, server, cfg=None) -> None:
 
     if server.backend == "redis":
         try:
-            from proxy_hopper_redis import RedisIPPoolBackend
+            from proxy_hopper_redis import RedisBackend
         except ImportError:
             log.error(
                 "Redis backend requested but proxy-hopper-redis is not installed. "
                 "Run: pip install proxy-hopper-redis"
             )
             return
-        pool_backend = RedisIPPoolBackend(server.redis_url)
+        backend = RedisBackend(server.redis_url)
     else:
-        from .backend.memory import MemoryIPPoolBackend
-        pool_backend = MemoryIPPoolBackend()
+        from .backend.memory import MemoryBackend
+        backend = MemoryBackend()
 
-    await pool_backend.start()
+    await backend.start()
+
+    from .dynamic_config import DynamicConfigStore
+    from .pool_store import IPPoolStore
+
+    pool_store = IPPoolStore(backend)
+    dynamic_config = DynamicConfigStore(backend)
+
+    # Load any targets persisted in the dynamic store and merge with static targets.
+    dynamic_targets = await dynamic_config.list_targets()
+    dynamic_names = {t.name for t in dynamic_targets}
+    # Static targets not already overridden by a dynamic entry take precedence.
+    merged_targets = list(targets) + [t for t in dynamic_targets if t.name not in {s.name for s in targets}]
 
     managers = [
-        TargetManager(t, pool_backend, providers=providers, proxy_read_timeout=server.proxy_read_timeout, debug_quarantine=server.debug_quarantine)
-        for t in targets
+        TargetManager(
+            t,
+            pool_store,
+            providers=providers,
+            proxy_read_timeout=server.proxy_read_timeout,
+            debug_quarantine=server.debug_quarantine,
+        )
+        for t in merged_targets
     ]
     proxy = ProxyServer(
         managers,
@@ -252,6 +270,11 @@ async def _run(targets, providers, server, cfg=None) -> None:
         port=server.port,
         auth_config=cfg.auth if cfg.auth.enabled else None,
         runtime_secret=runtime_secret,
+        pool_store=pool_store,
+        dynamic_config=dynamic_config,
+        providers=providers,
+        proxy_read_timeout=server.proxy_read_timeout,
+        debug_quarantine=server.debug_quarantine,
     )
 
     prober = None
@@ -293,4 +316,4 @@ async def _run(targets, providers, server, cfg=None) -> None:
             await asyncio.gather(admin_task, return_exceptions=True)
         if prober:
             await prober.stop()
-        await pool_backend.stop()
+        await backend.stop()

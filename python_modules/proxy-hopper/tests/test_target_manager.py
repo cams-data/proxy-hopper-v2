@@ -8,10 +8,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from proxy_hopper.backend.memory import MemoryIPPoolBackend
+from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import TargetConfig
 from proxy_hopper.models import PendingRequest, ProxyResponse
 from proxy_hopper.pool import IPPool
+from proxy_hopper.pool_store import IPPoolStore
 from proxy_hopper.target_manager import TargetManager
 
 from test_helpers import make_target_config
@@ -32,6 +33,12 @@ def make_config(**kw) -> TargetConfig:
     return make_target_config(ip_list, **defaults)
 
 
+async def make_pool_store() -> tuple[MemoryBackend, IPPoolStore]:
+    backend = MemoryBackend()
+    await backend.start()
+    return backend, IPPoolStore(backend)
+
+
 def make_request(url="http://example.com/", max_queue_wait=2.0, num_retries=2) -> PendingRequest:
     return PendingRequest(
         method="GET",
@@ -48,25 +55,24 @@ def make_request(url="http://example.com/", max_queue_wait=2.0, num_retries=2) -
 @pytest.fixture
 async def manager_and_backend():
     cfg = make_config()
-    backend = MemoryIPPoolBackend()
-    await backend.start()
-    mgr = TargetManager(cfg, backend)
+    raw_backend, pool_store = await make_pool_store()
+    mgr = TargetManager(cfg, pool_store)
     await mgr.start()
-    yield mgr, backend
+    yield mgr, pool_store
     await mgr.stop()
-    await backend.stop()
+    await raw_backend.stop()
 
 
 class TestMatching:
     def test_matches_url(self):
         cfg = make_config(regex=r".*example\.com.*")
-        mgr = TargetManager(cfg, MemoryIPPoolBackend())
+        mgr = TargetManager(cfg, IPPoolStore(MemoryBackend()))
         assert mgr.matches("http://example.com/path")
         assert not mgr.matches("http://other.com/path")
 
     def test_matches_connect_host(self):
         cfg = make_config(regex=r"example\.com:443")
-        mgr = TargetManager(cfg, MemoryIPPoolBackend())
+        mgr = TargetManager(cfg, IPPoolStore(MemoryBackend()))
         assert mgr.matches("example.com:443")
         assert not mgr.matches("other.com:443")
 
@@ -87,9 +93,8 @@ class TestDispatcher:
 
     async def test_expired_request_returns_503(self):
         cfg = make_config(max_queue_wait=0.01)
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        mgr = TargetManager(cfg, backend)
+        raw_backend, pool_store = await make_pool_store()
+        mgr = TargetManager(cfg, pool_store)
         await mgr.start()
 
         req = PendingRequest(
@@ -104,16 +109,15 @@ class TestDispatcher:
         assert result.status == 503
 
         await mgr.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
     async def test_no_ip_returns_503(self):
         cfg = make_config(max_queue_wait=0.1)
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        # Initialise pool but don't add any IPs
-        await backend.init_target(cfg.name)
+        raw_backend, pool_store = await make_pool_store()
+        # Pre-claim init so the pool's start() skips seeding — pool has no IPs.
+        await pool_store.claim_init(cfg.name)
 
-        mgr = TargetManager(cfg, backend)
+        mgr = TargetManager(cfg, pool_store)
         # Start just the dispatcher, not pool (pool is already set up)
         mgr._running = True
         mgr._tasks = [
@@ -129,7 +133,7 @@ class TestDispatcher:
         assert result.status == 503
 
         await mgr.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
 
 class TestExecuteRequest:
@@ -152,9 +156,8 @@ class TestExecuteRequest:
 
     async def test_rate_limit_calls_pool_record_failure_and_requeues(self):
         cfg = make_config(ip_list=["1.2.3.4:8080"])
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        mgr = TargetManager(cfg, backend)
+        raw_backend, pool_store = await make_pool_store()
+        mgr = TargetManager(cfg, pool_store)
         await mgr.start()
 
         # Pause dispatcher so the re-queued request stays in queue
@@ -181,7 +184,7 @@ class TestExecuteRequest:
             assert retry.future is req.future
 
         await mgr.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
     async def test_connection_error_requeues_if_retries_remain(self, manager_and_backend):
         mgr, backend = manager_and_backend
@@ -202,9 +205,8 @@ class TestExecuteRequest:
 class TestShutdown:
     async def test_queued_requests_get_503_on_shutdown(self):
         cfg = make_config(max_queue_wait=30.0)
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        mgr = TargetManager(cfg, backend)
+        raw_backend, pool_store = await make_pool_store()
+        mgr = TargetManager(cfg, pool_store)
         await mgr.start()
 
         # Drain the pool so requests sit in queue waiting for an IP
@@ -214,7 +216,7 @@ class TestShutdown:
         await mgr.submit(req)
 
         await mgr.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
         assert req.future.done()
         result = req.future.result()
@@ -222,9 +224,8 @@ class TestShutdown:
 
     async def test_inflight_requests_are_awaited_on_shutdown(self):
         cfg = make_config()
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        mgr = TargetManager(cfg, backend)
+        raw_backend, pool_store = await make_pool_store()
+        mgr = TargetManager(cfg, pool_store)
         await mgr.start()
 
         completed = asyncio.Event()
@@ -239,16 +240,15 @@ class TestShutdown:
             await mgr.submit(req)
             await asyncio.sleep(0.05)  # let dispatcher pick it up
             await mgr.stop(drain_timeout=2.0)
-            await backend.stop()
+            await raw_backend.stop()
 
         assert completed.is_set()
         assert req.future.result().status == 200
 
     async def test_inflight_requests_cancelled_after_drain_timeout(self):
         cfg = make_config()
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        mgr = TargetManager(cfg, backend)
+        raw_backend, pool_store = await make_pool_store()
+        mgr = TargetManager(cfg, pool_store)
         await mgr.start()
 
         async def hanging_execute(address, request):
@@ -259,7 +259,7 @@ class TestShutdown:
             await mgr.submit(req)
             await asyncio.sleep(0.05)  # let dispatcher pick it up
             await mgr.stop(drain_timeout=0.1)
-            await backend.stop()
+            await raw_backend.stop()
 
         # Shutdown should complete without hanging
         assert len(mgr._inflight) == 0

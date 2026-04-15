@@ -6,8 +6,9 @@ This layer owns all decisions that involve policy:
   - When does quarantine end? (quarantine_time seconds)
   - Which IPs need to be seeded on startup?
 
-It calls the IPPoolBackend exclusively through the primitive interface
-defined in backend/base.py.  The backend never sees TargetConfig.
+It calls IPPoolStore exclusively — never the Backend directly.
+IPPoolStore owns all key naming and translates domain calls into
+generic Backend primitives.
 
 Relationship to other layers
 ----------------------------
@@ -15,10 +16,13 @@ Relationship to other layers
    TargetManager    │     IPPool      │  business logic
    (dispatch only)  │                 │  one per target
                     └────────┬────────┘
-                             │ uses storage primitives
+                             │ domain calls
                     ┌────────▼────────┐
-                    │  IPPoolBackend  │  pure data ops
-                    │  (Memory/Redis) │  shared across targets
+                    │  IPPoolStore    │  key naming + domain ops
+                    └────────┬────────┘
+                             │ storage primitives
+                    ┌────────▼────────┐
+                    │    Backend      │  Memory / Redis
                     └─────────────────┘
 """
 
@@ -30,9 +34,9 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
-from .backend.base import IPPoolBackend
 from .config import TargetConfig
 from .metrics import get_metrics
+from .pool_store import IPPoolStore
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,7 @@ class IPPool:
     def __init__(
         self,
         config: TargetConfig,
-        backend: IPPoolBackend,
+        backend: IPPoolStore,
         debug: bool = False,
         sweep_interval: float = _QUARANTINE_SWEEP_INTERVAL,
         on_quarantine_release: Callable[[str], Awaitable[None]] | None = None,
@@ -70,7 +74,7 @@ class IPPool:
 
     async def start(self) -> None:
         """Seed the pool (if we win the init race) and start the sweep task."""
-        first = await self._backend.init_target(self._config.name)
+        first = await self._backend.claim_init(self._config.name)
         if first:
             await self._backend.push_ips(self._config.name, self._addresses)
             if self._debug:

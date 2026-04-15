@@ -9,7 +9,8 @@ import pytest
 import pytest_asyncio
 
 from proxy_hopper.config import ResolvedIP, TargetConfig
-from proxy_hopper_redis.backend import RedisIPPoolBackend
+from proxy_hopper.pool_store import IPPoolStore
+from proxy_hopper_redis.backend import RedisBackend
 
 
 def _make_resolved(ip_list: list[str]) -> list[ResolvedIP]:
@@ -35,17 +36,19 @@ def target_config() -> TargetConfig:
 
 
 @pytest_asyncio.fixture
-async def redis_backend(target_config) -> RedisIPPoolBackend:
+async def redis_backend(target_config):
+    """Returns (raw_backend, pool_store) pair backed by fakeredis."""
     fake_server = fakeredis.FakeServer()
-    backend = RedisIPPoolBackend()
-    backend._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
-    from proxy_hopper_redis.backend import _QUARANTINE_POP_SCRIPT
-    backend._quarantine_pop = backend._redis.register_script(_QUARANTINE_POP_SCRIPT)
+    raw = RedisBackend()
+    raw._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
+    from proxy_hopper_redis.backend import _SORTED_SET_POP_SCRIPT
+    raw._sorted_set_pop = raw._redis.register_script(_SORTED_SET_POP_SCRIPT)
 
-    await backend.init_target(target_config.name)
-    for host, port in target_config.resolved_ip_list():
-        await backend.push_ip(target_config.name, f"{host}:{port}")
+    store = IPPoolStore(raw)
+    await store.claim_init(target_config.name)
+    for ip in target_config.resolved_ips:
+        await store.push_ip(target_config.name, ip.address)
 
-    yield backend
+    yield raw, store
 
-    await backend._redis.aclose()
+    await raw._redis.aclose()
