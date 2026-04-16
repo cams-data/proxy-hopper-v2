@@ -7,7 +7,6 @@ _parse_address) that the models reference directly.
 from __future__ import annotations
 
 import re
-import random
 from enum import Enum
 from typing import Optional
 from urllib.parse import urlparse
@@ -133,13 +132,20 @@ class ProxyProvider(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# IP pool model (internal — resolved before TargetConfig is created)
+# IP pool models — first-class runtime entities
 # ---------------------------------------------------------------------------
 
-class _ResolvedIPPool(BaseModel):
-    """Internal: a pool after ipRequests have been resolved to a flat IP list."""
+class IpRequest(BaseModel):
+    """A request for IPs from a named provider — declares count only, not which IPs."""
+    provider: str
+    count: int = Field(ge=1)
+
+
+class IpPool(BaseModel):
+    """A named pool of IPs assembled from one or more provider requests."""
     name: str
-    ip_list: list[str] = Field(min_length=1)
+    ip_requests: list[IpRequest] = Field(min_length=1)
+    mutable: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +171,7 @@ class ResolvedIP(BaseModel):
 class TargetConfig(BaseModel):
     name: str
     regex: str
+    pool_name: str
     resolved_ips: list[ResolvedIP] = Field(min_length=1)
     min_request_interval: float = Field(default=1.0)
     max_queue_wait: float = Field(default=30.0)
@@ -275,4 +282,5 @@ class ProxyHopperConfig(BaseModel):
     server: ServerConfig
     targets: list[TargetConfig]
     providers: list[ProxyProvider] = Field(default_factory=list)
+    pools: list[IpPool] = Field(default_factory=list)
     auth: AuthConfig = Field(default_factory=AuthConfig)

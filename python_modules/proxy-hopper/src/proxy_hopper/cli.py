@@ -194,12 +194,16 @@ def validate(config: Path) -> None:
                 click.echo(f"  {p.name!r}: {len(p.ip_list)} IP(s)"
                            + (f", region={p.region_tag!r}" if p.region_tag else "")
                            + (", auth=basic" if p.auth else ", auth=none"))
+        if cfg.pools:
+            click.echo(f"Pools: {len(cfg.pools)} defined.")
+            for pool in cfg.pools:
+                providers_in_pool = [req.provider for req in pool.ip_requests]
+                click.echo(f"  {pool.name!r}: {len(pool.ip_requests)} request(s)"
+                           + (f", providers={providers_in_pool}"))
         click.echo(f"Config OK — {len(cfg.targets)} target(s) defined.")
         for t in cfg.targets:
             ips = t.resolved_ips
-            providers_used = {ip.provider for ip in ips if ip.provider}
-            click.echo(f"  {t.name!r}: {len(ips)} IP(s), regex={t.regex!r}"
-                       + (f", providers={sorted(providers_used)}" if providers_used else ""))
+            click.echo(f"  {t.name!r}: {len(ips)} IP(s), pool={t.pool_name!r}, regex={t.regex!r}")
         click.echo(f"Server defaults: host={cfg.server.host}, port={cfg.server.port}, "
                    f"backend={cfg.server.backend}")
     except Exception as exc:
@@ -248,10 +252,12 @@ async def _run(targets, providers, server, cfg=None) -> None:
     pool_store = IPPoolStore(backend)
     repo = ProxyRepository(backend)
 
-    # Seed providers and targets from YAML (write-if-not-exists).
+    # Seed providers, pools, and targets from YAML (write-if-not-exists).
     # Repository is the source of truth; YAML is only applied on first run.
     for p in providers:
         await repo.seed_provider(p)
+    for pool in cfg.pools:
+        await repo.seed_pool(pool)
     for t in targets:
         await repo.seed_target(t)
 
@@ -300,7 +306,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
     if server.admin:
         from .auth.admin import run_admin_server
         admin_task = asyncio.create_task(
-            run_admin_server(cfg, runtime_secret),
+            run_admin_server(cfg, runtime_secret, repo=repo),
             name="ph:admin",
         )
 

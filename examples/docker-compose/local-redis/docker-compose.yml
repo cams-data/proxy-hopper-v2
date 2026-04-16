@@ -46,9 +46,10 @@ services:
       # Uncomment to enable Prometheus metrics:
       # PROXY_HOPPER_METRICS: "true"
       # PROXY_HOPPER_METRICS_PORT: "9090"
-      # Uncomment to enable the admin API (add auth: block to config.yaml first):
+      # Uncomment to enable the admin API + GraphQL (add auth: block to config.yaml first):
       # PROXY_HOPPER_ADMIN: "true"
       # PROXY_HOPPER_ADMIN_PORT: "8081"
+      # GraphQL playground available at http://localhost:8081/graphql when enabled.
     depends_on:
       redis:
         condition: service_healthy

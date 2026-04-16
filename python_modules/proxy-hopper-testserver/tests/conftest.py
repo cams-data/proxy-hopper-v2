@@ -107,6 +107,7 @@ def make_target_config(ip_list: list[str], **kw) -> TargetConfig:
     defaults = dict(
         name="integration-test",
         regex=r".*",
+        pool_name="integration-pool",
         min_request_interval=0.0,
         max_queue_wait=5.0,
         num_retries=2,

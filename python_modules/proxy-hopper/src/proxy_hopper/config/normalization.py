@@ -9,6 +9,8 @@ from __future__ import annotations
 from .models import (
     AuthConfig,
     IdentityConfig,
+    IpPool,
+    IpRequest,
     WarmupConfig,
     _parse_duration,
 )
@@ -19,8 +21,8 @@ from .models import (
 # ---------------------------------------------------------------------------
 
 _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
-    "ipList": "ip_list",
     "ipPool": "ip_pool",
+    "poolName": "pool_name",
     "minRequestInterval": "min_request_interval",
     "maxRequestTimeInQueue": "max_queue_wait",
     "maxQueueWait": "max_queue_wait",
@@ -39,9 +41,10 @@ _IDENTITY_CAMEL_TO_SNAKE: dict[str, str] = {
 _IDENTITY_WARMUP_CAMEL_TO_SNAKE: dict[str, str] = {}  # no camelCase fields currently
 
 _POOL_CAMEL_TO_SNAKE: dict[str, str] = {
-    "ipList": "ip_list",
     "ipRequests": "ip_requests",
 }
+
+_IP_REQUEST_CAMEL_TO_SNAKE: dict[str, str] = {}  # no camelCase fields currently
 
 _PROVIDER_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipList": "ip_list",
@@ -108,7 +111,29 @@ def _normalise_target(raw: dict) -> dict:
 
 
 def _normalise_pool(raw: dict) -> dict:
-    return {_POOL_CAMEL_TO_SNAKE.get(k, k): v for k, v in raw.items()}
+    out = {_POOL_CAMEL_TO_SNAKE.get(k, k): v for k, v in raw.items()}
+    # Normalise each ip_request sub-dict (currently no-op, but future-proof)
+    if "ip_requests" in out and isinstance(out["ip_requests"], list):
+        out["ip_requests"] = [
+            {_IP_REQUEST_CAMEL_TO_SNAKE.get(k, k): v for k, v in req.items()}
+            if isinstance(req, dict) else req
+            for req in out["ip_requests"]
+        ]
+    return out
+
+
+def _normalise_pool_to_model(raw: dict) -> IpPool:
+    """Normalise a raw ipPool YAML block and return an IpPool model."""
+    normalised = _normalise_pool(raw)
+    requests = [
+        IpRequest(**req) if isinstance(req, dict) else req
+        for req in normalised.get("ip_requests", [])
+    ]
+    return IpPool(
+        name=normalised["name"],
+        ip_requests=requests,
+        mutable=normalised.get("mutable", True),
+    )
 
 
 def _normalise_provider(raw: dict) -> dict:

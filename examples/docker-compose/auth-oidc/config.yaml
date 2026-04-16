@@ -100,7 +100,9 @@ server:
   logFormat: text
   backend: memory
 
-  # Enable the admin REST API (login + status endpoints).
+  # Admin API — management REST API + GraphQL on a separate port.
+  # Endpoints: POST /auth/login, GET /health, GET /api/v1/status,
+  #            POST|GET /graphql  (Strawberry GraphQL playground at GET /graphql)
   admin: true
   adminPort: 8081
   adminHost: 0.0.0.0

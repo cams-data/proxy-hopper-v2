@@ -39,13 +39,20 @@ Admin API is enabled on port {{ .Values.admin.port }}.
   echo "http://localhost:{{ .Values.admin.port }}"
 {{- end }}
 
-  Docs:   http://localhost:{{ .Values.admin.port }}/docs
-  Health: http://localhost:{{ .Values.admin.port }}/health
-  Status: http://localhost:{{ .Values.admin.port }}/api/v1/status  (requires auth)
+  Docs:    http://localhost:{{ .Values.admin.port }}/docs
+  Health:  http://localhost:{{ .Values.admin.port }}/health
+  Status:  http://localhost:{{ .Values.admin.port }}/api/v1/status  (requires auth)
+  GraphQL: http://localhost:{{ .Values.admin.port }}/graphql         (playground + API)
 
   Login (if auth.admin is configured in config.yaml):
     curl -X POST http://localhost:{{ .Values.admin.port }}/auth/login \
          -d "username=admin&password=<password>"
+
+  GraphQL query example (after login):
+    curl -X POST http://localhost:{{ .Values.admin.port }}/graphql \
+         -H "Authorization: Bearer <jwt>" \
+         -H "Content-Type: application/json" \
+         -d '{"query":"{ targets { name regex resolvedIps { host port } } }"}'
 
   NOTE: auth config (apiKeys, passwordHash, jwtSecret) lives in config.yaml.
   Use config.existingSecret to keep credentials out of ConfigMaps.

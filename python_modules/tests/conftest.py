@@ -94,6 +94,7 @@ def target_config() -> TargetConfig:
     return TargetConfig(
         name="contract-target",
         regex=r".*example\.com.*",
+        pool_name="test-pool",
         resolved_ips=_make_resolved(["1.2.3.4:8080", "5.6.7.8:8080"]),
         min_request_interval=0.0,
         max_queue_wait=2.0,

@@ -1,4 +1,4 @@
-"""Tests for ProxyRepository — target CRUD, provider CRUD, cascade, seeding, pub/sub."""
+"""Tests for ProxyRepository — target CRUD, provider CRUD, pool CRUD, cascade, seeding, pub/sub."""
 
 from __future__ import annotations
 
@@ -8,18 +8,22 @@ import pytest
 import pytest_asyncio
 
 from proxy_hopper.backend.memory import MemoryBackend
-from proxy_hopper.config import ProxyProvider, ResolvedIP, TargetConfig
+from proxy_hopper.config import IpPool, IpRequest, ProxyProvider, ResolvedIP, TargetConfig
 from proxy_hopper.repository import (
     ChangeEvent,
     ProxyRepository,
     _TARGET_PREFIX,
     _PROVIDER_PREFIX,
-    _build_target,
+    _POOL_PREFIX,
     _dict_to_target,
     _dict_to_provider,
+    _dict_to_pool,
     _target_to_dict,
     _provider_to_dict,
+    _pool_to_dict,
 )
+
+from test_helpers import make_target_config
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +43,17 @@ async def repo(backend):
     return ProxyRepository(backend)
 
 
-def _make_target(name="api", ip_list=None, **kw) -> TargetConfig:
-    return _build_target(
+def _make_target(name="api", pool_name="test-pool", ip_list=None, **kw) -> TargetConfig:
+    ips = ip_list or ["1.2.3.4:3128"]
+    resolved = []
+    for entry in ips:
+        host, _, port_str = entry.rpartition(":")
+        resolved.append(ResolvedIP(host=host, port=int(port_str)))
+    return TargetConfig(
         name=name,
         regex=r".*",
-        ip_list=ip_list or ["1.2.3.4:3128"],
+        pool_name=pool_name,
+        resolved_ips=resolved,
         **kw,
     )
 
@@ -56,23 +66,31 @@ def _make_provider(name="prov", ip_list=None, **kw) -> ProxyProvider:
     )
 
 
+def _make_pool(name="test-pool", provider="prov", count=1, **kw) -> IpPool:
+    return IpPool(
+        name=name,
+        ip_requests=[IpRequest(provider=provider, count=count)],
+        **kw,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Serialisation round-trip — targets
 # ---------------------------------------------------------------------------
 
 class TestTargetSerialisation:
     def test_round_trip_basic(self):
-        cfg = _build_target("t", r".*", ["1.2.3.4:3128"])
+        cfg = _make_target("t")
         restored = _dict_to_target(_target_to_dict(cfg))
         assert restored.name == cfg.name
         assert restored.regex == cfg.regex
+        assert restored.pool_name == cfg.pool_name
         assert restored.resolved_ips == cfg.resolved_ips
-        assert restored.min_request_interval == cfg.min_request_interval
 
     def test_round_trip_preserves_all_fields(self):
-        cfg = _build_target(
-            "complex", r"api\.example\.com",
-            ["10.0.0.1:3128", "10.0.0.2:3128"],
+        cfg = _make_target(
+            "complex",
+            ip_list=["10.0.0.1:3128", "10.0.0.2:3128"],
             min_request_interval=5.0,
             max_queue_wait=60.0,
             num_retries=1,
@@ -92,17 +110,19 @@ class TestTargetSerialisation:
 
     def test_round_trip_with_identity(self):
         from proxy_hopper.config import IdentityConfig, WarmupConfig
-        cfg = _build_target(
-            "id-test", r".*",
-            ["1.2.3.4:3128"],
-            identity=IdentityConfig(
+        cfg = _make_target(
+            "id-test",
+            ip_list=["1.2.3.4:3128"],
+        )
+        cfg = cfg.model_copy(update={
+            "identity": IdentityConfig(
                 enabled=True,
                 cookies=True,
                 rotate_after_requests=50,
                 rotate_on_429=True,
                 warmup=WarmupConfig(enabled=True, path="/warmup"),
-            ),
-        )
+            )
+        })
         restored = _dict_to_target(_target_to_dict(cfg))
         assert restored.identity.enabled is True
         assert restored.identity.rotate_after_requests == 50
@@ -110,7 +130,7 @@ class TestTargetSerialisation:
         assert restored.identity.warmup.path == "/warmup"
 
     def test_mutable_defaults_true(self):
-        cfg = _build_target("t", r".*", ["1.2.3.4:3128"])
+        cfg = _make_target("t")
         assert cfg.mutable is True
 
 
@@ -148,6 +168,36 @@ class TestProviderSerialisation:
 
 
 # ---------------------------------------------------------------------------
+# Serialisation round-trip — pools
+# ---------------------------------------------------------------------------
+
+class TestPoolSerialisation:
+    def test_round_trip_basic(self):
+        pool = _make_pool("p", "prov", 3)
+        restored = _dict_to_pool(_pool_to_dict(pool))
+        assert restored.name == pool.name
+        assert len(restored.ip_requests) == 1
+        assert restored.ip_requests[0].provider == "prov"
+        assert restored.ip_requests[0].count == 3
+
+    def test_round_trip_multiple_requests(self):
+        pool = IpPool(
+            name="multi",
+            ip_requests=[
+                IpRequest(provider="a", count=2),
+                IpRequest(provider="b", count=5),
+            ],
+        )
+        restored = _dict_to_pool(_pool_to_dict(pool))
+        assert len(restored.ip_requests) == 2
+        assert restored.ip_requests[1].count == 5
+
+    def test_mutable_defaults_true(self):
+        pool = _make_pool()
+        assert pool.mutable is True
+
+
+# ---------------------------------------------------------------------------
 # Target CRUD
 # ---------------------------------------------------------------------------
 
@@ -164,6 +214,7 @@ class TestAddTarget:
         got = await repo.get_target("roundtrip")
         assert got is not None
         assert got.name == "roundtrip"
+        assert got.pool_name == cfg.pool_name
         assert got.resolved_ips == cfg.resolved_ips
 
     async def test_add_duplicate_raises(self, repo):
@@ -307,6 +358,96 @@ class TestListTargets:
 
 
 # ---------------------------------------------------------------------------
+# Pool CRUD
+# ---------------------------------------------------------------------------
+
+class TestAddPool:
+    async def test_add_persists_to_kv(self, repo, backend):
+        pool = _make_pool("p1")
+        await repo.add_pool(pool)
+        raw = await backend.kv_get(f"{_POOL_PREFIX}p1")
+        assert raw is not None
+
+    async def test_add_then_get_round_trips(self, repo):
+        pool = _make_pool("roundtrip", "prov", 3)
+        await repo.add_pool(pool)
+        got = await repo.get_pool("roundtrip")
+        assert got is not None
+        assert got.name == "roundtrip"
+        assert got.ip_requests[0].count == 3
+
+    async def test_add_duplicate_raises(self, repo):
+        pool = _make_pool("dup")
+        await repo.add_pool(pool)
+        with pytest.raises(ValueError, match="already exists"):
+            await repo.add_pool(pool)
+
+    async def test_add_publishes_event(self, repo):
+        events = []
+
+        async def collect():
+            async with repo.subscribe_changes() as evts:
+                async for e in evts:
+                    if e.entity == "pool":
+                        events.append(e)
+                        return
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0)
+        await repo.add_pool(_make_pool("pub-add"))
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert events[0].entity == "pool"
+        assert events[0].type == "add"
+        assert events[0].name == "pub-add"
+
+
+class TestUpdatePool:
+    async def test_update_overwrites_stored_value(self, repo):
+        pool = _make_pool("p", "prov-a", 2)
+        await repo.add_pool(pool)
+        updated = IpPool(
+            name="p",
+            ip_requests=[IpRequest(provider="prov-a", count=5)],
+        )
+        # No cascade targets, just test the KV write
+        await repo.update_pool(updated)
+        got = await repo.get_pool("p")
+        assert got.ip_requests[0].count == 5
+
+    async def test_update_nonexistent_raises(self, repo):
+        with pytest.raises(ValueError, match="does not exist"):
+            await repo.update_pool(_make_pool("ghost"))
+
+    async def test_update_immutable_pool_raises(self, repo):
+        pool = IpPool(name="frozen", ip_requests=[IpRequest(provider="p", count=1)], mutable=False)
+        await repo.add_pool(pool)
+        with pytest.raises(ValueError, match="not mutable"):
+            await repo.update_pool(IpPool(name="frozen", ip_requests=[IpRequest(provider="p", count=2)]))
+
+
+class TestRemovePool:
+    async def test_remove_deletes_from_kv(self, repo, backend):
+        await repo.add_pool(_make_pool("to-remove"))
+        await repo.remove_pool("to-remove")
+        assert await backend.kv_get(f"{_POOL_PREFIX}to-remove") is None
+
+    async def test_remove_nonexistent_is_noop(self, repo):
+        await repo.remove_pool("does-not-exist")  # must not raise
+
+
+class TestListPools:
+    async def test_empty_returns_empty(self, repo):
+        assert await repo.list_pools() == []
+
+    async def test_lists_all_added_pools(self, repo):
+        await repo.add_pool(_make_pool("a"))
+        await repo.add_pool(_make_pool("b"))
+        pools = await repo.list_pools()
+        assert {p.name for p in pools} == {"a", "b"}
+
+
+# ---------------------------------------------------------------------------
 # Provider CRUD
 # ---------------------------------------------------------------------------
 
@@ -426,51 +567,102 @@ class TestListProviders:
 
 
 # ---------------------------------------------------------------------------
-# Provider cascade
+# Provider IP helpers
+# ---------------------------------------------------------------------------
+
+class TestAddIpToProvider:
+    async def test_appends_to_ip_list(self, repo):
+        p = _make_provider("prov", ["1.1.1.1:3128"])
+        await repo.add_provider(p)
+        updated = await repo.add_ip_to_provider("prov", "2.2.2.2:3128")
+        assert "2.2.2.2:3128" in updated.ip_list
+        got = await repo.get_provider("prov")
+        assert "2.2.2.2:3128" in got.ip_list
+
+    async def test_duplicate_address_raises(self, repo):
+        p = _make_provider("prov", ["1.1.1.1:3128"])
+        await repo.add_provider(p)
+        with pytest.raises(ValueError, match="already in provider"):
+            await repo.add_ip_to_provider("prov", "1.1.1.1:3128")
+
+    async def test_missing_provider_raises(self, repo):
+        with pytest.raises(ValueError, match="not found"):
+            await repo.add_ip_to_provider("ghost", "1.1.1.1:3128")
+
+
+class TestRemoveIpFromProvider:
+    async def test_removes_from_ip_list(self, repo):
+        p = _make_provider("prov", ["1.1.1.1:3128", "2.2.2.2:3128"])
+        await repo.add_provider(p)
+        updated = await repo.remove_ip_from_provider("prov", "1.1.1.1:3128")
+        assert "1.1.1.1:3128" not in updated.ip_list
+        got = await repo.get_provider("prov")
+        assert "1.1.1.1:3128" not in got.ip_list
+
+    async def test_last_ip_raises(self, repo):
+        p = _make_provider("prov", ["1.1.1.1:3128"])
+        await repo.add_provider(p)
+        with pytest.raises(ValueError, match="at least one IP"):
+            await repo.remove_ip_from_provider("prov", "1.1.1.1:3128")
+
+    async def test_address_not_found_raises(self, repo):
+        p = _make_provider("prov", ["1.1.1.1:3128"])
+        await repo.add_provider(p)
+        with pytest.raises(ValueError, match="not found in provider"):
+            await repo.remove_ip_from_provider("prov", "9.9.9.9:3128")
+
+
+# ---------------------------------------------------------------------------
+# Provider → Pool → Target cascade
 # ---------------------------------------------------------------------------
 
 class TestCascadeProvider:
-    async def test_update_provider_rebuilds_target_ips(self, repo):
-        """Updating provider IPs cascades to targets referencing it."""
-        # Target has IPs tagged with provider "prov"
-        ip1 = ResolvedIP(host="1.1.1.1", port=3128, provider="prov")
-        ip2 = ResolvedIP(host="2.2.2.2", port=3128, provider="prov")
-        cfg = _build_target("t", r".*", ["1.1.1.1:3128"])
-        cfg = cfg.model_copy(update={"resolved_ips": [ip1, ip2]})
-        await repo.add_target(cfg)
+    async def _setup(self, repo, provider_ips: list[str], count: int = 1):
+        """Seed provider + pool + target and return their initial states."""
+        provider = _make_provider("prov", provider_ips)
+        await repo.seed_provider(provider)
 
-        p = ProxyProvider(name="prov", ip_list=["9.9.9.9:3128"])
-        await repo.add_provider(p)
+        pool = _make_pool("shared", "prov", count)
+        await repo.seed_pool(pool)
 
-        # Cascade should have replaced provider IPs
-        updated = await repo.get_target("t")
-        assert len(updated.resolved_ips) == 1
-        assert updated.resolved_ips[0].host == "9.9.9.9"
-        assert updated.resolved_ips[0].provider == "prov"
+        # Build initial resolved_ips snapshot from provider
+        resolved = [
+            ResolvedIP(host=h, port=int(p), provider="prov")
+            for entry in provider_ips[:count]
+            for h, _, p in [entry.rpartition(":")]
+        ]
+        target = TargetConfig(
+            name="t",
+            regex=r".*",
+            pool_name="shared",
+            resolved_ips=resolved,
+        )
+        await repo.seed_target(target)
+        return provider, pool, target
 
-    async def test_cascade_preserves_non_provider_ips(self, repo):
-        """IPs not tagged with the provider must survive cascade."""
-        inline_ip = ResolvedIP(host="5.5.5.5", port=3128)  # no provider
-        prov_ip = ResolvedIP(host="1.1.1.1", port=3128, provider="prov")
-        cfg = _build_target("t", r".*", ["5.5.5.5:3128"])
-        cfg = cfg.model_copy(update={"resolved_ips": [inline_ip, prov_ip]})
-        await repo.add_target(cfg)
+    async def test_add_ip_to_provider_cascades_to_target(self, repo):
+        """Adding an IP to a provider propagates through pool to target resolved_ips."""
+        await self._setup(repo, ["1.1.1.1:3128"], count=2)
+        # Provider has 1 IP, pool requests 2 — add a second IP
+        await repo.add_ip_to_provider("prov", "2.2.2.2:3128")
 
-        p = ProxyProvider(name="prov", ip_list=["9.9.9.9:3128"])
-        await repo.add_provider(p)
+        updated_target = await repo.get_target("t")
+        addresses = [ip.address for ip in updated_target.resolved_ips]
+        assert "1.1.1.1:3128" in addresses
+        assert "2.2.2.2:3128" in addresses
 
-        updated = await repo.get_target("t")
-        addresses = {ip.host for ip in updated.resolved_ips}
-        assert "5.5.5.5" in addresses   # inline preserved
-        assert "9.9.9.9" in addresses   # provider replaced
-        assert "1.1.1.1" not in addresses
+    async def test_update_provider_ip_list_cascades_to_target(self, repo):
+        """Replacing the full provider ip_list propagates to target resolved_ips."""
+        await self._setup(repo, ["1.1.1.1:3128"], count=1)
+        provider = await repo.get_provider("prov")
+        await repo.update_provider(provider.model_copy(update={"ip_list": ["9.9.9.9:3128"]}))
+
+        updated_target = await repo.get_target("t")
+        assert updated_target.resolved_ips[0].host == "9.9.9.9"
+        assert updated_target.resolved_ips[0].provider == "prov"
 
     async def test_cascade_emits_target_update_events(self, repo):
-        """Cascade must publish target:update events for affected targets."""
-        prov_ip = ResolvedIP(host="1.1.1.1", port=3128, provider="prov")
-        cfg = _build_target("t", r".*", ["1.1.1.1:3128"])
-        cfg = cfg.model_copy(update={"resolved_ips": [prov_ip]})
-        await repo.add_target(cfg)
+        await self._setup(repo, ["1.1.1.1:3128"], count=1)
 
         target_events = []
 
@@ -483,90 +675,56 @@ class TestCascadeProvider:
 
         task = asyncio.create_task(collect())
         await asyncio.sleep(0)
-        await repo.add_provider(ProxyProvider(name="prov", ip_list=["9.9.9.9:3128"]))
+        provider = await repo.get_provider("prov")
+        await repo.update_provider(provider.model_copy(update={"ip_list": ["9.9.9.9:3128"]}))
         await asyncio.wait_for(task, timeout=1.0)
 
         assert len(target_events) == 1
         assert target_events[0].type == "update"
         assert target_events[0].name == "t"
 
-    async def test_cascade_skips_unrelated_targets(self, repo):
-        """Targets with no IPs from the provider must not be touched."""
-        cfg = _build_target("unrelated", r".*", ["8.8.8.8:3128"])
-        await repo.add_target(cfg)
+    async def test_cascade_skips_targets_referencing_other_pools(self, repo):
+        """Targets using a different pool must not be touched."""
+        await self._setup(repo, ["1.1.1.1:3128"], count=1)
 
-        p = ProxyProvider(name="prov", ip_list=["9.9.9.9:3128"])
-        await repo.add_provider(p)
+        # Second provider + pool + target — unrelated
+        p2 = _make_provider("prov2", ["5.5.5.5:3128"])
+        await repo.seed_provider(p2)
+        pool2 = _make_pool("pool2", "prov2", 1)
+        await repo.seed_pool(pool2)
+        unrelated = TargetConfig(
+            name="unrelated",
+            regex=r".*",
+            pool_name="pool2",
+            resolved_ips=[ResolvedIP(host="5.5.5.5", port=3128, provider="prov2")],
+        )
+        await repo.seed_target(unrelated)
+
+        # Update prov — should cascade only to "t", not "unrelated"
+        provider = await repo.get_provider("prov")
+        await repo.update_provider(provider.model_copy(update={"ip_list": ["9.9.9.9:3128"]}))
 
         unchanged = await repo.get_target("unrelated")
-        assert unchanged.resolved_ips[0].host == "8.8.8.8"
+        assert unchanged.resolved_ips[0].host == "5.5.5.5"
 
+    async def test_multiple_targets_same_pool_all_cascaded(self, repo):
+        """Two targets sharing a pool both get the cascade update."""
+        provider = _make_provider("prov", ["1.1.1.1:3128"])
+        await repo.seed_provider(provider)
+        pool = _make_pool("shared", "prov", 1)
+        await repo.seed_pool(pool)
+        resolved = [ResolvedIP(host="1.1.1.1", port=3128, provider="prov")]
+        for tname in ("t1", "t2"):
+            await repo.seed_target(TargetConfig(
+                name=tname, regex=r".*", pool_name="shared", resolved_ips=resolved,
+            ))
 
-# ---------------------------------------------------------------------------
-# Target IP list helpers
-# ---------------------------------------------------------------------------
+        provider_updated = provider.model_copy(update={"ip_list": ["9.9.9.9:3128"]})
+        await repo.update_provider(provider_updated)
 
-class TestAddIp:
-    async def test_add_ip_appends_to_list(self, repo):
-        await repo.add_target(_make_target("t", ["1.1.1.1:3128"]))
-        await repo.add_ip("t", "2.2.2.2:3128")
-        got = await repo.get_target("t")
-        assert len(got.resolved_ips) == 2
-        assert any(ip.address == "2.2.2.2:3128" for ip in got.resolved_ips)
-
-    async def test_add_ip_missing_target_raises(self, repo):
-        with pytest.raises(ValueError, match="not found"):
-            await repo.add_ip("ghost", "1.1.1.1:3128")
-
-    async def test_add_ip_uses_default_port(self, repo):
-        await repo.add_target(_make_target("t", default_proxy_port=9999))
-        await repo.add_ip("t", "5.5.5.5")
-        got = await repo.get_target("t")
-        assert any(ip.port == 9999 for ip in got.resolved_ips)
-
-
-class TestRemoveIp:
-    async def test_remove_ip_removes_from_list(self, repo):
-        await repo.add_target(_make_target("t", ["1.1.1.1:3128", "2.2.2.2:3128"]))
-        await repo.remove_ip("t", "1.1.1.1:3128")
-        got = await repo.get_target("t")
-        assert len(got.resolved_ips) == 1
-        assert got.resolved_ips[0].address == "2.2.2.2:3128"
-
-    async def test_remove_last_ip_raises(self, repo):
-        await repo.add_target(_make_target("t", ["1.1.1.1:3128"]))
-        with pytest.raises(ValueError, match="at least one IP"):
-            await repo.remove_ip("t", "1.1.1.1:3128")
-
-    async def test_remove_ip_missing_target_raises(self, repo):
-        with pytest.raises(ValueError, match="not found"):
-            await repo.remove_ip("ghost", "1.1.1.1:3128")
-
-
-class TestSwapIp:
-    async def test_swap_replaces_address(self, repo):
-        await repo.add_target(_make_target("t", ["1.1.1.1:3128", "2.2.2.2:3128"]))
-        await repo.swap_ip("t", "1.1.1.1:3128", "3.3.3.3:3128")
-        got = await repo.get_target("t")
-        addresses = [ip.address for ip in got.resolved_ips]
-        assert "3.3.3.3:3128" in addresses
-        assert "1.1.1.1:3128" not in addresses
-        assert "2.2.2.2:3128" in addresses
-
-    async def test_swap_old_not_found_raises(self, repo):
-        await repo.add_target(_make_target("t", ["1.1.1.1:3128"]))
-        with pytest.raises(ValueError, match="not found"):
-            await repo.swap_ip("t", "9.9.9.9:3128", "2.2.2.2:3128")
-
-    async def test_swap_missing_target_raises(self, repo):
-        with pytest.raises(ValueError, match="not found"):
-            await repo.swap_ip("ghost", "1.1.1.1:3128", "2.2.2.2:3128")
-
-    async def test_swap_preserves_list_length(self, repo):
-        await repo.add_target(_make_target("t", ["1.1.1.1:3128", "2.2.2.2:3128"]))
-        await repo.swap_ip("t", "1.1.1.1:3128", "5.5.5.5:3128")
-        got = await repo.get_target("t")
-        assert len(got.resolved_ips) == 2
+        for tname in ("t1", "t2"):
+            t = await repo.get_target(tname)
+            assert t.resolved_ips[0].host == "9.9.9.9"
 
 
 # ---------------------------------------------------------------------------
@@ -587,8 +745,7 @@ class TestSeedTarget:
         seed = _make_target("existing", min_request_interval=99.0)
         await repo.seed_target(seed)
         got = await repo.get_target("existing")
-        # original value preserved — seed did not overwrite
-        assert got.min_request_interval == 1.0
+        assert got.min_request_interval == 1.0  # original preserved
 
     async def test_seed_publishes_no_events(self, repo):
         events = []
@@ -640,6 +797,23 @@ class TestSeedProvider:
         assert events == []
 
 
+class TestSeedPool:
+    async def test_seed_writes_if_absent(self, repo):
+        pool = _make_pool("new")
+        await repo.seed_pool(pool)
+        got = await repo.get_pool("new")
+        assert got is not None
+        assert got.name == "new"
+
+    async def test_seed_skips_if_present(self, repo):
+        pool = _make_pool("existing", "prov", 1)
+        await repo.add_pool(pool)
+        seed = _make_pool("existing", "prov", 99)
+        await repo.seed_pool(seed)
+        got = await repo.get_pool("existing")
+        assert got.ip_requests[0].count == 1  # original preserved
+
+
 # ---------------------------------------------------------------------------
 # subscribe_changes
 # ---------------------------------------------------------------------------
@@ -684,6 +858,24 @@ class TestSubscribeChanges:
         assert received[0].entity == "provider"
         assert received[0].type == "add"
 
+    async def test_receives_pool_add_event(self, repo):
+        received = []
+
+        async def listen():
+            async with repo.subscribe_changes() as events:
+                async for e in events:
+                    if e.entity == "pool":
+                        received.append(e)
+                        return
+
+        task = asyncio.create_task(listen())
+        await asyncio.sleep(0)
+        await repo.add_pool(_make_pool("pool-sub"))
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert received[0].entity == "pool"
+        assert received[0].type == "add"
+
     async def test_multiple_subscribers_all_receive(self, repo):
         received_a: list[ChangeEvent] = []
         received_b: list[ChangeEvent] = []
@@ -725,3 +917,7 @@ class TestChangeEvent:
     def test_provider_remove_event_data_none(self):
         e = ChangeEvent(entity="provider", type="remove", name="x")
         assert e.data is None
+
+    def test_pool_add_event(self):
+        e = ChangeEvent(entity="pool", type="add", name="p", data={"name": "p"})
+        assert e.entity == "pool"

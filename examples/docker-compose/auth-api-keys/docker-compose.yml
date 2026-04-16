@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     ports:
       - "${PROXY_PORT:-8080}:8080"     # proxy — point your HTTP clients here
-      - "${ADMIN_PORT:-8081}:8081"     # admin API — login, health, status
+      - "${ADMIN_PORT:-8081}:8081"     # admin API — login, health, status, GraphQL
       # - "${METRICS_PORT:-9090}:9090" # Prometheus /metrics  (only if metrics enabled)
     volumes:
       # config.yaml is mounted read-only — it contains credentials, so keep it

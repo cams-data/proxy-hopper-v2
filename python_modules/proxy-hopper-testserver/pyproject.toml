@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "proxy-hopper-testserver"
 version = "0.1.0"
 description = "Controllable upstream server and mock proxy layer for proxy-hopper integration tests"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9",
     "proxy-hopper",

@@ -14,6 +14,7 @@ def make_target_config(ip_list: list[str], **kwargs) -> TargetConfig:
     defaults = dict(
         name="test-target",
         regex=r".*example\.com.*",
+        pool_name="test-pool",
         min_request_interval=0.0,
         max_queue_wait=5.0,
         num_retries=2,
