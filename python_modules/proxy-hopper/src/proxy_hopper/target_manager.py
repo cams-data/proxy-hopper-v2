@@ -22,7 +22,7 @@ from .config import ProxyProvider, TargetConfig
 from .identity import IdentityStore
 from .logging_config import get_logger
 from .metrics import get_metrics
-from .models import PendingRequest, ProxyResponse
+from .models import HOP_BY_HOP_HEADERS, PendingRequest, ProxyResponse
 from .pool import IPPool
 
 if TYPE_CHECKING:
@@ -31,10 +31,7 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _RETRIABLE_STATUSES = frozenset({429, 502, 503, 504})
-_HOP_BY_HOP = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "proxy-connection", "te", "trailers", "transfer-encoding", "upgrade",
-})
+_HOP_BY_HOP = HOP_BY_HOP_HEADERS
 
 
 class TargetManager:

@@ -53,7 +53,7 @@ import aiohttp
 
 from .logging_config import get_logger
 from .metrics import get_metrics
-from .models import PendingRequest, ProxyResponse
+from .models import HOP_BY_HOP_HEADERS, PendingRequest, ProxyResponse
 
 if TYPE_CHECKING:
     from .config import AuthConfig
@@ -66,10 +66,7 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 _MAX_BODY_SIZE = 65_536 * 160   # 10 MiB
-_HOP_BY_HOP = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "proxy-connection", "te", "trailers", "transfer-encoding", "upgrade",
-})
+_HOP_BY_HOP = HOP_BY_HOP_HEADERS
 
 # ---------------------------------------------------------------------------
 # Per-request control headers (all stripped before forwarding upstream)
