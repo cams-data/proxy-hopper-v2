@@ -48,7 +48,7 @@ import bcrypt as _bcrypt
 import jwt as _jwt
 
 if TYPE_CHECKING:
-    from .config import AuthConfig, OidcConfig
+    from ..config import AuthConfig, OidcConfig
 
 logger = logging.getLogger(__name__)
 
