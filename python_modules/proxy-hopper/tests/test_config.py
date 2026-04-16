@@ -51,7 +51,7 @@ class TestTargetConfig:
 
     def test_empty_ip_list_raises(self):
         with pytest.raises(ValidationError):
-            TargetConfig(name="foo", regex=".*", resolved_ips=[])
+            TargetConfig(name="foo", regex=".*", pool_name="p", resolved_ips=[])
 
     def test_resolved_ip_list_with_port(self):
         t = make_target_config(["10.0.0.1:3128"], name="foo", regex=".*")
@@ -59,7 +59,7 @@ class TestTargetConfig:
 
     def test_resolved_ip_list_default_port(self):
         t = TargetConfig(
-            name="foo", regex=".*",
+            name="foo", regex=".*", pool_name="p",
             resolved_ips=[ResolvedIP(host="10.0.0.1", port=8888)],
         )
         assert t.resolved_ip_list() == [("10.0.0.1", 8888)]
@@ -82,11 +82,11 @@ class TestLoadConfig:
         assert t.max_queue_wait == 10.0
         assert t.quarantine_time == 60.0
 
-    def test_camel_case_ip_list(self, sample_yaml):
+    def test_resolved_ips_come_from_pool(self, sample_yaml):
         cfg = load_config(sample_yaml)
         resolved = cfg.targets[0].resolved_ip_list()
         assert ("10.0.0.1", 3128) in resolved
-        assert ("10.0.0.2", 8080) in resolved  # default port
+        assert ("10.0.0.2", 8080) in resolved
 
     def test_returns_proxy_hopper_config(self, sample_yaml):
         cfg = load_config(sample_yaml)
@@ -105,62 +105,65 @@ class TestIPPools:
         p.write_text(dedent(content))
         return p
 
-    def test_target_referencing_pool_gets_pool_ips(self, tmp_path):
-        p = self._write(tmp_path, """
+    def _provider_pool_target(self, ips: list[str], count: int = None) -> str:
+        cnt = count if count is not None else len(ips)
+        ip_lines = "".join(f"\n                  - \"{ip}\"" for ip in ips)
+        return dedent(f"""
+            proxyProviders:
+              - name: prov
+                ipList:{ip_lines}
             ipPools:
               - name: shared
-                ipList:
-                  - "1.1.1.1:3128"
-                  - "2.2.2.2:3128"
+                ipRequests:
+                  - provider: prov
+                    count: {cnt}
             targets:
               - name: general
                 regex: '.*'
                 ipPool: shared
         """)
-        cfg = load_config(p)
-        assert cfg.targets[0].ip_list() == ["1.1.1.1:3128", "2.2.2.2:3128"]
 
-    def test_target_with_inline_ip_list_unaffected(self, tmp_path):
+    def test_target_referencing_pool_gets_provider_ips(self, tmp_path):
+        p = self._write(tmp_path, self._provider_pool_target(
+            ["1.1.1.1:3128", "2.2.2.2:3128"], count=2
+        ))
+        cfg = load_config(p)
+        addrs = cfg.targets[0].ip_list()
+        assert "1.1.1.1:3128" in addrs
+        assert "2.2.2.2:3128" in addrs
+
+    def test_target_without_pool_raises(self, tmp_path):
         p = self._write(tmp_path, """
-            ipPools:
-              - name: shared
-                ipList:
-                  - "1.1.1.1:3128"
             targets:
-              - name: direct
+              - name: broken
+                regex: '.*'
+        """)
+        with pytest.raises(ValueError, match="must specify 'ipPool'"):
+            load_config(p)
+
+    def test_target_inline_ip_list_raises(self, tmp_path):
+        p = self._write(tmp_path, """
+            targets:
+              - name: broken
                 regex: '.*'
                 ipList:
-                  - "9.9.9.9:3128"
-        """)
-        cfg = load_config(p)
-        assert cfg.targets[0].ip_list() == ["9.9.9.9:3128"]
-
-    def test_pool_and_inline_can_coexist_across_targets(self, tmp_path):
-        p = self._write(tmp_path, """
-            ipPools:
-              - name: pool-a
-                ipList:
                   - "1.1.1.1:3128"
-            targets:
-              - name: via-pool
-                regex: '.*'
-                ipPool: pool-a
-              - name: inline
-                regex: 'api\\.example\\.com'
-                ipList:
-                  - "2.2.2.2:3128"
         """)
-        cfg = load_config(p)
-        assert cfg.targets[0].ip_list() == ["1.1.1.1:3128"]
-        assert cfg.targets[1].ip_list() == ["2.2.2.2:3128"]
+        with pytest.raises(ValueError, match="must specify 'ipPool'"):
+            load_config(p)
 
     def test_multiple_targets_share_same_pool(self, tmp_path):
         p = self._write(tmp_path, """
-            ipPools:
-              - name: shared
+            proxyProviders:
+              - name: prov
                 ipList:
                   - "1.1.1.1:3128"
                   - "2.2.2.2:3128"
+            ipPools:
+              - name: shared
+                ipRequests:
+                  - provider: prov
+                    count: 2
             targets:
               - name: t1
                 regex: 'a\\.com'
@@ -182,95 +185,126 @@ class TestIPPools:
         with pytest.raises(ValueError, match="unknown ipPool 'nonexistent'"):
             load_config(p)
 
-    def test_both_ip_pool_and_ip_list_raises(self, tmp_path):
+    def test_pool_unknown_provider_raises(self, tmp_path):
         p = self._write(tmp_path, """
             ipPools:
               - name: pool-a
-                ipList:
-                  - "1.1.1.1:3128"
-            targets:
-              - name: conflict
-                regex: '.*'
-                ipPool: pool-a
-                ipList:
-                  - "2.2.2.2:3128"
-        """)
-        with pytest.raises(ValueError, match="both ipPool and ipList"):
-            load_config(p)
-
-    def test_pool_camel_case_ip_list(self, tmp_path):
-        """ipList in pool block is normalised from camelCase."""
-        p = self._write(tmp_path, """
-            ipPools:
-              - name: p
-                ipList:
-                  - "1.1.1.1:3128"
+                ipRequests:
+                  - provider: nonexistent
+                    count: 1
             targets:
               - name: t
                 regex: '.*'
-                ipPool: p
+                ipPool: pool-a
         """)
+        with pytest.raises(ValueError, match="unknown provider"):
+            load_config(p)
+
+    def test_count_exceeding_provider_ips_takes_all_available(self, tmp_path):
+        """count > available IPs is graceful — takes all available."""
+        p = self._write(tmp_path, self._provider_pool_target(
+            ["1.1.1.1:3128"], count=10
+        ))
         cfg = load_config(p)
-        assert "1.1.1.1:3128" in cfg.targets[0].ip_list()
+        # Only 1 IP available — no error, just takes 1
+        assert len(cfg.targets[0].resolved_ips) == 1
+
+    def test_ip_requests_pool_is_first_class_entity(self, tmp_path):
+        """IpPool objects are returned in cfg.pools with full request metadata."""
+        p = self._write(tmp_path, self._provider_pool_target(
+            ["1.1.1.1:3128"], count=1
+        ))
+        cfg = load_config(p)
+        assert len(cfg.pools) == 1
+        pool = cfg.pools[0]
+        assert pool.name == "shared"
+        assert pool.ip_requests[0].provider == "prov"
+        assert pool.ip_requests[0].count == 1
+
+    def test_target_carries_pool_name(self, tmp_path):
+        p = self._write(tmp_path, self._provider_pool_target(
+            ["1.1.1.1:3128"], count=1
+        ))
+        cfg = load_config(p)
+        assert cfg.targets[0].pool_name == "shared"
 
 
 class TestMutableField:
     """Tests for the mutable: bool field on TargetConfig."""
 
     def _write(self, tmp_path, content: str):
-        from textwrap import dedent
         p = tmp_path / "config.yaml"
         p.write_text(dedent(content))
         return p
+
+    def _full_yaml(self, targets_block: str) -> str:
+        tblock = dedent(targets_block).strip()
+        return (
+            "proxyProviders:\n"
+            "  - name: prov\n"
+            "    ipList:\n"
+            '      - "1.1.1.1:3128"\n'
+            '      - "2.2.2.2:3128"\n'
+            "ipPools:\n"
+            "  - name: pool-a\n"
+            "    ipRequests:\n"
+            "      - provider: prov\n"
+            "        count: 1\n"
+            "  - name: pool-b\n"
+            "    ipRequests:\n"
+            "      - provider: prov\n"
+            "        count: 1\n"
+            f"{tblock}\n"
+        )
 
     def test_mutable_defaults_to_true(self):
         t = make_target_config(["1.2.3.4:8080"])
         assert t.mutable is True
 
     def test_mutable_true_parsed_from_yaml(self, tmp_path):
-        p = self._write(tmp_path, """
+        p = self._write(tmp_path, self._full_yaml(dedent("""
             targets:
               - name: t
                 regex: '.*'
-                ipList: ["1.1.1.1:3128"]
+                ipPool: pool-a
                 mutable: true
-        """)
+        """)))
         cfg = load_config(p)
         assert cfg.targets[0].mutable is True
 
     def test_mutable_false_explicit_in_yaml(self, tmp_path):
-        p = self._write(tmp_path, """
+        p = self._write(tmp_path, self._full_yaml(dedent("""
             targets:
               - name: t
                 regex: '.*'
-                ipList: ["1.1.1.1:3128"]
+                ipPool: pool-a
                 mutable: false
-        """)
+        """)))
         cfg = load_config(p)
         assert cfg.targets[0].mutable is False
 
     def test_mutable_omitted_defaults_true_in_yaml(self, tmp_path):
-        p = self._write(tmp_path, """
+        p = self._write(tmp_path, self._full_yaml(dedent("""
             targets:
               - name: t
                 regex: '.*'
-                ipList: ["1.1.1.1:3128"]
-        """)
+                ipPool: pool-a
+        """)))
         cfg = load_config(p)
         assert cfg.targets[0].mutable is True
 
     def test_multiple_targets_independent_mutable_flags(self, tmp_path):
-        p = self._write(tmp_path, """
+        p = self._write(tmp_path, self._full_yaml(dedent("""
             targets:
               - name: locked
                 regex: 'locked\\.com'
-                ipList: ["1.1.1.1:3128"]
+                ipPool: pool-a
                 mutable: false
               - name: dynamic
                 regex: 'dynamic\\.com'
-                ipList: ["2.2.2.2:3128"]
+                ipPool: pool-b
                 mutable: true
-        """)
+        """)))
         cfg = load_config(p)
         by_name = {t.name: t for t in cfg.targets}
         assert by_name["locked"].mutable is False
@@ -278,18 +312,34 @@ class TestMutableField:
 
 
 class TestServerConfig:
+
     def _write(self, tmp_path, content: str):
         p = tmp_path / "config.yaml"
         p.write_text(dedent(content))
         return p
 
+    def _minimal(self, server_block: str = "") -> str:
+        sblock = dedent(server_block).strip()
+        prefix = f"{sblock}\n" if sblock else ""
+        return (
+            f"{prefix}"
+            "proxyProviders:\n"
+            "  - name: prov\n"
+            "    ipList:\n"
+            '      - "1.1.1.1:3128"\n'
+            "ipPools:\n"
+            "  - name: pool-a\n"
+            "    ipRequests:\n"
+            "      - provider: prov\n"
+            "        count: 1\n"
+            "targets:\n"
+            "  - name: t\n"
+            "    regex: '.*'\n"
+            "    ipPool: pool-a\n"
+        )
+
     def test_defaults_when_no_server_block(self, tmp_path):
-        p = self._write(tmp_path, """
-            targets:
-              - name: t
-                regex: '.*'
-                ipList: ["1.1.1.1:3128"]
-        """)
+        p = self._write(tmp_path, self._minimal())
         cfg = load_config(p)
         assert cfg.server.host == "0.0.0.0"
         assert cfg.server.port == 8080
@@ -297,16 +347,12 @@ class TestServerConfig:
         assert cfg.server.metrics is False
 
     def test_yaml_server_block_applied(self, tmp_path):
-        p = self._write(tmp_path, """
+        p = self._write(tmp_path, self._minimal(dedent("""
             server:
               port: 9000
               backend: redis
               logLevel: DEBUG
-            targets:
-              - name: t
-                regex: '.*'
-                ipList: ["1.1.1.1:3128"]
-        """)
+        """)))
         cfg = load_config(p)
         assert cfg.server.port == 9000
         assert cfg.server.backend == "redis"
@@ -315,65 +361,41 @@ class TestServerConfig:
     def test_env_var_applied_when_no_yaml_server_block(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PROXY_HOPPER_PORT", "7777")
         monkeypatch.setenv("PROXY_HOPPER_BACKEND", "redis")
-        p = self._write(tmp_path, """
-            targets:
-              - name: t
-                regex: '.*'
-                ipList: ["1.1.1.1:3128"]
-        """)
+        p = self._write(tmp_path, self._minimal())
         cfg = load_config(p)
         assert cfg.server.port == 7777
         assert cfg.server.backend == "redis"
 
     def test_yaml_overrides_env_var(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PROXY_HOPPER_PORT", "5555")
-        p = self._write(tmp_path, """
+        p = self._write(tmp_path, self._minimal(dedent("""
             server:
               port: 9000
-            targets:
-              - name: t
-                regex: '.*'
-                ipList: ["1.1.1.1:3128"]
-        """)
+        """)))
         cfg = load_config(p)
-        # YAML (9000) beats env var (5555)
-        assert cfg.server.port == 9000
+        assert cfg.server.port == 9000  # YAML (9000) beats env var (5555)
 
     def test_probe_urls_as_list_in_yaml(self, tmp_path):
-        p = self._write(tmp_path, """
+        p = self._write(tmp_path, self._minimal(dedent("""
             server:
               probe: true
               probeUrls:
                 - https://1.1.1.1
                 - https://8.8.8.8
-            targets:
-              - name: t
-                regex: '.*'
-                ipList: ["1.1.1.1:3128"]
-        """)
+        """)))
         cfg = load_config(p)
         assert cfg.server.probe is True
         assert cfg.server.probe_urls == ["https://1.1.1.1", "https://8.8.8.8"]
 
     def test_probe_urls_from_env_var_comma_separated(self, tmp_path, monkeypatch):
         monkeypatch.setenv("PROXY_HOPPER_PROBE_URLS", "https://a.example,https://b.example")
-        p = self._write(tmp_path, """
-            targets:
-              - name: t
-                regex: '.*'
-                ipList: ["1.1.1.1:3128"]
-        """)
+        p = self._write(tmp_path, self._minimal())
         cfg = load_config(p)
         assert cfg.server.probe_urls == ["https://a.example", "https://b.example"]
 
     def test_metrics_bool_env_var_truthy_values(self, tmp_path, monkeypatch):
         for val in ("true", "True", "1", "yes", "on"):
             monkeypatch.setenv("PROXY_HOPPER_METRICS", val)
-            p = self._write(tmp_path, """
-                targets:
-                  - name: t
-                    regex: '.*'
-                    ipList: ["1.1.1.1:3128"]
-            """)
+            p = self._write(tmp_path, self._minimal())
             cfg = load_config(p)
             assert cfg.server.metrics is True, f"Expected True for env val={val!r}"

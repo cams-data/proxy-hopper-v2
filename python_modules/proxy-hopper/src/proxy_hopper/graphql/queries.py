@@ -9,7 +9,15 @@ from strawberry.types import Info
 
 from ._auth import require_permission
 from .context import Context
-from .types import ProviderType, StatusType, TargetType, provider_to_gql, target_to_gql
+from .types import (
+    IpPoolType,
+    ProviderType,
+    StatusType,
+    TargetType,
+    pool_to_gql,
+    provider_to_gql,
+    target_to_gql,
+)
 
 
 @strawberry.type
@@ -33,6 +41,26 @@ class Query:
         require_permission(info, Permission.read)
         config = await info.context.repo.get_target(name)
         return target_to_gql(config) if config else None
+
+    # ------------------------------------------------------------------
+    # Pools
+    # ------------------------------------------------------------------
+
+    @strawberry.field(description="List all IP pools stored in the repository.")
+    async def pools(self, info: Info[Context, None]) -> list[IpPoolType]:
+        from ..auth import Permission
+        require_permission(info, Permission.read)
+        pools = await info.context.repo.list_pools()
+        return [pool_to_gql(p) for p in pools]
+
+    @strawberry.field(description="Fetch a single IP pool by name.")
+    async def pool(
+        self, info: Info[Context, None], name: str
+    ) -> Optional[IpPoolType]:
+        from ..auth import Permission
+        require_permission(info, Permission.read)
+        p = await info.context.repo.get_pool(name)
+        return pool_to_gql(p) if p else None
 
     # ------------------------------------------------------------------
     # Providers

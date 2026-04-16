@@ -7,10 +7,10 @@ import pytest_asyncio
 
 from proxy_hopper.auth import AuthenticatedUser
 from proxy_hopper.backend.memory import MemoryBackend
-from proxy_hopper.config import AuthConfig, ProxyProvider, ResolvedIP
+from proxy_hopper.config import AuthConfig, IpPool, IpRequest, ProxyProvider, ResolvedIP, TargetConfig
 from proxy_hopper.graphql import schema
 from proxy_hopper.graphql.context import Context
-from proxy_hopper.repository import ProxyRepository, _build_target
+from proxy_hopper.repository import ProxyRepository
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +31,6 @@ async def repo(backend):
 
 
 def _ctx(repo: ProxyRepository, role: str = "admin", auth_enabled: bool = False) -> Context:
-    """Build a Context with a user of the given role."""
     user = AuthenticatedUser(sub=role, role=role, is_api_key=False)
     auth_config = AuthConfig(enabled=auth_enabled)
     return Context(repo=repo, user=user, auth_config=auth_config)
@@ -46,6 +45,19 @@ async def _run(query: str, repo: ProxyRepository, role: str = "admin", variables
     return result
 
 
+def _make_target(name="t", pool_name="pool", ip_list=None, **kwargs) -> TargetConfig:
+    ips = ip_list or ["1.1.1.1:3128"]
+    resolved = []
+    for entry in ips:
+        host, _, port_str = entry.rpartition(":")
+        resolved.append(ResolvedIP(host=host, port=int(port_str)))
+    return TargetConfig(name=name, regex=r".*", pool_name=pool_name, resolved_ips=resolved, **kwargs)
+
+
+def _make_pool(name="pool", provider="prov", count=1) -> IpPool:
+    return IpPool(name=name, ip_requests=[IpRequest(provider=provider, count=count)])
+
+
 # ---------------------------------------------------------------------------
 # Query — targets
 # ---------------------------------------------------------------------------
@@ -57,18 +69,17 @@ class TestQueryTargets:
         assert result.data["targets"] == []
 
     async def test_returns_seeded_target(self, repo):
-        cfg = _build_target("api", r".*api.*", ["1.1.1.1:3128"])
-        await repo.add_target(cfg)
-
-        result = await _run("{ targets { name regex mutable } }", repo)
+        await repo.add_target(_make_target("api", "pool"))
+        result = await _run("{ targets { name regex mutable poolName } }", repo)
         assert result.errors is None
         targets = result.data["targets"]
         assert len(targets) == 1
         assert targets[0]["name"] == "api"
+        assert targets[0]["poolName"] == "pool"
         assert targets[0]["mutable"] is True
 
     async def test_target_by_name_found(self, repo):
-        await repo.add_target(_build_target("api", r".*", ["1.1.1.1:3128"]))
+        await repo.add_target(_make_target("api"))
         result = await _run('{ target(name: "api") { name } }', repo)
         assert result.errors is None
         assert result.data["target"]["name"] == "api"
@@ -79,13 +90,45 @@ class TestQueryTargets:
         assert result.data["target"] is None
 
     async def test_resolved_ips_exposed(self, repo):
-        cfg = _build_target("t", r".*", ["10.0.0.1:3128", "10.0.0.2:3128"])
+        cfg = _make_target("t", ip_list=["10.0.0.1:3128", "10.0.0.2:3128"])
         await repo.add_target(cfg)
         result = await _run("{ targets { resolvedIps { host port } } }", repo)
         assert result.errors is None
         ips = result.data["targets"][0]["resolvedIps"]
         hosts = {ip["host"] for ip in ips}
         assert hosts == {"10.0.0.1", "10.0.0.2"}
+
+
+# ---------------------------------------------------------------------------
+# Query — pools
+# ---------------------------------------------------------------------------
+
+class TestQueryPools:
+    async def test_empty_returns_empty_list(self, repo):
+        result = await _run("{ pools { name } }", repo)
+        assert result.errors is None
+        assert result.data["pools"] == []
+
+    async def test_returns_added_pool(self, repo):
+        await repo.add_pool(_make_pool("shared", "prov", 3))
+        result = await _run("{ pools { name ipRequests { provider count } mutable } }", repo)
+        assert result.errors is None
+        pools = result.data["pools"]
+        assert len(pools) == 1
+        assert pools[0]["name"] == "shared"
+        assert pools[0]["ipRequests"][0]["provider"] == "prov"
+        assert pools[0]["ipRequests"][0]["count"] == 3
+
+    async def test_pool_by_name_found(self, repo):
+        await repo.add_pool(_make_pool("p"))
+        result = await _run('{ pool(name: "p") { name } }', repo)
+        assert result.errors is None
+        assert result.data["pool"]["name"] == "p"
+
+    async def test_pool_by_name_not_found_returns_null(self, repo):
+        result = await _run('{ pool(name: "ghost") { name } }', repo)
+        assert result.errors is None
+        assert result.data["pool"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +188,13 @@ class TestQueryStatus:
 
 ADD_TARGET = """
 mutation($input: TargetInput!) {
-  addTarget(input: $input) { name regex mutable resolvedIps { host port } }
+  addTarget(input: $input) { name regex mutable poolName resolvedIps { host port } }
 }
 """
 
 UPDATE_TARGET = """
 mutation($input: TargetInput!) {
-  updateTarget(input: $input) { name minRequestInterval }
+  updateTarget(input: $input) { name minRequestInterval poolName }
 }
 """
 
@@ -162,26 +205,41 @@ mutation($name: String!) { removeTarget(name: $name) }
 
 class TestMutationAddTarget:
     async def test_add_persists_and_returns_target(self, repo):
+        # Seed pool so the mutation can resolve IPs
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("pool", "prov", 1))
+
         result = await _run(ADD_TARGET, repo, variables={
-            "input": {"name": "t", "regex": ".*", "ipList": ["1.1.1.1:3128"]}
+            "input": {"name": "t", "regex": ".*", "poolName": "pool"}
         })
         assert result.errors is None
         t = result.data["addTarget"]
         assert t["name"] == "t"
+        assert t["poolName"] == "pool"
         assert t["mutable"] is True
         assert t["resolvedIps"][0]["host"] == "1.1.1.1"
 
-    async def test_add_duplicate_returns_error(self, repo):
-        await repo.add_target(_build_target("dup", r".*", ["1.1.1.1:3128"]))
+    async def test_add_with_unknown_pool_returns_error(self, repo):
         result = await _run(ADD_TARGET, repo, variables={
-            "input": {"name": "dup", "regex": ".*", "ipList": ["2.2.2.2:3128"]}
+            "input": {"name": "t", "regex": ".*", "poolName": "nonexistent"}
         })
         assert result.errors is not None
 
-    async def test_add_respects_custom_pool_settings(self, repo):
+    async def test_add_duplicate_returns_error(self, repo):
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("pool", "prov", 1))
+        await repo.add_target(_make_target("dup", "pool"))
+        result = await _run(ADD_TARGET, repo, variables={
+            "input": {"name": "dup", "regex": ".*", "poolName": "pool"}
+        })
+        assert result.errors is not None
+
+    async def test_add_respects_custom_settings(self, repo):
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("pool", "prov", 1))
         result = await _run(ADD_TARGET, repo, variables={
             "input": {
-                "name": "t", "regex": ".*", "ipList": ["1.1.1.1:3128"],
+                "name": "t", "regex": ".*", "poolName": "pool",
                 "minRequestInterval": 5.0, "numRetries": 1,
             }
         })
@@ -193,30 +251,37 @@ class TestMutationAddTarget:
 
 class TestMutationUpdateTarget:
     async def test_update_changes_stored_value(self, repo):
-        await repo.add_target(_build_target("t", r".*", ["1.1.1.1:3128"], min_request_interval=1.0))
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("pool", "prov", 1))
+        await repo.add_target(_make_target("t", "pool"))
+
         result = await _run(UPDATE_TARGET, repo, variables={
-            "input": {"name": "t", "regex": ".*", "ipList": ["1.1.1.1:3128"], "minRequestInterval": 9.0}
+            "input": {"name": "t", "regex": ".*", "poolName": "pool", "minRequestInterval": 9.0}
         })
         assert result.errors is None
         assert result.data["updateTarget"]["minRequestInterval"] == 9.0
 
     async def test_update_nonexistent_returns_error(self, repo):
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("pool", "prov", 1))
         result = await _run(UPDATE_TARGET, repo, variables={
-            "input": {"name": "ghost", "regex": ".*", "ipList": ["1.1.1.1:3128"]}
+            "input": {"name": "ghost", "regex": ".*", "poolName": "pool"}
         })
         assert result.errors is not None
 
     async def test_update_immutable_target_returns_error(self, repo):
-        await repo.add_target(_build_target("frozen", r".*", ["1.1.1.1:3128"], mutable=False))
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("pool", "prov", 1))
+        await repo.add_target(_make_target("frozen", "pool", mutable=False))
         result = await _run(UPDATE_TARGET, repo, variables={
-            "input": {"name": "frozen", "regex": ".*", "ipList": ["9.9.9.9:3128"]}
+            "input": {"name": "frozen", "regex": ".*", "poolName": "pool"}
         })
         assert result.errors is not None
 
 
 class TestMutationRemoveTarget:
     async def test_remove_returns_true(self, repo):
-        await repo.add_target(_build_target("t", r".*", ["1.1.1.1:3128"]))
+        await repo.add_target(_make_target("t"))
         result = await _run(REMOVE_TARGET, repo, variables={"name": "t"})
         assert result.errors is None
         assert result.data["removeTarget"] is True
@@ -225,6 +290,74 @@ class TestMutationRemoveTarget:
         result = await _run(REMOVE_TARGET, repo, variables={"name": "ghost"})
         assert result.errors is None
         assert result.data["removeTarget"] is True
+
+
+# ---------------------------------------------------------------------------
+# Mutation — pools
+# ---------------------------------------------------------------------------
+
+ADD_POOL = """
+mutation($input: IpPoolInput!) {
+  addPool(input: $input) { name ipRequests { provider count } mutable }
+}
+"""
+
+UPDATE_POOL = """
+mutation($input: IpPoolInput!) {
+  updatePool(input: $input) { name ipRequests { count } }
+}
+"""
+
+REMOVE_POOL = """
+mutation($name: String!) { removePool(name: $name) }
+"""
+
+
+class TestMutationAddPool:
+    async def test_add_persists_and_returns_pool(self, repo):
+        result = await _run(ADD_POOL, repo, variables={
+            "input": {
+                "name": "p",
+                "ipRequests": [{"provider": "prov", "count": 3}],
+            }
+        })
+        assert result.errors is None
+        p = result.data["addPool"]
+        assert p["name"] == "p"
+        assert p["ipRequests"][0]["count"] == 3
+
+    async def test_add_duplicate_returns_error(self, repo):
+        await repo.add_pool(_make_pool("p"))
+        result = await _run(ADD_POOL, repo, variables={
+            "input": {"name": "p", "ipRequests": [{"provider": "prov", "count": 1}]}
+        })
+        assert result.errors is not None
+
+
+class TestMutationUpdatePool:
+    async def test_update_changes_count(self, repo):
+        # Seed provider so cascade doesn't fail
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("p", "prov", 1))
+        result = await _run(UPDATE_POOL, repo, variables={
+            "input": {"name": "p", "ipRequests": [{"provider": "prov", "count": 1}]}
+        })
+        assert result.errors is None
+        assert result.data["updatePool"]["ipRequests"][0]["count"] == 1
+
+    async def test_update_nonexistent_returns_error(self, repo):
+        result = await _run(UPDATE_POOL, repo, variables={
+            "input": {"name": "ghost", "ipRequests": [{"provider": "prov", "count": 1}]}
+        })
+        assert result.errors is not None
+
+
+class TestMutationRemovePool:
+    async def test_remove_returns_true(self, repo):
+        await repo.add_pool(_make_pool("p"))
+        result = await _run(REMOVE_POOL, repo, variables={"name": "p"})
+        assert result.errors is None
+        assert result.data["removePool"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +378,18 @@ mutation($input: ProviderInput!) {
 
 REMOVE_PROVIDER = """
 mutation($name: String!) { removeProvider(name: $name) }
+"""
+
+ADD_IP_TO_PROVIDER = """
+mutation($provider: String!, $address: String!) {
+  addIpToProvider(provider: $provider, address: $address) { name ipList }
+}
+"""
+
+REMOVE_IP_FROM_PROVIDER = """
+mutation($provider: String!, $address: String!) {
+  removeIpFromProvider(provider: $provider, address: $address) { name ipList }
+}
 """
 
 
@@ -310,50 +455,43 @@ class TestMutationRemoveProvider:
         assert result.data["removeProvider"] is True
 
 
-# ---------------------------------------------------------------------------
-# Mutation — IP helpers
-# ---------------------------------------------------------------------------
-
-ADD_IP = "mutation { addIp(target: $t, address: $a) { resolvedIps { host } } }"
-
-class TestMutationIpHelpers:
-    async def test_add_ip(self, repo):
-        await repo.add_target(_build_target("t", r".*", ["1.1.1.1:3128"]))
-        result = await _run(
-            'mutation { addIp(target: "t", address: "2.2.2.2:3128") { resolvedIps { host } } }',
-            repo,
-        )
+class TestMutationAddIpToProvider:
+    async def test_appends_ip(self, repo):
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128"]))
+        result = await _run(ADD_IP_TO_PROVIDER, repo, variables={
+            "provider": "p", "address": "2.2.2.2:3128"
+        })
         assert result.errors is None
-        hosts = {ip["host"] for ip in result.data["addIp"]["resolvedIps"]}
-        assert "2.2.2.2" in hosts
+        assert "2.2.2.2:3128" in result.data["addIpToProvider"]["ipList"]
 
-    async def test_remove_ip(self, repo):
-        await repo.add_target(_build_target("t", r".*", ["1.1.1.1:3128", "2.2.2.2:3128"]))
-        result = await _run(
-            'mutation { removeIp(target: "t", address: "1.1.1.1:3128") { resolvedIps { host } } }',
-            repo,
-        )
+    async def test_duplicate_returns_error(self, repo):
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128"]))
+        result = await _run(ADD_IP_TO_PROVIDER, repo, variables={
+            "provider": "p", "address": "1.1.1.1:3128"
+        })
+        assert result.errors is not None
+
+    async def test_unknown_provider_returns_error(self, repo):
+        result = await _run(ADD_IP_TO_PROVIDER, repo, variables={
+            "provider": "ghost", "address": "1.1.1.1:3128"
+        })
+        assert result.errors is not None
+
+
+class TestMutationRemoveIpFromProvider:
+    async def test_removes_ip(self, repo):
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128", "2.2.2.2:3128"]))
+        result = await _run(REMOVE_IP_FROM_PROVIDER, repo, variables={
+            "provider": "p", "address": "1.1.1.1:3128"
+        })
         assert result.errors is None
-        hosts = [ip["host"] for ip in result.data["removeIp"]["resolvedIps"]]
-        assert "1.1.1.1" not in hosts
+        assert "1.1.1.1:3128" not in result.data["removeIpFromProvider"]["ipList"]
 
-    async def test_swap_ip(self, repo):
-        await repo.add_target(_build_target("t", r".*", ["1.1.1.1:3128"]))
-        result = await _run(
-            'mutation { swapIp(target: "t", oldAddress: "1.1.1.1:3128", newAddress: "9.9.9.9:3128") { resolvedIps { host } } }',
-            repo,
-        )
-        assert result.errors is None
-        hosts = [ip["host"] for ip in result.data["swapIp"]["resolvedIps"]]
-        assert "9.9.9.9" in hosts
-        assert "1.1.1.1" not in hosts
-
-    async def test_remove_last_ip_returns_error(self, repo):
-        await repo.add_target(_build_target("t", r".*", ["1.1.1.1:3128"]))
-        result = await _run(
-            'mutation { removeIp(target: "t", address: "1.1.1.1:3128") { resolvedIps { host } } }',
-            repo,
-        )
+    async def test_last_ip_returns_error(self, repo):
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128"]))
+        result = await _run(REMOVE_IP_FROM_PROVIDER, repo, variables={
+            "provider": "p", "address": "1.1.1.1:3128"
+        })
         assert result.errors is not None
 
 
@@ -363,39 +501,35 @@ class TestMutationIpHelpers:
 
 class TestPermissions:
     async def test_viewer_can_query(self, repo):
-        """Viewer role (read-only) can run queries when auth is enabled."""
         user = AuthenticatedUser(sub="v", role="viewer", is_api_key=False)
         ctx = Context(repo=repo, user=user, auth_config=AuthConfig(enabled=True))
         result = await schema.execute("{ targets { name } }", context_value=ctx)
         assert result.errors is None
 
     async def test_viewer_cannot_mutate(self, repo):
-        """Viewer role must be denied write mutations."""
         user = AuthenticatedUser(sub="v", role="viewer", is_api_key=False)
         ctx = Context(repo=repo, user=user, auth_config=AuthConfig(enabled=True))
         result = await schema.execute(
-            'mutation { addTarget(input: {name:"t", regex:".*", ipList:["1.1.1.1:3128"]}) { name } }',
+            'mutation { addPool(input: {name:"p", ipRequests:[{provider:"x", count:1}]}) { name } }',
             context_value=ctx,
         )
         assert result.errors is not None
         assert any("denied" in str(e).lower() or "permission" in str(e).lower() for e in result.errors)
 
     async def test_operator_can_mutate(self, repo):
-        """Operator role has write permission."""
         user = AuthenticatedUser(sub="op", role="operator", is_api_key=False)
         ctx = Context(repo=repo, user=user, auth_config=AuthConfig(enabled=True))
         result = await schema.execute(
-            'mutation { addTarget(input: {name:"t", regex:".*", ipList:["1.1.1.1:3128"]}) { name } }',
+            'mutation { addPool(input: {name:"p", ipRequests:[{provider:"x", count:1}]}) { name } }',
             context_value=ctx,
         )
         assert result.errors is None
 
     async def test_auth_disabled_skips_checks(self, repo):
-        """When auth is disabled, even a restricted role can mutate."""
         user = AuthenticatedUser(sub="v", role="viewer", is_api_key=False)
         ctx = Context(repo=repo, user=user, auth_config=AuthConfig(enabled=False))
         result = await schema.execute(
-            'mutation { addTarget(input: {name:"t", regex:".*", ipList:["1.1.1.1:3128"]}) { name } }',
+            'mutation { addPool(input: {name:"p", ipRequests:[{provider:"x", count:1}]}) { name } }',
             context_value=ctx,
         )
         assert result.errors is None

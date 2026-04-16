@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 import strawberry
 
 if TYPE_CHECKING:
-    from ..config import ProxyProvider, TargetConfig
+    from ..config import IpPool, ProxyProvider, TargetConfig
 
 
 # ---------------------------------------------------------------------------
@@ -25,6 +25,7 @@ class ResolvedIPType:
 class TargetType:
     name: str
     regex: str
+    pool_name: str
     resolved_ips: list[ResolvedIPType]
     min_request_interval: float
     max_queue_wait: float
@@ -32,6 +33,19 @@ class TargetType:
     ip_failures_until_quarantine: int
     quarantine_time: float
     default_proxy_port: int
+    mutable: bool
+
+
+@strawberry.type
+class IpRequestType:
+    provider: str
+    count: int
+
+
+@strawberry.type
+class IpPoolType:
+    name: str
+    ip_requests: list[IpRequestType]
     mutable: bool
 
 
@@ -60,6 +74,7 @@ def target_to_gql(config: "TargetConfig") -> TargetType:
     return TargetType(
         name=config.name,
         regex=config.regex,
+        pool_name=config.pool_name,
         resolved_ips=[
             ResolvedIPType(
                 host=ip.host,
@@ -75,6 +90,17 @@ def target_to_gql(config: "TargetConfig") -> TargetType:
         quarantine_time=config.quarantine_time,
         default_proxy_port=config.default_proxy_port,
         mutable=config.mutable,
+    )
+
+
+def pool_to_gql(pool: "IpPool") -> IpPoolType:
+    return IpPoolType(
+        name=pool.name,
+        ip_requests=[
+            IpRequestType(provider=req.provider, count=req.count)
+            for req in pool.ip_requests
+        ],
+        mutable=pool.mutable,
     )
 
 

@@ -1,36 +1,40 @@
 """ProxyRepository — runtime entity store backed by persistent KV + pub/sub.
 
-Stores targets and providers as JSON blobs in the Backend KV store and
-publishes change notifications over pub/sub so all instances hot-reload.
+Stores targets, providers, and IP pools as JSON blobs in the Backend KV store
+and publishes change notifications over pub/sub so all instances hot-reload.
 
 Key schema
 ----------
 ph:repo:target:{name}    — KV — JSON-serialised TargetConfig
 ph:repo:provider:{name}  — KV — JSON-serialised ProxyProvider
+ph:repo:pool:{name}      — KV — JSON-serialised IpPool
 ph:repo:changes          — pub/sub channel — JSON-serialised ChangeEvent
+
+Three-tier model
+----------------
+- ProxyProvider: credentials + ip_list — the ONLY place IPs are declared.
+- IpPool: references providers via ip_requests with count — resolved to
+  resolved_ips snapshots on targets.  Multiple targets may share a pool.
+- Target: routing regex + rate-limit policy + pool_name reference.  Carries a
+  resolved_ips snapshot populated by the pool cascade.
 
 Design rules
 ------------
-- Targets and providers are domain entities.  The YAML config file is seed
-  data used only for first-run bootstrapping; ``ProxyRepository`` is the
+- Targets, providers, and pools are domain entities.  The YAML config file is
+  seed data used only for first-run bootstrapping; ProxyRepository is the
   source of truth at runtime.
-- ``seed_target`` / ``seed_provider`` are write-if-not-exists helpers intended
-  for startup.  They publish no events and silently skip already-stored
-  entities.
-- ``update_target`` / ``update_provider`` honour the ``mutable`` flag.  Set
-  ``mutable: false`` explicitly to lock an entity against runtime changes.
-  The default is ``mutable: true``.
-- Provider cascade: ``update_provider`` and ``add_provider`` call
-  ``_cascade_provider`` which rebuilds the ``resolved_ips`` for every target
-  that references the provider, emitting ``target:update`` events for each.
+- seed_* helpers are write-if-not-exists used at startup; they publish no events.
+- update_provider / add_provider call _cascade_provider which recomputes the
+  resolved_ips snapshots for every pool referencing that provider, then cascades
+  to targets, emitting target:update events for each.
+- IP additions to a provider flow: provider → pools → targets (resolved_ips
+  snapshot) → target:update events → ProxyServer diffs and pushes new IPs to
+  live pool queues.
 
 HA / multi-instance safety
 --------------------------
-All writes are serialised through the Backend (Redis SET is atomic for string
-values).  After each write a pub/sub message is published so other instances
-pick up the change.  Subscribers call ``get_target`` / ``get_provider`` to
-fetch the authoritative value from the KV store rather than trusting the
-event payload.
+All writes are serialised through the Backend.  After each write a pub/sub
+message is published so other instances pick up the change.
 """
 
 from __future__ import annotations
@@ -43,6 +47,8 @@ from typing import AsyncIterator, Literal, Optional
 from .backend.base import Backend
 from .config import (
     IdentityConfig,
+    IpPool,
+    IpRequest,
     ProxyProvider,
     ResolvedIP,
     TargetConfig,
@@ -55,6 +61,7 @@ logger = logging.getLogger(__name__)
 
 _TARGET_PREFIX   = "ph:repo:target:"
 _PROVIDER_PREFIX = "ph:repo:provider:"
+_POOL_PREFIX     = "ph:repo:pool:"
 _CHANGES_CHANNEL = "ph:repo:changes"
 
 
@@ -64,8 +71,8 @@ _CHANGES_CHANNEL = "ph:repo:changes"
 
 @dataclass
 class ChangeEvent:
-    """Published whenever a target or provider is added, updated, or removed."""
-    entity: Literal["target", "provider"]
+    """Published whenever a target, provider, or pool is added, updated, or removed."""
+    entity: Literal["target", "provider", "pool"]
     type: Literal["add", "update", "remove"]
     name: str
     #: Serialised entity dict — present for add/update, None for remove.
@@ -77,12 +84,10 @@ class ChangeEvent:
 # ---------------------------------------------------------------------------
 
 def _target_to_dict(config: TargetConfig) -> dict:
-    """Serialise a TargetConfig to a plain dict suitable for JSON storage."""
     return config.model_dump(mode="json")
 
 
 def _dict_to_target(raw: dict) -> TargetConfig:
-    """Deserialise a stored dict back into a TargetConfig."""
     if "resolved_ips" in raw and raw["resolved_ips"]:
         raw["resolved_ips"] = [
             ResolvedIP(**ip) if isinstance(ip, dict) else ip
@@ -96,52 +101,67 @@ def _dict_to_target(raw: dict) -> TargetConfig:
     return TargetConfig(**raw)
 
 
-def _build_target(
-    name: str,
-    regex: str,
-    ip_list: list[str],
-    *,
-    default_proxy_port: int = 8080,
-    min_request_interval: float = 1.0,
-    max_queue_wait: float = 30.0,
-    num_retries: int = 3,
-    ip_failures_until_quarantine: int = 5,
-    quarantine_time: float = 120.0,
-    identity: Optional[IdentityConfig] = None,
-    mutable: bool = True,
-) -> TargetConfig:
-    """Construct a TargetConfig from raw user-supplied fields."""
-    resolved = []
-    for entry in ip_list:
-        host, port = _parse_address(entry, default_proxy_port)
-        resolved.append(ResolvedIP(host=host, port=port))
-    return TargetConfig(
-        name=name,
-        regex=regex,
-        resolved_ips=resolved,
-        min_request_interval=min_request_interval,
-        max_queue_wait=max_queue_wait,
-        num_retries=num_retries,
-        ip_failures_until_quarantine=ip_failures_until_quarantine,
-        quarantine_time=quarantine_time,
-        default_proxy_port=default_proxy_port,
-        identity=identity or IdentityConfig(),
-        mutable=mutable,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Serialisation helpers — providers
 # ---------------------------------------------------------------------------
 
 def _provider_to_dict(provider: ProxyProvider) -> dict:
-    """Serialise a ProxyProvider to a plain dict suitable for JSON storage."""
     return provider.model_dump(mode="json")
 
 
 def _dict_to_provider(raw: dict) -> ProxyProvider:
-    """Deserialise a stored dict back into a ProxyProvider."""
     return ProxyProvider(**raw)
+
+
+# ---------------------------------------------------------------------------
+# Serialisation helpers — pools
+# ---------------------------------------------------------------------------
+
+def _pool_to_dict(pool: IpPool) -> dict:
+    return pool.model_dump(mode="json")
+
+
+def _dict_to_pool(raw: dict) -> IpPool:
+    if "ip_requests" in raw and raw["ip_requests"]:
+        raw["ip_requests"] = [
+            IpRequest(**req) if isinstance(req, dict) else req
+            for req in raw["ip_requests"]
+        ]
+    return IpPool(**raw)
+
+
+# ---------------------------------------------------------------------------
+# Pool IP resolution helper
+# ---------------------------------------------------------------------------
+
+def _resolve_pool_ips(
+    pool: IpPool,
+    provider_map: dict[str, ProxyProvider],
+    default_port: int = 8080,
+) -> list[ResolvedIP]:
+    """Compute the current resolved_ips snapshot for a pool.
+
+    Uses deterministic first-N selection.  Providers missing from provider_map
+    are silently skipped (provider may have been removed).
+    """
+    resolved: list[ResolvedIP] = []
+    for req in pool.ip_requests:
+        provider = provider_map.get(req.provider)
+        if provider is None:
+            logger.warning(
+                "Pool '%s' references provider '%s' which is not in the repository — skipping",
+                pool.name, req.provider,
+            )
+            continue
+        available = provider.resolved_ip_list(default_port)
+        for host, port in available[: req.count]:
+            resolved.append(ResolvedIP(
+                host=host,
+                port=port,
+                provider=provider.name,
+                region_tag=provider.region_tag or "",
+            ))
+    return resolved
 
 
 # ---------------------------------------------------------------------------
@@ -151,8 +171,8 @@ def _dict_to_provider(raw: dict) -> ProxyProvider:
 class ProxyRepository:
     """Runtime entity store — wraps Backend KV + pub/sub.
 
-    Targets and providers are the two first-class stored entity types.
-    IP-pool state (queue, failures, quarantine) lives in IPPoolStore.
+    Three first-class stored entity types: targets, providers, and IP pools.
+    IP-pool runtime state (queue, failures, quarantine) lives in IPPoolStore.
     """
 
     def __init__(self, backend: Backend) -> None:
@@ -205,38 +225,25 @@ class ProxyRepository:
         logger.info("ProxyRepository: target '%s' updated", config.name)
 
     async def remove_target(self, name: str) -> None:
-        """Remove a target and notify all instances.
-
-        No-op if the target does not exist in the repository.
-        """
+        """Remove a target and notify all instances."""
         await self._backend.kv_delete(f"{_TARGET_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="target", type="remove", name=name))
         logger.info("ProxyRepository: target '%s' removed", name)
 
     async def get_target(self, name: str) -> Optional[TargetConfig]:
-        """Return the stored config for *name*, or None if not present."""
         raw = await self._backend.kv_get(f"{_TARGET_PREFIX}{name}")
         if raw is None:
             return None
         return _dict_to_target(json.loads(raw))
 
     async def list_targets(self) -> list[TargetConfig]:
-        """Return all stored targets."""
         pairs = await self._backend.kv_list(_TARGET_PREFIX)
         configs = []
         for key, raw in pairs:
             try:
                 configs.append(_dict_to_target(json.loads(raw)))
-            except (json.JSONDecodeError, TypeError, KeyError) as exc:
-                logger.error(
-                    "ProxyRepository: failed to deserialise target at key '%s': %s",
-                    key, exc,
-                )
             except Exception as exc:
-                logger.error(
-                    "ProxyRepository: unexpected error loading target at key '%s': %s",
-                    key, exc,
-                )
+                logger.error("ProxyRepository: failed to deserialise target at key '%s': %s", key, exc)
         return configs
 
     # ------------------------------------------------------------------
@@ -244,10 +251,7 @@ class ProxyRepository:
     # ------------------------------------------------------------------
 
     async def add_provider(self, provider: ProxyProvider) -> None:
-        """Persist a new provider, cascade its IPs to targets, and notify.
-
-        Raises ValueError if a provider with this name already exists.
-        """
+        """Persist a new provider, cascade IPs through pools to targets, and notify."""
         existing = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{provider.name}")
         if existing is not None:
             raise ValueError(
@@ -263,10 +267,7 @@ class ProxyRepository:
         await self._cascade_provider(provider)
 
     async def update_provider(self, provider: ProxyProvider) -> None:
-        """Update an existing provider, cascade its IPs to targets, and notify.
-
-        Raises ValueError if the provider does not exist or is not mutable.
-        """
+        """Update an existing provider, cascade IPs through pools to targets, and notify."""
         existing_raw = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{provider.name}")
         if existing_raw is None:
             raise ValueError(
@@ -288,101 +289,130 @@ class ProxyRepository:
         await self._cascade_provider(provider)
 
     async def remove_provider(self, name: str) -> None:
-        """Remove a provider and notify all instances.
-
-        No-op if the provider does not exist in the repository.
-        Does not remove IPs from any target's resolved_ips — those remain
-        until the target is updated explicitly.
-        """
+        """Remove a provider and notify.  Does not remove IPs from pools/targets."""
         await self._backend.kv_delete(f"{_PROVIDER_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="provider", type="remove", name=name))
         logger.info("ProxyRepository: provider '%s' removed", name)
 
     async def get_provider(self, name: str) -> Optional[ProxyProvider]:
-        """Return the stored config for *name*, or None if not present."""
         raw = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{name}")
         if raw is None:
             return None
         return _dict_to_provider(json.loads(raw))
 
     async def list_providers(self) -> list[ProxyProvider]:
-        """Return all stored providers."""
         pairs = await self._backend.kv_list(_PROVIDER_PREFIX)
         providers = []
         for key, raw in pairs:
             try:
                 providers.append(_dict_to_provider(json.loads(raw)))
-            except (json.JSONDecodeError, TypeError, KeyError) as exc:
-                logger.error(
-                    "ProxyRepository: failed to deserialise provider at key '%s': %s",
-                    key, exc,
-                )
             except Exception as exc:
-                logger.error(
-                    "ProxyRepository: unexpected error loading provider at key '%s': %s",
-                    key, exc,
-                )
+                logger.error("ProxyRepository: failed to deserialise provider at key '%s': %s", key, exc)
         return providers
 
     # ------------------------------------------------------------------
-    # Target IP list helpers
+    # Provider IP helpers
     # ------------------------------------------------------------------
 
-    async def add_ip(self, name: str, address: str) -> None:
-        """Add *address* to a target's IP list and re-persist.
+    async def add_ip_to_provider(self, provider_name: str, address: str) -> ProxyProvider:
+        """Append *address* to a provider's ip_list and cascade to pools/targets."""
+        provider = await self._get_or_raise_provider(provider_name)
+        if address in provider.ip_list:
+            raise ValueError(f"Address '{address}' already in provider '{provider_name}'.")
+        updated = provider.model_copy(update={"ip_list": provider.ip_list + [address]})
+        await self.update_provider(updated)
+        return updated
 
-        Does not push the IP into the live pool — call IPPoolStore.push_ip
-        separately if the target's pool is already running.
-        """
-        config = await self._get_or_raise_target(name)
-        host, port = _parse_address(address, config.default_proxy_port)
-        new_ip = ResolvedIP(host=host, port=port)
-        updated = config.model_copy(update={"resolved_ips": config.resolved_ips + [new_ip]})
-        await self.update_target(updated)
-
-    async def remove_ip(self, name: str, address: str) -> None:
-        """Remove *address* from a target's IP list and re-persist."""
-        config = await self._get_or_raise_target(name)
-        remaining = [ip for ip in config.resolved_ips if ip.address != address]
+    async def remove_ip_from_provider(self, provider_name: str, address: str) -> ProxyProvider:
+        """Remove *address* from a provider's ip_list and cascade to pools/targets."""
+        provider = await self._get_or_raise_provider(provider_name)
+        if address not in provider.ip_list:
+            raise ValueError(f"Address '{address}' not found in provider '{provider_name}'.")
+        remaining = [ip for ip in provider.ip_list if ip != address]
         if not remaining:
             raise ValueError(
-                f"Cannot remove '{address}' from target '{name}': "
-                "the target must have at least one IP."
+                f"Cannot remove '{address}' from provider '{provider_name}': "
+                "the provider must have at least one IP."
             )
-        updated = config.model_copy(update={"resolved_ips": remaining})
-        await self.update_target(updated)
+        updated = provider.model_copy(update={"ip_list": remaining})
+        await self.update_provider(updated)
+        return updated
 
-    async def swap_ip(self, name: str, old_address: str, new_address: str) -> None:
-        """Replace *old_address* with *new_address* in a target's IP list.
+    # ------------------------------------------------------------------
+    # Pool CRUD
+    # ------------------------------------------------------------------
 
-        The new IP is added to the stored config.  The old IP is removed from
-        the stored config but NOT removed from the live pool — it will flow
-        through naturally (cooldown, quarantine, or eventual pool drain).
+    async def add_pool(self, pool: IpPool) -> None:
+        """Persist a new pool and notify all instances.
+
+        Raises ValueError if a pool with this name already exists.
         """
-        config = await self._get_or_raise_target(name)
-        host, port = _parse_address(new_address, config.default_proxy_port)
-        new_ip = ResolvedIP(host=host, port=port)
-        new_ips = [
-            (new_ip if ip.address == old_address else ip)
-            for ip in config.resolved_ips
-        ]
-        if new_ips == config.resolved_ips:
+        existing = await self._backend.kv_get(f"{_POOL_PREFIX}{pool.name}")
+        if existing is not None:
             raise ValueError(
-                f"Address '{old_address}' not found in target '{name}'."
+                f"Pool '{pool.name}' already exists in the repository. "
+                "Use update_pool to modify it."
             )
-        updated = config.model_copy(update={"resolved_ips": new_ips})
-        await self.update_target(updated)
+        await self._backend.kv_set(
+            f"{_POOL_PREFIX}{pool.name}",
+            json.dumps(_pool_to_dict(pool)),
+        )
+        await self._publish(ChangeEvent(entity="pool", type="add", name=pool.name, data=_pool_to_dict(pool)))
+        logger.info("ProxyRepository: pool '%s' added", pool.name)
+
+    async def update_pool(self, pool: IpPool) -> None:
+        """Update an existing pool, cascade resolved IPs to targets, and notify.
+
+        Raises ValueError if the pool does not exist or is not mutable.
+        """
+        existing_raw = await self._backend.kv_get(f"{_POOL_PREFIX}{pool.name}")
+        if existing_raw is None:
+            raise ValueError(
+                f"Pool '{pool.name}' does not exist in the repository. "
+                "Use add_pool to create it."
+            )
+        existing = _dict_to_pool(json.loads(existing_raw))
+        if not existing.mutable:
+            raise ValueError(
+                f"Pool '{pool.name}' is not mutable. "
+                "Set mutable: true in its configuration to allow runtime updates."
+            )
+        await self._backend.kv_set(
+            f"{_POOL_PREFIX}{pool.name}",
+            json.dumps(_pool_to_dict(pool)),
+        )
+        await self._publish(ChangeEvent(entity="pool", type="update", name=pool.name, data=_pool_to_dict(pool)))
+        logger.info("ProxyRepository: pool '%s' updated", pool.name)
+        await self._cascade_pool(pool)
+
+    async def remove_pool(self, name: str) -> None:
+        """Remove a pool and notify all instances."""
+        await self._backend.kv_delete(f"{_POOL_PREFIX}{name}")
+        await self._publish(ChangeEvent(entity="pool", type="remove", name=name))
+        logger.info("ProxyRepository: pool '%s' removed", name)
+
+    async def get_pool(self, name: str) -> Optional[IpPool]:
+        raw = await self._backend.kv_get(f"{_POOL_PREFIX}{name}")
+        if raw is None:
+            return None
+        return _dict_to_pool(json.loads(raw))
+
+    async def list_pools(self) -> list[IpPool]:
+        pairs = await self._backend.kv_list(_POOL_PREFIX)
+        pools = []
+        for key, raw in pairs:
+            try:
+                pools.append(_dict_to_pool(json.loads(raw)))
+            except Exception as exc:
+                logger.error("ProxyRepository: failed to deserialise pool at key '%s': %s", key, exc)
+        return pools
 
     # ------------------------------------------------------------------
     # Startup seeding (write-if-not-exists, no pub/sub)
     # ------------------------------------------------------------------
 
     async def seed_target(self, config: TargetConfig) -> None:
-        """Persist *config* only if no target with this name is already stored.
-
-        Used during startup to bootstrap the repository from YAML without
-        overwriting runtime mutations.  Publishes no events.
-        """
+        """Persist *config* only if no target with this name is already stored."""
         existing = await self._backend.kv_get(f"{_TARGET_PREFIX}{config.name}")
         if existing is None:
             await self._backend.kv_set(
@@ -392,11 +422,7 @@ class ProxyRepository:
             logger.debug("ProxyRepository: seeded target '%s'", config.name)
 
     async def seed_provider(self, provider: ProxyProvider) -> None:
-        """Persist *provider* only if no provider with this name is already stored.
-
-        Used during startup to bootstrap the repository from YAML without
-        overwriting runtime mutations.  Publishes no events.
-        """
+        """Persist *provider* only if no provider with this name is already stored."""
         existing = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{provider.name}")
         if existing is None:
             await self._backend.kv_set(
@@ -405,19 +431,22 @@ class ProxyRepository:
             )
             logger.debug("ProxyRepository: seeded provider '%s'", provider.name)
 
+    async def seed_pool(self, pool: IpPool) -> None:
+        """Persist *pool* only if no pool with this name is already stored."""
+        existing = await self._backend.kv_get(f"{_POOL_PREFIX}{pool.name}")
+        if existing is None:
+            await self._backend.kv_set(
+                f"{_POOL_PREFIX}{pool.name}",
+                json.dumps(_pool_to_dict(pool)),
+            )
+            logger.debug("ProxyRepository: seeded pool '%s'", pool.name)
+
     # ------------------------------------------------------------------
     # Pub/sub change subscription
     # ------------------------------------------------------------------
 
     def subscribe_changes(self):
-        """Async context manager yielding ``ChangeEvent`` objects.
-
-        Usage::
-
-            async with repo.subscribe_changes() as events:
-                async for event in events:
-                    handle(event)
-        """
+        """Async context manager yielding ``ChangeEvent`` objects."""
         return _ChangeSubscription(self._backend)
 
     # ------------------------------------------------------------------
@@ -436,22 +465,57 @@ class ProxyRepository:
             raise ValueError(f"Provider '{name}' not found in the repository.")
         return provider
 
-    async def _cascade_provider(self, provider: ProxyProvider) -> None:
-        """Rebuild resolved_ips for every target that references *provider*.
+    async def _get_or_raise_pool(self, name: str) -> IpPool:
+        pool = await self.get_pool(name)
+        if pool is None:
+            raise ValueError(f"Pool '{name}' not found in the repository.")
+        return pool
 
-        Emits ``target:update`` events for each affected target so all
-        instances (including this one) can hot-reload the impacted pools.
+    async def _build_provider_map(self) -> dict[str, ProxyProvider]:
+        """Return all stored providers indexed by name."""
+        return {p.name: p for p in await self.list_providers()}
+
+    async def _cascade_provider(self, provider: ProxyProvider) -> None:
+        """Rebuild resolved_ips for every pool that references *provider*, then
+        cascade to every target that references those pools.
+
+        Flow: provider changed → affected pools recomputed → affected targets
+        updated (resolved_ips snapshot) → target:update events emitted →
+        ProxyServer diffs IPs and pushes new ones to live queues.
         """
+        provider_map = await self._build_provider_map()
+        # Ensure the updated provider is in the map (may not be persisted yet on first call)
+        provider_map[provider.name] = provider
+
+        pools = await self.list_pools()
+        affected_pools: list[IpPool] = [
+            p for p in pools
+            if any(req.provider == provider.name for req in p.ip_requests)
+        ]
+
+        for pool in affected_pools:
+            await self._cascade_pool(pool, provider_map=provider_map)
+
+    async def _cascade_pool(
+        self,
+        pool: IpPool,
+        *,
+        provider_map: dict[str, ProxyProvider] | None = None,
+    ) -> None:
+        """Rebuild resolved_ips for every target that references *pool*.
+
+        Emits target:update events for each affected target.
+        """
+        if provider_map is None:
+            provider_map = await self._build_provider_map()
+
+        new_resolved = _resolve_pool_ips(pool, provider_map)
+
         targets = await self.list_targets()
         for target in targets:
-            if not any(ip.provider == provider.name for ip in target.resolved_ips):
+            if target.pool_name != pool.name:
                 continue
-            non_provider = [ip for ip in target.resolved_ips if ip.provider != provider.name]
-            new_ips = [
-                ResolvedIP(host=h, port=p, provider=provider.name)
-                for h, p in provider.resolved_ip_list(target.default_proxy_port)
-            ]
-            updated = target.model_copy(update={"resolved_ips": non_provider + new_ips})
+            updated = target.model_copy(update={"resolved_ips": new_resolved})
             # Bypass update_target mutability check — this is an internal cascade.
             await self._backend.kv_set(
                 f"{_TARGET_PREFIX}{target.name}",
@@ -462,8 +526,8 @@ class ProxyRepository:
                 name=target.name, data=_target_to_dict(updated),
             ))
             logger.info(
-                "ProxyRepository: cascaded provider '%s' IP update to target '%s'",
-                provider.name, target.name,
+                "ProxyRepository: cascaded pool '%s' IP update to target '%s'",
+                pool.name, target.name,
             )
 
     async def _publish(self, event: ChangeEvent) -> None:
@@ -496,7 +560,7 @@ class _ChangeSubscription:
                 try:
                     raw = json.loads(msg)
                     entity = raw.get("entity")
-                    if entity not in ("target", "provider"):
+                    if entity not in ("target", "provider", "pool"):
                         logger.warning(
                             "ProxyRepository: change event with unknown entity %r — skipping",
                             entity,

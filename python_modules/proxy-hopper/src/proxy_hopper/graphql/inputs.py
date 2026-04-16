@@ -18,10 +18,23 @@ class BasicAuthInput:
 
 
 @strawberry.input
+class IpRequestInput:
+    provider: str
+    count: int
+
+
+@strawberry.input
+class IpPoolInput:
+    name: str
+    ip_requests: list[IpRequestInput]
+    mutable: bool = True
+
+
+@strawberry.input
 class TargetInput:
     name: str
     regex: str
-    ip_list: list[str]
+    pool_name: str
     min_request_interval: float = 1.0
     max_queue_wait: float = 30.0
     num_retries: int = 3
@@ -44,19 +57,12 @@ class ProviderInput:
 # Converters
 # ---------------------------------------------------------------------------
 
-def target_input_to_config(inp: TargetInput):
-    """Convert a TargetInput to a TargetConfig."""
-    from ..repository import _build_target
-    return _build_target(
+def pool_input_to_model(inp: IpPoolInput):
+    """Convert an IpPoolInput to an IpPool."""
+    from ..config import IpPool, IpRequest
+    return IpPool(
         name=inp.name,
-        regex=inp.regex,
-        ip_list=inp.ip_list,
-        default_proxy_port=inp.default_proxy_port,
-        min_request_interval=inp.min_request_interval,
-        max_queue_wait=inp.max_queue_wait,
-        num_retries=inp.num_retries,
-        ip_failures_until_quarantine=inp.ip_failures_until_quarantine,
-        quarantine_time=inp.quarantine_time,
+        ip_requests=[IpRequest(provider=r.provider, count=r.count) for r in inp.ip_requests],
         mutable=inp.mutable,
     )
 

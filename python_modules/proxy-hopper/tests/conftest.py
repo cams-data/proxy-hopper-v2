@@ -40,12 +40,22 @@ async def memory_backend(target_config) -> IPPoolStore:
 def sample_yaml(tmp_path) -> str:
     cfg = tmp_path / "config.yaml"
     cfg.write_text(dedent(r"""
+        proxyProviders:
+          - name: test-provider
+            ipList:
+              - "10.0.0.1:3128"
+              - "10.0.0.2:8080"
+
+        ipPools:
+          - name: test-pool
+            ipRequests:
+              - provider: test-provider
+                count: 2
+
         targets:
           - name: example
             regex: '.*example\.com.*'
-            ipList:
-              - "10.0.0.1:3128"
-              - "10.0.0.2"
+            ipPool: test-pool
             minRequestInterval: 1s
             maxQueueWait: 10s
             numRetries: 3

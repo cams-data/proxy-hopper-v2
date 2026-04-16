@@ -8,8 +8,9 @@ import pytest
 import pytest_asyncio
 
 from proxy_hopper.backend.memory import MemoryBackend
+from proxy_hopper.config import ResolvedIP, TargetConfig
 from proxy_hopper.pool_store import IPPoolStore
-from proxy_hopper.repository import ChangeEvent, ProxyRepository, _build_target
+from proxy_hopper.repository import ChangeEvent, ProxyRepository
 from proxy_hopper.server import ProxyServer
 from proxy_hopper.target_manager import TargetManager
 
@@ -20,12 +21,13 @@ from test_helpers import make_target_config
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_config(name="api", ip_list=None):
-    return _build_target(
-        name=name,
-        regex=r".*",
-        ip_list=ip_list or ["1.2.3.4:3128"],
-    )
+def _make_config(name="api", ip_list=None, **kwargs) -> TargetConfig:
+    ips = ip_list or ["1.2.3.4:3128"]
+    resolved = []
+    for entry in ips:
+        host, _, port_str = entry.rpartition(":")
+        resolved.append(ResolvedIP(host=host, port=int(port_str)))
+    return TargetConfig(name=name, regex=r".*", pool_name="test-pool", resolved_ips=resolved, **kwargs)
 
 
 async def _make_server_with_repo(initial_configs=None):
@@ -101,7 +103,7 @@ class TestApplyChangeUpdate:
         for m in server._managers:
             await m.start()
 
-        updated = _build_target("updatable", r".*", ["9.9.9.9:3128"], min_request_interval=5.0)
+        updated = _make_config("updatable", ["9.9.9.9:3128"], min_request_interval=5.0)
         await repo.add_target(updated)
 
         event = ChangeEvent(entity="target", type="update", name="updatable")
@@ -119,7 +121,7 @@ class TestApplyChangeUpdate:
         old_mgr = server._managers[0]
         await old_mgr.start()
 
-        updated = _build_target("stopme", r".*", ["2.2.2.2:3128"])
+        updated = _make_config("stopme", ["2.2.2.2:3128"])
         await repo.add_target(updated)
 
         event = ChangeEvent(entity="target", type="update", name="stopme")
@@ -137,7 +139,7 @@ class TestApplyChangeUpdate:
         await server._managers[0].start()
         original_list = server._managers  # capture reference
 
-        updated = _build_target("ref-test", r".*", ["3.3.3.3:3128"])
+        updated = _make_config("ref-test", ["3.3.3.3:3128"])
         await repo.add_target(updated)
 
         event = ChangeEvent(entity="target", type="update", name="ref-test")
@@ -334,7 +336,7 @@ class TestServerLifecycleWithRepository:
         # Yield to event loop so the listener task enters subscribe_changes() before we publish
         await asyncio.sleep(0.05)
 
-        cfg = _build_target("live-add", r".*", ["1.1.1.1:3128"])
+        cfg = _make_config("live-add", ["1.1.1.1:3128"])
         await repo.add_target(cfg)
 
         # Give the background listener a moment to process

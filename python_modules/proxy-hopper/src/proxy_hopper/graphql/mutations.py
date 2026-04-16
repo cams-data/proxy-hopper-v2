@@ -7,8 +7,21 @@ from strawberry.types import Info
 
 from ._auth import require_permission
 from .context import Context
-from .inputs import ProviderInput, TargetInput, provider_input_to_model, target_input_to_config
-from .types import ProviderType, TargetType, provider_to_gql, target_to_gql
+from .inputs import (
+    IpPoolInput,
+    ProviderInput,
+    TargetInput,
+    pool_input_to_model,
+    provider_input_to_model,
+)
+from .types import (
+    IpPoolType,
+    ProviderType,
+    TargetType,
+    pool_to_gql,
+    provider_to_gql,
+    target_to_gql,
+)
 
 
 @strawberry.type
@@ -22,8 +35,28 @@ class Mutation:
         self, info: Info[Context, None], input: TargetInput
     ) -> TargetType:
         from ..auth import Permission
+        from ..config import ResolvedIP, TargetConfig
         require_permission(info, Permission.write)
-        config = target_input_to_config(input)
+        # Resolve the pool's current IPs as the initial snapshot
+        pool = await info.context.repo.get_pool(input.pool_name)
+        if pool is None:
+            raise ValueError(f"Pool '{input.pool_name}' not found in the repository.")
+        provider_map = await info.context.repo._build_provider_map()
+        from ..repository import _resolve_pool_ips
+        resolved_ips = _resolve_pool_ips(pool, provider_map, input.default_proxy_port)
+        config = TargetConfig(
+            name=input.name,
+            regex=input.regex,
+            pool_name=input.pool_name,
+            resolved_ips=resolved_ips,
+            min_request_interval=input.min_request_interval,
+            max_queue_wait=input.max_queue_wait,
+            num_retries=input.num_retries,
+            ip_failures_until_quarantine=input.ip_failures_until_quarantine,
+            quarantine_time=input.quarantine_time,
+            default_proxy_port=input.default_proxy_port,
+            mutable=input.mutable,
+        )
         await info.context.repo.add_target(config)
         return target_to_gql(config)
 
@@ -32,8 +65,27 @@ class Mutation:
         self, info: Info[Context, None], input: TargetInput
     ) -> TargetType:
         from ..auth import Permission
+        from ..config import TargetConfig
         require_permission(info, Permission.write)
-        config = target_input_to_config(input)
+        pool = await info.context.repo.get_pool(input.pool_name)
+        if pool is None:
+            raise ValueError(f"Pool '{input.pool_name}' not found in the repository.")
+        provider_map = await info.context.repo._build_provider_map()
+        from ..repository import _resolve_pool_ips
+        resolved_ips = _resolve_pool_ips(pool, provider_map, input.default_proxy_port)
+        config = TargetConfig(
+            name=input.name,
+            regex=input.regex,
+            pool_name=input.pool_name,
+            resolved_ips=resolved_ips,
+            min_request_interval=input.min_request_interval,
+            max_queue_wait=input.max_queue_wait,
+            num_retries=input.num_retries,
+            ip_failures_until_quarantine=input.ip_failures_until_quarantine,
+            quarantine_time=input.quarantine_time,
+            default_proxy_port=input.default_proxy_port,
+            mutable=input.mutable,
+        )
         await info.context.repo.update_target(config)
         return target_to_gql(config)
 
@@ -44,6 +96,39 @@ class Mutation:
         from ..auth import Permission
         require_permission(info, Permission.write)
         await info.context.repo.remove_target(name)
+        return True
+
+    # ------------------------------------------------------------------
+    # Pool mutations
+    # ------------------------------------------------------------------
+
+    @strawberry.mutation(description="Add a new IP pool to the repository.")
+    async def add_pool(
+        self, info: Info[Context, None], input: IpPoolInput
+    ) -> IpPoolType:
+        from ..auth import Permission
+        require_permission(info, Permission.write)
+        pool = pool_input_to_model(input)
+        await info.context.repo.add_pool(pool)
+        return pool_to_gql(pool)
+
+    @strawberry.mutation(description="Update an existing mutable IP pool.")
+    async def update_pool(
+        self, info: Info[Context, None], input: IpPoolInput
+    ) -> IpPoolType:
+        from ..auth import Permission
+        require_permission(info, Permission.write)
+        pool = pool_input_to_model(input)
+        await info.context.repo.update_pool(pool)
+        return pool_to_gql(pool)
+
+    @strawberry.mutation(description="Remove an IP pool from the repository.")
+    async def remove_pool(
+        self, info: Info[Context, None], name: str
+    ) -> bool:
+        from ..auth import Permission
+        require_permission(info, Permission.write)
+        await info.context.repo.remove_pool(name)
         return True
 
     # ------------------------------------------------------------------
@@ -79,46 +164,27 @@ class Mutation:
         await info.context.repo.remove_provider(name)
         return True
 
-    # ------------------------------------------------------------------
-    # Target IP list mutations
-    # ------------------------------------------------------------------
-
-    @strawberry.mutation(description="Append an IP address to a target's pool.")
-    async def add_ip(
-        self, info: Info[Context, None], target: str, address: str
-    ) -> TargetType:
+    @strawberry.mutation(
+        description="Append an IP address to a provider's ip_list. "
+        "Cascades through pools to all referencing targets."
+    )
+    async def add_ip_to_provider(
+        self, info: Info[Context, None], provider: str, address: str
+    ) -> ProviderType:
         from ..auth import Permission
         require_permission(info, Permission.write)
-        await info.context.repo.add_ip(target, address)
-        config = await info.context.repo.get_target(target)
-        return target_to_gql(config)
+        updated = await info.context.repo.add_ip_to_provider(provider, address)
+        return provider_to_gql(updated)
 
     @strawberry.mutation(
-        description="Remove an IP address from a target's pool. "
-        "Raises if it is the last IP."
+        description="Remove an IP address from a provider's ip_list. "
+        "Cascades through pools to all referencing targets. "
+        "Old IP drains naturally from live pool queues."
     )
-    async def remove_ip(
-        self, info: Info[Context, None], target: str, address: str
-    ) -> TargetType:
+    async def remove_ip_from_provider(
+        self, info: Info[Context, None], provider: str, address: str
+    ) -> ProviderType:
         from ..auth import Permission
         require_permission(info, Permission.write)
-        await info.context.repo.remove_ip(target, address)
-        config = await info.context.repo.get_target(target)
-        return target_to_gql(config)
-
-    @strawberry.mutation(
-        description="Replace oldAddress with newAddress in a target's pool. "
-        "The old IP drains naturally from the live pool."
-    )
-    async def swap_ip(
-        self,
-        info: Info[Context, None],
-        target: str,
-        old_address: str,
-        new_address: str,
-    ) -> TargetType:
-        from ..auth import Permission
-        require_permission(info, Permission.write)
-        await info.context.repo.swap_ip(target, old_address, new_address)
-        config = await info.context.repo.get_target(target)
-        return target_to_gql(config)
+        updated = await info.context.repo.remove_ip_from_provider(provider, address)
+        return provider_to_gql(updated)
