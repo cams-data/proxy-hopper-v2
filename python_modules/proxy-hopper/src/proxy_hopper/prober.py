@@ -23,16 +23,16 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import logging
 import time
 from typing import Sequence
 
 import aiohttp
 
 from .config import ProxyProvider, TargetConfig
+from .logging_config import get_logger
 from .metrics import get_metrics
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Default probe endpoints — plain HTTP so they work through HTTP-only proxies
 # that do not support CONNECT tunnelling.  HTTPS probe URLs would require the
@@ -183,7 +183,7 @@ class IPProber:
                 return_exceptions=True,
             )
             if self._debug:
-                logger.trace(  # type: ignore[attr-defined]
+                logger.trace(
                     "IPProber: probe round complete, sleeping %.0fs", self._interval
                 )
             await asyncio.sleep(self._interval)
@@ -196,7 +196,7 @@ class IPProber:
         reason: str | None = None
 
         if self._debug:
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "IPProber: probing %s via %s (provider=%s region=%s)",
                 url, entry.address, entry.provider or "-", entry.region or "-",
             )

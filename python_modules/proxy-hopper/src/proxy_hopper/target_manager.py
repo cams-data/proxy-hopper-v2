@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import time
 from typing import TYPE_CHECKING
 
@@ -21,6 +20,7 @@ import aiohttp
 
 from .config import ProxyProvider, TargetConfig
 from .identity import IdentityStore
+from .logging_config import get_logger
 from .metrics import get_metrics
 from .models import PendingRequest, ProxyResponse
 from .pool import IPPool
@@ -28,7 +28,7 @@ from .pool import IPPool
 if TYPE_CHECKING:
     from .pool_store import IPPoolStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _RETRIABLE_STATUSES = frozenset({429, 502, 503, 504})
 _HOP_BY_HOP = frozenset({
@@ -78,7 +78,7 @@ class TargetManager:
         if quarantine_sweep_interval is not None:
             pool_kwargs["sweep_interval"] = quarantine_sweep_interval
         if self._identity_store is not None:
-            pool_kwargs["on_quarantine_release"] = self._on_ip_released_from_quarantine
+            pool_kwargs["on_quarantine_release"] = self._on_quarantine_release
         self._pool = IPPool(config, backend, **pool_kwargs)
 
         self._request_queue: asyncio.Queue[PendingRequest] = asyncio.Queue()
@@ -173,7 +173,7 @@ class TargetManager:
     # Identity callbacks
     # ------------------------------------------------------------------
 
-    async def _on_ip_released_from_quarantine(self, address: str) -> None:
+    async def _on_quarantine_release(self, address: str) -> None:
         """Called by IPPool's sweep when an IP returns from quarantine.
 
         Rotates the identity so the IP re-enters the pool with a fresh persona.
@@ -198,7 +198,7 @@ class TargetManager:
     async def submit(self, request: PendingRequest) -> None:
         await self._request_queue.put(request)
         depth = self._request_queue.qsize()
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "TargetManager '%s': enqueued %s %s (queue depth: %d)",
             self._config.name, request.method, request.url, depth,
         )
@@ -217,7 +217,7 @@ class TargetManager:
             except (asyncio.TimeoutError, TimeoutError):
                 continue
 
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "TargetManager '%s': dequeued %s %s",
                 self._config.name, request.method, request.url,
             )
@@ -307,7 +307,7 @@ class TargetManager:
             forward_headers = identity.apply_to_headers(forward_headers)
 
         try:
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "TargetManager '%s': opening connection to proxy %s for %s %s",
                 self._config.name, address, request.method, request.url,
             )

@@ -29,16 +29,16 @@ Relationship to other layers
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
 from .config import TargetConfig
+from .logging_config import get_logger
 from .metrics import get_metrics
 from .pool_store import IPPoolStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _QUARANTINE_SWEEP_INTERVAL = 5.0  # seconds between quarantine expiry checks
 
@@ -112,7 +112,7 @@ class IPPool:
     async def acquire(self, timeout: float) -> Optional[str]:
         """Return the next available IP address, or None on timeout."""
         if self._debug:
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "IPPool '%s': waiting for IP (timeout=%.2fs)", self._config.name, timeout
             )
         address = await self._backend.pop_ip(self._config.name, timeout)
@@ -200,7 +200,7 @@ class IPPool:
             await asyncio.sleep(delay)
         await self._backend.push_ip(self._config.name, address)
         if self._debug:
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "IPPool '%s': %s returned to pool (after %.2fs cooldown)",
                 self._config.name, address, delay,
             )

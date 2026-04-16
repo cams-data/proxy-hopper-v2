@@ -18,7 +18,6 @@ is mutated in-place so that handler callbacks always see the current state.
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING
 
 from .handlers import (
@@ -28,6 +27,7 @@ from .handlers import (
     _reason,            # noqa: F401 — re-exported; imported directly by tests
     _write_error,
 )
+from .logging_config import get_logger
 from .metrics import get_metrics
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from .pool_store import IPPoolStore
     from .target_manager import TargetManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _MAX_HEADER_SIZE = 65_536   # 64 KiB
 
@@ -233,7 +233,7 @@ class ProxyServer:
                 if not keep_alive:
                     break
         except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "ProxyServer: connection from %s closed abruptly", peer
             )
         except Exception:

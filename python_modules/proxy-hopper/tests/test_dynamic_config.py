@@ -165,6 +165,13 @@ class TestUpdateTarget:
         with pytest.raises(ValueError, match="does not exist"):
             await store.update_target(cfg)
 
+    async def test_update_immutable_target_raises(self, store):
+        cfg = _make_config("frozen", mutable=False)
+        await store.add_target(cfg)
+        updated = cfg.model_copy(update={"min_request_interval": 99.0})
+        with pytest.raises(ValueError, match="not mutable"):
+            await store.update_target(updated)
+
     async def test_update_publishes_event(self, store, backend):
         await store.add_target(_make_config("pub-upd"))
         events = []
