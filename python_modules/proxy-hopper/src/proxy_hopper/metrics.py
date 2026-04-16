@@ -194,11 +194,11 @@ class PrometheusMetrics:
         )
 
     def record_request(self, target: str, outcome: str, duration: float, *, tag: str = "") -> None:
-        self._requests.labels(target=target, outcome=outcome, tag=tag).inc()
+        self._requests.labels(target=target, outcome=outcome, tag=_sanitize_tag(tag)).inc()
         self._duration.labels(target=target).observe(duration)
 
     def record_response(self, target: str, status_code: int, *, tag: str = "") -> None:
-        self._responses.labels(target=target, status_code=str(status_code), tag=tag).inc()
+        self._responses.labels(target=target, status_code=str(status_code), tag=_sanitize_tag(tag)).inc()
 
     def record_retry(self, target: str) -> None:
         self._retries.labels(target=target).inc()
@@ -242,6 +242,23 @@ class PrometheusMetrics:
         self._probe_failure.labels(address=address, provider=provider, region=region, reason=reason).inc()
         self._probe_duration.labels(address=address, provider=provider, region=region).observe(duration)
         self._ip_reachable.labels(address=address, provider=provider, region=region).set(0)
+
+
+# Maximum length of a user-supplied tag value used as a Prometheus label.
+# Unbounded user-controlled label values create infinite cardinality, which
+# exhausts Prometheus memory.  Values longer than this are truncated.
+_MAX_TAG_LEN = 64
+
+
+def _sanitize_tag(tag: str) -> str:
+    """Truncate a user-supplied tag to prevent unbounded label cardinality."""
+    if len(tag) > _MAX_TAG_LEN:
+        logger.warning(
+            "Metrics: tag value truncated from %d to %d chars to prevent cardinality explosion",
+            len(tag), _MAX_TAG_LEN,
+        )
+        return tag[:_MAX_TAG_LEN]
+    return tag
 
 
 # Singleton — created once at startup

@@ -146,22 +146,34 @@ class ProxyServer:
     # ------------------------------------------------------------------
 
     async def _config_change_listener(self) -> None:
-        """Subscribe to DynamicConfigStore changes and sync managers."""
+        """Subscribe to DynamicConfigStore changes and sync managers.
+
+        Automatically restarts on unexpected errors with exponential backoff
+        so a transient backend blip does not permanently disable hot-reload.
+        """
         assert self._dynamic_config is not None
-        try:
-            async with self._dynamic_config.subscribe_changes() as events:
-                async for event in events:
-                    try:
-                        await self._apply_change(event)
-                    except Exception:
-                        logger.exception(
-                            "ProxyServer: error applying config change event %s/%s",
-                            event.type, event.name,
-                        )
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception("ProxyServer: config change listener crashed")
+        backoff = 1.0
+        while True:
+            try:
+                async with self._dynamic_config.subscribe_changes() as events:
+                    backoff = 1.0  # reset on successful subscription
+                    async for event in events:
+                        try:
+                            await self._apply_change(event)
+                        except Exception:
+                            logger.exception(
+                                "ProxyServer: error applying config change event %s/%s",
+                                event.type, event.name,
+                            )
+            except asyncio.CancelledError:
+                return  # normal shutdown — do not restart
+            except Exception:
+                logger.exception(
+                    "ProxyServer: config change listener crashed — restarting in %.0fs",
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
 
     async def _apply_change(self, event: "DynamicConfigChangeEvent") -> None:
         from .dynamic_config import ConfigChangeEvent

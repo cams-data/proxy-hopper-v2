@@ -35,6 +35,10 @@ _EPOCH_DATES = frozenset({
     "Thu, 01-Jan-1970 00:00:00 GMT",
 })
 
+# Safety limits — prevent unbounded memory growth from a misbehaving upstream.
+_MAX_COOKIES = 50           # max number of cookies stored per identity
+_MAX_COOKIE_VALUE_LEN = 4096  # max byte length of a single cookie value
+
 
 @dataclass
 class Identity:
@@ -129,6 +133,18 @@ class Identity:
                     self.cookies.pop(name, None)
                     logger.debug("Identity: removed cookie %r (deleted by server)", name)
                 else:
+                    if len(morsel.value) > _MAX_COOKIE_VALUE_LEN:
+                        logger.warning(
+                            "Identity: discarding cookie %r — value exceeds %d bytes (%d bytes)",
+                            name, _MAX_COOKIE_VALUE_LEN, len(morsel.value),
+                        )
+                        continue
+                    if name not in self.cookies and len(self.cookies) >= _MAX_COOKIES:
+                        logger.warning(
+                            "Identity: cookie jar full (%d entries) — discarding new cookie %r",
+                            _MAX_COOKIES, name,
+                        )
+                        continue
                     self.cookies[name] = morsel.value
                     logger.debug("Identity: stored cookie %r", name)
 
