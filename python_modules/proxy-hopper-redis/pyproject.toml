@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "proxy-hopper-redis"
 dynamic = ["version"]
 description = "Redis-backed IP pool backend for Proxy Hopper — enables HA multi-instance deployments"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "proxy-hopper>=0.1.0",
     "redis[hiredis]>=5.0",

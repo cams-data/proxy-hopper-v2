@@ -125,6 +125,7 @@ class ProxyProvider(BaseModel):
     auth: Optional[BasicAuth] = None
     ip_list: list[str] = Field(min_length=1)
     region_tag: Optional[str] = None
+    mutable: bool = True
 
     def resolved_ip_list(self, default_port: int = 8080) -> list[tuple[str, int]]:
         """Return list of (host, port) tuples."""
@@ -172,7 +173,7 @@ class TargetConfig(BaseModel):
     quarantine_time: float = Field(default=120.0)
     default_proxy_port: int = Field(default=8080)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
-    mutable: bool = Field(default=False)
+    mutable: bool = Field(default=True)
 
     @field_validator("regex")
     @classmethod

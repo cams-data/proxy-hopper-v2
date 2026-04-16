@@ -223,9 +223,9 @@ class TestMutableField:
         p.write_text(dedent(content))
         return p
 
-    def test_mutable_defaults_to_false(self):
+    def test_mutable_defaults_to_true(self):
         t = make_target_config(["1.2.3.4:8080"])
-        assert t.mutable is False
+        assert t.mutable is True
 
     def test_mutable_true_parsed_from_yaml(self, tmp_path):
         p = self._write(tmp_path, """
@@ -249,7 +249,7 @@ class TestMutableField:
         cfg = load_config(p)
         assert cfg.targets[0].mutable is False
 
-    def test_mutable_omitted_defaults_false_in_yaml(self, tmp_path):
+    def test_mutable_omitted_defaults_true_in_yaml(self, tmp_path):
         p = self._write(tmp_path, """
             targets:
               - name: t
@@ -257,14 +257,15 @@ class TestMutableField:
                 ipList: ["1.1.1.1:3128"]
         """)
         cfg = load_config(p)
-        assert cfg.targets[0].mutable is False
+        assert cfg.targets[0].mutable is True
 
     def test_multiple_targets_independent_mutable_flags(self, tmp_path):
         p = self._write(tmp_path, """
             targets:
-              - name: static
-                regex: 'static\\.com'
+              - name: locked
+                regex: 'locked\\.com'
                 ipList: ["1.1.1.1:3128"]
+                mutable: false
               - name: dynamic
                 regex: 'dynamic\\.com'
                 ipList: ["2.2.2.2:3128"]
@@ -272,7 +273,7 @@ class TestMutableField:
         """)
         cfg = load_config(p)
         by_name = {t.name: t for t in cfg.targets}
-        assert by_name["static"].mutable is False
+        assert by_name["locked"].mutable is False
         assert by_name["dynamic"].mutable is True
 
 

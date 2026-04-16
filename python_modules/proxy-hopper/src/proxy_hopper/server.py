@@ -9,10 +9,13 @@ see the docstring at the top of that module.
 
 Hot-reload
 ----------
-When a ``DynamicConfigStore`` is supplied at construction, ``ProxyServer``
+When a ``ProxyRepository`` is supplied at construction, ``ProxyServer``
 subscribes to its change channel and adds/replaces/removes ``TargetManager``
 instances at runtime without restarting the server.  The ``_managers`` list
 is mutated in-place so that handler callbacks always see the current state.
+Provider change events update ``_providers`` so newly built managers pick up
+fresh credentials; IP changes are cascaded to target update events by the
+repository itself.
 """
 
 from __future__ import annotations
@@ -32,8 +35,8 @@ from .metrics import get_metrics
 
 if TYPE_CHECKING:
     from .config import AuthConfig, ProxyProvider, TargetConfig
-    from .dynamic_config import DynamicConfigStore
     from .pool_store import IPPoolStore
+    from .repository import ProxyRepository
     from .target_manager import TargetManager
 
 logger = get_logger(__name__)
@@ -79,7 +82,7 @@ class ProxyServer:
         auth_config: "AuthConfig | None" = None,
         runtime_secret: str = "",
         pool_store: "IPPoolStore | None" = None,
-        dynamic_config: "DynamicConfigStore | None" = None,
+        repository: "ProxyRepository | None" = None,
         providers: "list[ProxyProvider] | None" = None,
         proxy_read_timeout: float | None = None,
         debug_quarantine: bool = False,
@@ -91,8 +94,8 @@ class ProxyServer:
         self._port = port
         self._server: asyncio.Server | None = None
         self._pool_store = pool_store
-        self._dynamic_config = dynamic_config
-        self._providers = providers or []
+        self._repository = repository
+        self._providers = list(providers) if providers else []
         self._proxy_read_timeout = proxy_read_timeout
         self._debug_quarantine = debug_quarantine
         self._quarantine_sweep_interval = quarantine_sweep_interval
@@ -121,7 +124,7 @@ class ProxyServer:
             "Proxy server listening on %s:%d (modes: %s)",
             self._host, self._port, ", ".join(mode_names),
         )
-        if self._dynamic_config is not None:
+        if self._repository is not None:
             self._change_listener_task = asyncio.create_task(
                 self._config_change_listener(),
                 name="ph:server:config-listener",
@@ -146,24 +149,24 @@ class ProxyServer:
     # ------------------------------------------------------------------
 
     async def _config_change_listener(self) -> None:
-        """Subscribe to DynamicConfigStore changes and sync managers.
+        """Subscribe to ProxyRepository changes and sync managers + providers.
 
         Automatically restarts on unexpected errors with exponential backoff
         so a transient backend blip does not permanently disable hot-reload.
         """
-        assert self._dynamic_config is not None
+        assert self._repository is not None
         backoff = 1.0
         while True:
             try:
-                async with self._dynamic_config.subscribe_changes() as events:
+                async with self._repository.subscribe_changes() as events:
                     backoff = 1.0  # reset on successful subscription
                     async for event in events:
                         try:
                             await self._apply_change(event)
                         except Exception:
                             logger.exception(
-                                "ProxyServer: error applying config change event %s/%s",
-                                event.type, event.name,
+                                "ProxyServer: error applying change event %s:%s/%s",
+                                event.entity, event.type, event.name,
                             )
             except asyncio.CancelledError:
                 return  # normal shutdown — do not restart
@@ -175,12 +178,17 @@ class ProxyServer:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60.0)
 
-    async def _apply_change(self, event: "DynamicConfigChangeEvent") -> None:
-        from .dynamic_config import ConfigChangeEvent
+    async def _apply_change(self, event) -> None:
+        if event.entity == "target":
+            await self._apply_target_change(event)
+        elif event.entity == "provider":
+            self._apply_provider_change(event)
+
+    async def _apply_target_change(self, event) -> None:
         if event.type == "add":
-            config = await self._dynamic_config.get_target(event.name)
+            config = await self._repository.get_target(event.name)
             if config is None:
-                logger.warning("ProxyServer: add event for '%s' but target not found in store", event.name)
+                logger.warning("ProxyServer: add event for target '%s' but not found in repository", event.name)
                 return
             mgr = self._build_manager(config)
             await mgr.start()
@@ -188,11 +196,10 @@ class ProxyServer:
             logger.info("ProxyServer: dynamically added target '%s'", event.name)
 
         elif event.type == "update":
-            config = await self._dynamic_config.get_target(event.name)
+            config = await self._repository.get_target(event.name)
             if config is None:
-                logger.warning("ProxyServer: update event for '%s' but target not found in store", event.name)
+                logger.warning("ProxyServer: update event for target '%s' but not found in repository", event.name)
                 return
-            # Find and replace the existing manager, stopping it first
             old = next((m for m in self._managers if m._config.name == event.name), None)
             new_mgr = self._build_manager(config)
             await new_mgr.start()
@@ -209,10 +216,24 @@ class ProxyServer:
             old = next((m for m in self._managers if m._config.name == event.name), None)
             if old is None:
                 return
-            # In-place removal
             self._managers[:] = [m for m in self._managers if m is not old]
             await old.stop()
             logger.info("ProxyServer: dynamically removed target '%s'", event.name)
+
+    def _apply_provider_change(self, event) -> None:
+        """Keep self._providers in sync so new managers get fresh credentials."""
+        from .repository import _dict_to_provider
+        if event.type == "remove":
+            self._providers[:] = [p for p in self._providers if p.name != event.name]
+            logger.info("ProxyServer: provider '%s' removed from local cache", event.name)
+        elif event.data is not None:
+            new_p = _dict_to_provider(event.data)
+            idx = next((i for i, p in enumerate(self._providers) if p.name == event.name), None)
+            if idx is not None:
+                self._providers[idx] = new_p
+            else:
+                self._providers.append(new_p)
+            logger.info("ProxyServer: provider '%s' updated in local cache", event.name)
 
     def _build_manager(self, config: "TargetConfig") -> "TargetManager":
         from .target_manager import TargetManager

@@ -242,17 +242,22 @@ async def _run(targets, providers, server, cfg=None) -> None:
 
     await backend.start()
 
-    from .dynamic_config import DynamicConfigStore
     from .pool_store import IPPoolStore
+    from .repository import ProxyRepository
 
     pool_store = IPPoolStore(backend)
-    dynamic_config = DynamicConfigStore(backend)
+    repo = ProxyRepository(backend)
 
-    # Load any targets persisted in the dynamic store and merge with static targets.
-    dynamic_targets = await dynamic_config.list_targets()
-    dynamic_names = {t.name for t in dynamic_targets}
-    # Static targets not already overridden by a dynamic entry take precedence.
-    merged_targets = list(targets) + [t for t in dynamic_targets if t.name not in {s.name for s in targets}]
+    # Seed providers and targets from YAML (write-if-not-exists).
+    # Repository is the source of truth; YAML is only applied on first run.
+    for p in providers:
+        await repo.seed_provider(p)
+    for t in targets:
+        await repo.seed_target(t)
+
+    # Build managers from the full repository state (YAML seeds + any prior
+    # runtime mutations that survived across restarts in the backend).
+    all_targets = await repo.list_targets()
 
     managers = [
         TargetManager(
@@ -262,7 +267,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
             proxy_read_timeout=server.proxy_read_timeout,
             debug_quarantine=server.debug_quarantine,
         )
-        for t in merged_targets
+        for t in all_targets
     ]
     proxy = ProxyServer(
         managers,
@@ -271,7 +276,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
         auth_config=cfg.auth if cfg.auth.enabled else None,
         runtime_secret=runtime_secret,
         pool_store=pool_store,
-        dynamic_config=dynamic_config,
+        repository=repo,
         providers=providers,
         proxy_read_timeout=server.proxy_read_timeout,
         debug_quarantine=server.debug_quarantine,
