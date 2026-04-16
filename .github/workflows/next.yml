@@ -7,55 +7,15 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Test suite — must pass before a tag is created.
-  # ---------------------------------------------------------------------------
-  test:
-    name: Test / Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
-
-      - name: Run proxy-hopper tests
-        working-directory: python_modules/proxy-hopper
-        run: |
-          uv sync --python ${{ matrix.python-version }} --all-extras
-          uv run pytest --tb=short -q
-
-      - name: Run proxy-hopper-redis tests
-        working-directory: python_modules/proxy-hopper-redis
-        run: |
-          uv sync --python ${{ matrix.python-version }} --all-extras
-          uv run pytest --tb=short -q
-
-      - name: Run contract tests (all backends)
-        working-directory: python_modules/tests
-        run: |
-          uv sync --python ${{ matrix.python-version }}
-          uv run pytest --tb=short -q
-
-  # ---------------------------------------------------------------------------
   # Tag — reads conventional commits since the last tag and pushes a new one.
   # Pre-release tags are suffixed with '-pre.N' (e.g. v0.1.1-pre.1).
   # If no bump-worthy commits exist the step is a no-op (new_tag is empty).
+  #
+  # Tests are NOT re-run here — CI already requires them to pass on every PR
+  # before it can be merged into next.
   # ---------------------------------------------------------------------------
   tag:
     name: Tag pre-release
-    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: write
