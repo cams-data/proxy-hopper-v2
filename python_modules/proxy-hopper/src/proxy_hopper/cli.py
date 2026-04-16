@@ -300,7 +300,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
     if server.admin:
         from .auth.admin import run_admin_server
         admin_task = asyncio.create_task(
-            run_admin_server(cfg, runtime_secret),
+            run_admin_server(cfg, runtime_secret, repo=repo),
             name="ph:admin",
         )
 

@@ -19,6 +19,7 @@ dependencies = [
     "PyJWT>=2.8",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0",
+    "strawberry-graphql[fastapi]>=0.220",
     "uvicorn>=0.30",
 ]
 

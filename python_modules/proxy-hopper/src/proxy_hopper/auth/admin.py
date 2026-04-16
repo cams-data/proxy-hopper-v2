@@ -16,8 +16,10 @@ GET /api/v1/status
     Basic server status (target list, backend type).
     Requires ``read`` permission.
 
-This module is the foundation for the GraphQL management API; future routes
-will be registered on the same ``app`` instance.
+POST/GET /graphql
+    Strawberry GraphQL API.  Requires a ``ProxyRepository`` (always present
+    when started via ``proxy-hopper run``).  Playground available at GET
+    /graphql when not in production mode.
 """
 
 from __future__ import annotations
@@ -39,16 +41,23 @@ from . import (
 
 if TYPE_CHECKING:
     from ..config import ProxyHopperConfig
+    from ..repository import ProxyRepository
 
 logger = logging.getLogger(__name__)
 
 
-def create_admin_app(cfg: "ProxyHopperConfig", runtime_secret: str) -> FastAPI:
+def create_admin_app(
+    cfg: "ProxyHopperConfig",
+    runtime_secret: str,
+    repo: "ProxyRepository | None" = None,
+) -> FastAPI:
     """Build and return the configured FastAPI admin application.
 
-    *cfg* is captured at construction time; it reflects the state of the
-    config file at startup.  Live mutations (once GraphQL is added) will
-    operate on shared in-memory or Redis state, not on this snapshot.
+    *cfg* is captured at construction time for static config (auth settings,
+    server config).  Live entity mutations operate through *repo* which is
+    backed by the shared Backend KV store.
+
+    When *repo* is supplied the GraphQL API is mounted at ``/graphql``.
     """
     app = FastAPI(
         title="Proxy Hopper Admin API",
@@ -132,10 +141,28 @@ def create_admin_app(cfg: "ProxyHopperConfig", runtime_secret: str) -> FastAPI:
             "user": {"sub": user.sub, "role": user.role},
         }
 
+    # ------------------------------------------------------------------
+    # GraphQL API (mounted when a repository is available)
+    # ------------------------------------------------------------------
+
+    if repo is not None:
+        from ..graphql import create_graphql_router
+        graphql_router = create_graphql_router(
+            repo=repo,
+            auth_config=auth_config,
+            get_current_user=get_current_user,
+        )
+        app.include_router(graphql_router, prefix="/graphql")
+        logger.info("GraphQL API mounted at /graphql")
+
     return app
 
 
-async def run_admin_server(cfg: "ProxyHopperConfig", runtime_secret: str) -> None:
+async def run_admin_server(
+    cfg: "ProxyHopperConfig",
+    runtime_secret: str,
+    repo: "ProxyRepository | None" = None,
+) -> None:
     """Start the admin API server as an asyncio-native task.
 
     Uses ``uvicorn.Server`` directly so the admin app runs inside the same
@@ -144,7 +171,7 @@ async def run_admin_server(cfg: "ProxyHopperConfig", runtime_secret: str) -> Non
     """
     import uvicorn
 
-    app = create_admin_app(cfg, runtime_secret)
+    app = create_admin_app(cfg, runtime_secret, repo=repo)
     host = cfg.server.admin_host
     port = cfg.server.admin_port
 
