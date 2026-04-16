@@ -281,30 +281,15 @@ class TargetManager:
         return ProxyResponse(status, {"Content-Type": "application/json"}, body)
 
     # ------------------------------------------------------------------
-    # Request execution
+    # Request execution — top-level entry point
     # ------------------------------------------------------------------
 
     async def _execute_request(self, address: str, request: PendingRequest) -> None:
+        identity, forward_headers = self._build_request_headers(request, address)
         proxy_url = f"http://{address}"
-        forward_headers = {
-            k: v for k, v in request.headers.items()
-            if k.lower() not in _HOP_BY_HOP
-        }
+        proxy_auth = self._auth_map.get(address)
         start = time.monotonic()
         outcome = "unknown"
-
-        proxy_auth = self._auth_map.get(address)
-
-        # --- Identity: apply fingerprint headers and cookies ---
-        # get_or_create is called here (not in the dispatcher) so the identity
-        # is retrieved as close to the network call as possible.
-        identity = (
-            self._identity_store.get_or_create(address)
-            if self._identity_store is not None
-            else None
-        )
-        if identity is not None:
-            forward_headers = identity.apply_to_headers(forward_headers)
 
         try:
             logger.trace(
@@ -329,69 +314,10 @@ class TargetManager:
 
                 if resp.status in _RETRIABLE_STATUSES:
                     outcome = "rate_limited" if resp.status == 429 else "server_error"
-                    logger.warning(
-                        "TargetManager '%s': %s %s via %s → %d %s (%.3fs)",
-                        self._config.name, request.method, request.url,
-                        address, resp.status, outcome, elapsed,
-                    )
-                    was_quarantined = await self._pool.record_failure(address, elapsed)
-
-                    # Identity rotation on failure:
-                    # - quarantine: rotate so IP re-enters pool with a fresh persona
-                    # - 429 + rotate_on_429: rotate immediately (session burned)
-                    if identity is not None and self._identity_store is not None:
-                        if was_quarantined:
-                            self._identity_store.rotate(address, reason="quarantine")
-                        elif (
-                            resp.status == 429
-                            and self._config.identity.rotate_on_429
-                        ):
-                            self._identity_store.rotate(address, reason="429")
-
-                    if request.can_retry():
-                        get_metrics().record_retry(self._config.name)
-                        retry = request.clone_for_retry()
-                        logger.debug(
-                            "TargetManager '%s': retrying %s %s",
-                            self._config.name, request.method, request.url,
-                        )
-                        await self._request_queue.put(retry)
-                    elif not request.future.done():
-                        get_metrics().record_retry_exhaustion(self._config.name)
-                        logger.warning(
-                            "TargetManager '%s': %s %s — retries exhausted after %d/%d attempts, upstream returned %d",
-                            self._config.name, request.method, request.url,
-                            request.failure_count, request.num_retries, resp.status,
-                        )
-                        request.future.set_result(
-                            self._error_response(
-                                resp.status,
-                                "upstream_error",
-                                request,
-                                f"Upstream returned {resp.status} after exhausting retries",
-                            )
-                        )
+                    await self._handle_retriable_response(address, request, identity, resp.status, elapsed)
                 else:
                     outcome = "success"
-                    logger.debug(
-                        "TargetManager '%s': %s %s via %s → %d (%.3fs)",
-                        self._config.name, request.method, request.url,
-                        address, resp.status, elapsed,
-                    )
-                    await self._pool.record_success(address, elapsed)
-
-                    # Identity: collect any cookies from the response, then
-                    # tick the request counter and check the rotation limit.
-                    if identity is not None and self._identity_store is not None:
-                        identity.update_from_response(list(resp.raw_headers))
-                        identity.record_request()
-                        if self._identity_store.needs_rotation(address):
-                            self._identity_store.rotate(address, reason="request_limit")
-
-                    if not request.future.done():
-                        request.future.set_result(
-                            ProxyResponse(resp.status, dict(resp.headers), body)
-                        )
+                    await self._handle_success(address, request, identity, resp, body, elapsed)
 
         except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
             outcome = "connection_error"
@@ -399,35 +325,10 @@ class TargetManager:
                 "TargetManager '%s': connection error via %s for %s %s: %s",
                 self._config.name, address, request.method, request.url, exc,
             )
-            was_quarantined = await self._pool.record_failure(address)
-            if (
-                identity is not None
-                and self._identity_store is not None
-                and was_quarantined
-            ):
-                self._identity_store.rotate(address, reason="quarantine")
-            if request.can_retry():
-                get_metrics().record_retry(self._config.name)
-                logger.debug(
-                    "TargetManager '%s': scheduling retry for %s %s after connection error",
-                    self._config.name, request.method, request.url,
-                )
-                await self._request_queue.put(request.clone_for_retry())
-            elif not request.future.done():
-                get_metrics().record_retry_exhaustion(self._config.name)
-                logger.warning(
-                    "TargetManager '%s': %s %s — retries exhausted after %d/%d attempts, connection error: %s",
-                    self._config.name, request.method, request.url,
-                    request.failure_count, request.num_retries, exc,
-                )
-                request.future.set_result(
-                    self._error_response(
-                        502,
-                        "connection_error",
-                        request,
-                        f"{type(exc).__name__}: {exc}",
-                    )
-                )
+            await self._handle_request_exception(
+                address, request, identity, exc,
+                status=502, reason="connection_error",
+            )
 
         except Exception as exc:  # pragma: no cover
             outcome = "error"
@@ -435,38 +336,145 @@ class TargetManager:
                 "TargetManager '%s': unexpected error via %s for %s %s",
                 self._config.name, address, request.method, request.url,
             )
-            was_quarantined = await self._pool.record_failure(address)
-            if (
-                identity is not None
-                and self._identity_store is not None
-                and was_quarantined
-            ):
-                self._identity_store.rotate(address, reason="quarantine")
-            if request.can_retry():
-                get_metrics().record_retry(self._config.name)
-                logger.debug(
-                    "TargetManager '%s': scheduling retry for %s %s after unexpected error",
-                    self._config.name, request.method, request.url,
-                )
-                await self._request_queue.put(request.clone_for_retry())
-            elif not request.future.done():
-                get_metrics().record_retry_exhaustion(self._config.name)
-                logger.error(
-                    "TargetManager '%s': %s %s — retries exhausted after %d/%d attempts, unexpected error: %s",
-                    self._config.name, request.method, request.url,
-                    request.failure_count, request.num_retries, exc,
-                )
-                request.future.set_result(
-                    self._error_response(
-                        502,
-                        "proxy_error",
-                        request,
-                        f"{type(exc).__name__}: {exc}",
-                    )
-                )
+            await self._handle_request_exception(
+                address, request, identity, exc,
+                status=502, reason="proxy_error",
+            )
 
         finally:
             get_metrics().record_request(self._config.name, outcome, time.monotonic() - start, tag=request.tag)
+
+    # ------------------------------------------------------------------
+    # Request execution — decomposed helpers
+    # ------------------------------------------------------------------
+
+    def _build_request_headers(
+        self, request: PendingRequest, address: str
+    ) -> tuple["Identity | None", dict[str, str]]:
+        """Strip hop-by-hop headers and apply identity fingerprint + cookies.
+
+        Returns ``(identity, headers)`` — identity is None when the identity
+        system is disabled for this target.
+        """
+        from .identity.identity import Identity  # local import avoids cycle
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
+        identity: Identity | None = (
+            self._identity_store.get_or_create(address)
+            if self._identity_store is not None
+            else None
+        )
+        if identity is not None:
+            headers = identity.apply_to_headers(headers)
+        return identity, headers
+
+    def _rotate_on_failure(
+        self,
+        address: str,
+        identity: "Identity | None",
+        was_quarantined: bool,
+        extra_reason: str | None = None,
+    ) -> None:
+        """Rotate the identity when the IP was quarantined or an explicit reason is given.
+
+        *extra_reason* is used for 429 + rotate_on_429 (reason="429").
+        """
+        if identity is None or self._identity_store is None:
+            return
+        if was_quarantined:
+            self._identity_store.rotate(address, reason="quarantine")
+        elif extra_reason is not None:
+            self._identity_store.rotate(address, reason=extra_reason)
+
+    async def _retry_or_resolve_failure(
+        self,
+        request: PendingRequest,
+        status: int,
+        reason: str,
+        detail: str,
+    ) -> None:
+        """Re-queue the request for retry or resolve the future with an error response.
+
+        Called after any failure — retriable upstream status, connection error,
+        or unexpected exception.
+        """
+        if request.can_retry():
+            get_metrics().record_retry(self._config.name)
+            logger.debug(
+                "TargetManager '%s': retrying %s %s",
+                self._config.name, request.method, request.url,
+            )
+            await self._request_queue.put(request.clone_for_retry())
+        elif not request.future.done():
+            get_metrics().record_retry_exhaustion(self._config.name)
+            logger.warning(
+                "TargetManager '%s': %s %s — retries exhausted (%d/%d): %s",
+                self._config.name, request.method, request.url,
+                request.failure_count, request.num_retries, detail,
+            )
+            request.future.set_result(self._error_response(status, reason, request, detail))
+
+    async def _handle_retriable_response(
+        self,
+        address: str,
+        request: PendingRequest,
+        identity: "Identity | None",
+        status: int,
+        elapsed: float,
+    ) -> None:
+        """Handle a 429 / 502 / 503 / 504 response from upstream."""
+        logger.warning(
+            "TargetManager '%s': %s %s via %s → %d (%.3fs)",
+            self._config.name, request.method, request.url, address, status, elapsed,
+        )
+        was_quarantined = await self._pool.record_failure(address, elapsed)
+        # Rotate on quarantine; also rotate immediately on 429 when configured.
+        extra = "429" if (status == 429 and self._config.identity.rotate_on_429) else None
+        self._rotate_on_failure(address, identity, was_quarantined, extra_reason=extra)
+        await self._retry_or_resolve_failure(
+            request, status, "upstream_error",
+            f"Upstream returned {status} after exhausting retries",
+        )
+
+    async def _handle_success(
+        self,
+        address: str,
+        request: PendingRequest,
+        identity: "Identity | None",
+        resp: "aiohttp.ClientResponse",
+        body: bytes,
+        elapsed: float,
+    ) -> None:
+        """Handle a successful (non-retriable) upstream response."""
+        logger.debug(
+            "TargetManager '%s': %s %s via %s → %d (%.3fs)",
+            self._config.name, request.method, request.url, address, resp.status, elapsed,
+        )
+        await self._pool.record_success(address, elapsed)
+        if identity is not None and self._identity_store is not None:
+            identity.update_from_response(list(resp.raw_headers))
+            identity.record_request()
+            if self._identity_store.needs_rotation(address):
+                self._identity_store.rotate(address, reason="request_limit")
+        if not request.future.done():
+            request.future.set_result(ProxyResponse(resp.status, dict(resp.headers), body))
+
+    async def _handle_request_exception(
+        self,
+        address: str,
+        request: PendingRequest,
+        identity: "Identity | None",
+        exc: BaseException,
+        *,
+        status: int,
+        reason: str,
+    ) -> None:
+        """Shared failure handler for connection errors and unexpected exceptions."""
+        was_quarantined = await self._pool.record_failure(address)
+        self._rotate_on_failure(address, identity, was_quarantined)
+        await self._retry_or_resolve_failure(
+            request, status, reason,
+            f"{type(exc).__name__}: {exc}",
+        )
 
     # ------------------------------------------------------------------
     # Metrics updater
