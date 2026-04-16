@@ -6,6 +6,13 @@ request line and headers are parsed, ``_dispatch`` delegates to the first
 
 All interaction-mode logic lives in ``handlers.py``.  To add a new mode,
 see the docstring at the top of that module.
+
+Hot-reload
+----------
+When a ``DynamicConfigStore`` is supplied at construction, ``ProxyServer``
+subscribes to its change channel and adds/replaces/removes ``TargetManager``
+instances at runtime without restarting the server.  The ``_managers`` list
+is mutated in-place so that handler callbacks always see the current state.
 """
 
 from __future__ import annotations
@@ -24,7 +31,9 @@ from .handlers import (
 from .metrics import get_metrics
 
 if TYPE_CHECKING:
-    from .config import AuthConfig
+    from .config import AuthConfig, ProxyProvider, TargetConfig
+    from .dynamic_config import DynamicConfigStore
+    from .pool_store import IPPoolStore
     from .target_manager import TargetManager
 
 logger = logging.getLogger(__name__)
@@ -69,12 +78,25 @@ class ProxyServer:
         enabled_modes: set[str] | None = None,
         auth_config: "AuthConfig | None" = None,
         runtime_secret: str = "",
+        pool_store: "IPPoolStore | None" = None,
+        dynamic_config: "DynamicConfigStore | None" = None,
+        providers: "list[ProxyProvider] | None" = None,
+        proxy_read_timeout: float | None = None,
+        debug_quarantine: bool = False,
+        quarantine_sweep_interval: float | None = None,
     ) -> None:
         from .handlers import VALID_MODES
         self._managers = target_managers
         self._host = host
         self._port = port
         self._server: asyncio.Server | None = None
+        self._pool_store = pool_store
+        self._dynamic_config = dynamic_config
+        self._providers = providers or []
+        self._proxy_read_timeout = proxy_read_timeout
+        self._debug_quarantine = debug_quarantine
+        self._quarantine_sweep_interval = quarantine_sweep_interval
+        self._change_listener_task: asyncio.Task | None = None
         self._handlers: list[RequestHandler] = _build_handlers(
             target_managers,
             enabled_modes if enabled_modes is not None else set(VALID_MODES),
@@ -99,8 +121,16 @@ class ProxyServer:
             "Proxy server listening on %s:%d (modes: %s)",
             self._host, self._port, ", ".join(mode_names),
         )
+        if self._dynamic_config is not None:
+            self._change_listener_task = asyncio.create_task(
+                self._config_change_listener(),
+                name="ph:server:config-listener",
+            )
 
     async def stop(self) -> None:
+        if self._change_listener_task:
+            self._change_listener_task.cancel()
+            await asyncio.gather(self._change_listener_task, return_exceptions=True)
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -110,6 +140,81 @@ class ProxyServer:
     async def serve_forever(self) -> None:
         async with self._server:
             await self._server.serve_forever()
+
+    # ------------------------------------------------------------------
+    # Hot-reload — config change listener
+    # ------------------------------------------------------------------
+
+    async def _config_change_listener(self) -> None:
+        """Subscribe to DynamicConfigStore changes and sync managers."""
+        assert self._dynamic_config is not None
+        try:
+            async with self._dynamic_config.subscribe_changes() as events:
+                async for event in events:
+                    try:
+                        await self._apply_change(event)
+                    except Exception:
+                        logger.exception(
+                            "ProxyServer: error applying config change event %s/%s",
+                            event.type, event.name,
+                        )
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("ProxyServer: config change listener crashed")
+
+    async def _apply_change(self, event: "DynamicConfigChangeEvent") -> None:
+        from .dynamic_config import ConfigChangeEvent
+        if event.type == "add":
+            config = await self._dynamic_config.get_target(event.name)
+            if config is None:
+                logger.warning("ProxyServer: add event for '%s' but target not found in store", event.name)
+                return
+            mgr = self._build_manager(config)
+            await mgr.start()
+            self._managers.append(mgr)
+            logger.info("ProxyServer: dynamically added target '%s'", event.name)
+
+        elif event.type == "update":
+            config = await self._dynamic_config.get_target(event.name)
+            if config is None:
+                logger.warning("ProxyServer: update event for '%s' but target not found in store", event.name)
+                return
+            # Find and replace the existing manager, stopping it first
+            old = next((m for m in self._managers if m._config.name == event.name), None)
+            new_mgr = self._build_manager(config)
+            await new_mgr.start()
+            if old is not None:
+                # In-place list mutation keeps handler references valid
+                idx = self._managers.index(old)
+                self._managers[idx] = new_mgr
+                await old.stop()
+            else:
+                self._managers.append(new_mgr)
+            logger.info("ProxyServer: dynamically updated target '%s'", event.name)
+
+        elif event.type == "remove":
+            old = next((m for m in self._managers if m._config.name == event.name), None)
+            if old is None:
+                return
+            # In-place removal
+            self._managers[:] = [m for m in self._managers if m is not old]
+            await old.stop()
+            logger.info("ProxyServer: dynamically removed target '%s'", event.name)
+
+    def _build_manager(self, config: "TargetConfig") -> "TargetManager":
+        from .target_manager import TargetManager
+        kwargs: dict = {}
+        if self._quarantine_sweep_interval is not None:
+            kwargs["quarantine_sweep_interval"] = self._quarantine_sweep_interval
+        return TargetManager(
+            config=config,
+            backend=self._pool_store,
+            providers=self._providers,
+            proxy_read_timeout=self._proxy_read_timeout,
+            debug_quarantine=self._debug_quarantine,
+            **kwargs,
+        )
 
     # ------------------------------------------------------------------
     # Connection handler

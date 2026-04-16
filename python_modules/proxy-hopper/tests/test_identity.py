@@ -17,7 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from proxy_hopper.backend.memory import MemoryIPPoolBackend
+from proxy_hopper.backend.memory import MemoryBackend
+from proxy_hopper.pool_store import IPPoolStore
 from proxy_hopper.config import _normalise_target, load_config
 from proxy_hopper.identity import (
     Identity,
@@ -529,13 +530,14 @@ class TestIPPoolRecordFailureReturnValue:
             quarantine_time=60.0,
             min_request_interval=0.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
+        raw_backend = MemoryBackend()
+        await raw_backend.start()
+        backend = IPPoolStore(raw_backend)
         p = IPPool(cfg, backend)
         await p.start()
         yield p
         await p.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
     async def test_returns_false_before_threshold(self, pool):
         result = await pool.record_failure("1.2.3.4:8080")
@@ -570,14 +572,15 @@ class TestIPPoolQuarantineReleaseCallback:
             quarantine_time=0.05,
             min_request_interval=0.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        p = IPPool(cfg, backend, sweep_interval=0.02)
+        raw_backend = MemoryBackend()
+        await raw_backend.start()
+        pool_store = IPPoolStore(raw_backend)
+        p = IPPool(cfg, pool_store, sweep_interval=0.02)
         await p.start()
         await p.record_failure("1.2.3.4:8080")
         await asyncio.sleep(0.15)
         await p.stop()
-        await backend.stop()
+        await raw_backend.stop()
         # No assertion needed — just must not raise
 
     async def test_callback_called_when_ip_released(self):
@@ -592,14 +595,15 @@ class TestIPPoolQuarantineReleaseCallback:
             quarantine_time=0.05,
             min_request_interval=0.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        p = IPPool(cfg, backend, sweep_interval=0.02, on_quarantine_release=on_release)
+        raw_backend = MemoryBackend()
+        await raw_backend.start()
+        pool_store = IPPoolStore(raw_backend)
+        p = IPPool(cfg, pool_store, sweep_interval=0.02, on_quarantine_release=on_release)
         await p.start()
         await p.record_failure("1.2.3.4:8080")
         await asyncio.sleep(0.2)
         await p.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
         assert released == ["1.2.3.4:8080"]
 
@@ -616,23 +620,24 @@ class TestIPPoolQuarantineReleaseCallback:
             quarantine_time=0.05,
             min_request_interval=0.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
+        raw_backend = MemoryBackend()
+        await raw_backend.start()
+        pool_store = IPPoolStore(raw_backend)
 
-        p = IPPool(cfg, backend, sweep_interval=0.02, on_quarantine_release=on_release)
+        p = IPPool(cfg, pool_store, sweep_interval=0.02, on_quarantine_release=on_release)
         await p.start()
 
         # Patch after start so the seed push_ips call is not recorded.
-        original_push = backend.push_ips
+        original_push = pool_store.push_ips
         async def instrumented_push(target, addresses):
             call_order.append("push_ips")
             return await original_push(target, addresses)
-        backend.push_ips = instrumented_push
+        pool_store.push_ips = instrumented_push
 
         await p.record_failure("1.2.3.4:8080")
         await asyncio.sleep(0.2)
         await p.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
         assert call_order == ["callback", "push_ips"]
 
@@ -648,14 +653,15 @@ class TestIPPoolQuarantineReleaseCallback:
             quarantine_time=0.05,
             min_request_interval=0.0,
         )
-        backend = MemoryIPPoolBackend()
-        await backend.start()
-        p = IPPool(cfg, backend, sweep_interval=0.02, on_quarantine_release=on_release)
+        raw_backend = MemoryBackend()
+        await raw_backend.start()
+        pool_store = IPPoolStore(raw_backend)
+        p = IPPool(cfg, pool_store, sweep_interval=0.02, on_quarantine_release=on_release)
         await p.start()
         await p.record_failure("1.2.3.4:8080")
         await p.record_failure("5.6.7.8:8080")
         await asyncio.sleep(0.2)
         await p.stop()
-        await backend.stop()
+        await raw_backend.stop()
 
         assert sorted(released) == ["1.2.3.4:8080", "5.6.7.8:8080"]

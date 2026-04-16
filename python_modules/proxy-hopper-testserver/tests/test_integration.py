@@ -4,8 +4,8 @@ These tests verify observable system state after controlled upstream and
 proxy-layer failures — things that unit tests cannot cover because they
 require a real request lifecycle through the full stack.
 
-Each test runs twice: once against MemoryIPPoolBackend and once against
-RedisIPPoolBackend (using fakeredis when REDIS_URL is not set, real Redis
+Each test runs twice: once against MemoryBackend and once against
+RedisBackend (using fakeredis when REDIS_URL is not set, real Redis
 in CI). A failure against one backend but not the other indicates a backend
 contract violation.
 

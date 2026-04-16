@@ -214,6 +214,68 @@ class TestIPPools:
         assert "1.1.1.1:3128" in cfg.targets[0].ip_list()
 
 
+class TestMutableField:
+    """Tests for the mutable: bool field on TargetConfig."""
+
+    def _write(self, tmp_path, content: str):
+        from textwrap import dedent
+        p = tmp_path / "config.yaml"
+        p.write_text(dedent(content))
+        return p
+
+    def test_mutable_defaults_to_false(self):
+        t = make_target_config(["1.2.3.4:8080"])
+        assert t.mutable is False
+
+    def test_mutable_true_parsed_from_yaml(self, tmp_path):
+        p = self._write(tmp_path, """
+            targets:
+              - name: t
+                regex: '.*'
+                ipList: ["1.1.1.1:3128"]
+                mutable: true
+        """)
+        cfg = load_config(p)
+        assert cfg.targets[0].mutable is True
+
+    def test_mutable_false_explicit_in_yaml(self, tmp_path):
+        p = self._write(tmp_path, """
+            targets:
+              - name: t
+                regex: '.*'
+                ipList: ["1.1.1.1:3128"]
+                mutable: false
+        """)
+        cfg = load_config(p)
+        assert cfg.targets[0].mutable is False
+
+    def test_mutable_omitted_defaults_false_in_yaml(self, tmp_path):
+        p = self._write(tmp_path, """
+            targets:
+              - name: t
+                regex: '.*'
+                ipList: ["1.1.1.1:3128"]
+        """)
+        cfg = load_config(p)
+        assert cfg.targets[0].mutable is False
+
+    def test_multiple_targets_independent_mutable_flags(self, tmp_path):
+        p = self._write(tmp_path, """
+            targets:
+              - name: static
+                regex: 'static\\.com'
+                ipList: ["1.1.1.1:3128"]
+              - name: dynamic
+                regex: 'dynamic\\.com'
+                ipList: ["2.2.2.2:3128"]
+                mutable: true
+        """)
+        cfg = load_config(p)
+        by_name = {t.name: t for t in cfg.targets}
+        assert by_name["static"].mutable is False
+        assert by_name["dynamic"].mutable is True
+
+
 class TestServerConfig:
     def _write(self, tmp_path, content: str):
         p = tmp_path / "config.yaml"

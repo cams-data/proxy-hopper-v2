@@ -47,8 +47,9 @@ import pytest
 import pytest_asyncio
 
 from proxy_hopper.auth import create_access_token
-from proxy_hopper.backend.memory import MemoryIPPoolBackend
+from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import ApiKeyConfig, AuthConfig, RoleConfig
+from proxy_hopper.pool_store import IPPoolStore
 from proxy_hopper.server import ProxyServer
 from proxy_hopper.target_manager import TargetManager
 from proxy_hopper_testserver import MockProxyPool, UpstreamServer
@@ -76,7 +77,7 @@ async def _start_proxy(
     backend, so no separate backend lifecycle is needed here.
     """
     cfg = make_target_config(ip_list=proxies.ip_list, name=target_name)
-    backend = MemoryIPPoolBackend()
+    backend = IPPoolStore(MemoryBackend())
     mgr = TargetManager(cfg, backend)
     server = ProxyServer(
         [mgr],

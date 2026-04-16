@@ -464,6 +464,7 @@ class TargetConfig(BaseModel):
     quarantine_time: float = Field(default=120.0)
     default_proxy_port: int = Field(default=8080)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    mutable: bool = Field(default=False)
 
     @field_validator("regex")
     @classmethod
@@ -570,6 +571,7 @@ _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipFailuresUntilQuarantine": "ip_failures_until_quarantine",
     "quarantineTime": "quarantine_time",
     "defaultProxyPort": "default_proxy_port",
+    "mutable": "mutable",
 }
 
 _IDENTITY_CAMEL_TO_SNAKE: dict[str, str] = {
