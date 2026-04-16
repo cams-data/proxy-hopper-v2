@@ -90,6 +90,7 @@ config:
     #   admin:
     #     username: admin
     #     passwordHash: "$2b$12$..."   # proxy-hopper hash-password <password>
+    #     role: admin
     #   # API keys are for proxy access only — not the admin API.
     #   # targets: ["*"] allows all targets; list named targets to restrict.
     #   apiKeys:
@@ -97,6 +98,11 @@ config:
     #       key: "ph_changeme"
     #       targets: ["*"]
     #   jwtSecret: "change-me-to-a-long-random-string"
+    #   jwtExpiryMinutes: 60
+    #
+    # Enable the admin API + GraphQL by setting admin.enabled=true in values.yaml.
+    # The admin API listens on admin.port (default 8081) and exposes:
+    #   POST /auth/login, GET /health, GET /api/v1/status, POST|GET /graphql
 
     targets:
       - name: general
@@ -141,9 +147,13 @@ metrics:
     additionalLabels: {}
 
 # ── Admin API ────────────────────────────────────────────────────────────────
-# The admin API exposes a management REST interface on a separate port.
-# It provides POST /auth/login (local credentials), GET /health, and
-# GET /api/v1/status.  It is the foundation for the future GraphQL + web UI.
+# The admin API exposes a management REST interface and GraphQL API on a
+# separate port.  Endpoints:
+#   POST /auth/login          — obtain a JWT (requires auth.admin in config.yaml)
+#   GET  /health              — liveness check (public)
+#   GET  /api/v1/status       — server state   (requires read permission)
+#   POST|GET /graphql         — Strawberry GraphQL API
+#                               (interactive playground at GET /graphql)
 #
 # Auth config (apiKeys, admin user, OIDC, jwtSecret) lives inside config.yaml,
 # not here.  Enable the admin server here; configure *who* can access it there.

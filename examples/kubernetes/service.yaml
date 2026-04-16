@@ -23,6 +23,14 @@ spec:
       port: 9090
       targetPort: metrics
       protocol: TCP
+    # Uncomment when PROXY_HOPPER_ADMIN=true in deployment.yaml.
+    # The admin API (REST + GraphQL) listens on port 8081.
+    # Keep this port internal — use a restricted NetworkPolicy or separate Service
+    # to control access rather than exposing it via the LoadBalancer.
+    # - name: admin
+    #   port: 8081
+    #   targetPort: admin
+    #   protocol: TCP
 
 ---
 # LoadBalancer — for external access outside the cluster.

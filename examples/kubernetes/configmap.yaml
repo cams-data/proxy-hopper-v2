@@ -126,3 +126,14 @@ data:
     #   probeUrls:
     #     - http://1.1.1.1
     #     - http://www.google.com
+    #
+    #   # Admin API — management REST API + GraphQL on a separate port.
+    #   # Enable via PROXY_HOPPER_ADMIN=true in deployment.yaml (env var preferred
+    #   # so it varies per environment without editing this ConfigMap).
+    #   # Endpoints when enabled:
+    #   #   POST /auth/login          — obtain a JWT (requires auth.admin config)
+    #   #   GET  /health              — liveness check (public)
+    #   #   GET  /api/v1/status       — server state (requires read permission)
+    #   #   POST|GET /graphql         — GraphQL API (playground at GET /graphql)
+    #   # admin: false               # PROXY_HOPPER_ADMIN
+    #   # adminPort: 8081            # PROXY_HOPPER_ADMIN_PORT

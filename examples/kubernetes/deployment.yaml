@@ -51,6 +51,10 @@ spec:
             - name: metrics
               containerPort: 9090
               protocol: TCP
+            # Uncomment when PROXY_HOPPER_ADMIN=true:
+            # - name: admin
+            #   containerPort: 8081
+            #   protocol: TCP
           env:
             - name: PROXY_HOPPER_HOST
               value: "0.0.0.0"
@@ -73,6 +77,14 @@ spec:
               value: "true"
             - name: PROXY_HOPPER_METRICS_PORT
               value: "9090"
+            # Uncomment to enable the admin API + GraphQL endpoint on port 8081.
+            # Add an auth: block to config.yaml before enabling.
+            # Endpoints: POST /auth/login, GET /health, GET /api/v1/status,
+            #            POST|GET /graphql  (playground at GET /graphql)
+            # - name: PROXY_HOPPER_ADMIN
+            #   value: "true"
+            # - name: PROXY_HOPPER_ADMIN_PORT
+            #   value: "8081"
           volumeMounts:
             - name: config
               mountPath: /etc/proxy-hopper
