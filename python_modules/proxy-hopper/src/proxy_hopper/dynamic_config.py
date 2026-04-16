@@ -156,13 +156,20 @@ class DynamicConfigStore:
         """Update an existing dynamic target and notify all instances.
 
         For static targets marked ``mutable: true`` this replaces the stored
-        override.  Raises ValueError if the target does not exist.
+        override.  Raises ValueError if the target does not exist or is not
+        mutable.
         """
-        existing = await self._backend.kv_get(f"{_KV_PREFIX}{config.name}")
-        if existing is None:
+        existing_raw = await self._backend.kv_get(f"{_KV_PREFIX}{config.name}")
+        if existing_raw is None:
             raise ValueError(
                 f"Target '{config.name}' does not exist in the dynamic store. "
                 "Use add_target to create it."
+            )
+        existing_config = _dict_to_target(json.loads(existing_raw))
+        if not existing_config.mutable:
+            raise ValueError(
+                f"Target '{config.name}' is not mutable. "
+                "Set mutable: true in its configuration to allow runtime updates."
             )
         await self._backend.kv_set(
             f"{_KV_PREFIX}{config.name}",
@@ -191,11 +198,19 @@ class DynamicConfigStore:
         """Return all dynamically-stored targets."""
         pairs = await self._backend.kv_list(_KV_PREFIX)
         configs = []
-        for _, raw in pairs:
+        for key, raw in pairs:
             try:
                 configs.append(_dict_to_target(json.loads(raw)))
+            except (json.JSONDecodeError, TypeError, KeyError) as exc:
+                logger.error(
+                    "DynamicConfigStore: failed to deserialise target at key '%s': %s",
+                    key, exc,
+                )
             except Exception as exc:
-                logger.warning("DynamicConfigStore: failed to deserialise target: %s", exc)
+                logger.error(
+                    "DynamicConfigStore: unexpected error loading target at key '%s': %s",
+                    key, exc,
+                )
         return configs
 
     # ------------------------------------------------------------------

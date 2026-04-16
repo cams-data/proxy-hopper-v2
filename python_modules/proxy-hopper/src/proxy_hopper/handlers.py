@@ -44,7 +44,6 @@ no modification.
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Optional
@@ -52,24 +51,22 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from .logging_config import get_logger
 from .metrics import get_metrics
-from .models import PendingRequest, ProxyResponse
+from .models import HOP_BY_HOP_HEADERS, PendingRequest, ProxyResponse
 
 if TYPE_CHECKING:
     from .config import AuthConfig
     from .target_manager import TargetManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Shared constants
 # ---------------------------------------------------------------------------
 
 _MAX_BODY_SIZE = 65_536 * 160   # 10 MiB
-_HOP_BY_HOP = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "proxy-connection", "te", "trailers", "transfer-encoding", "upgrade",
-})
+_HOP_BY_HOP = HOP_BY_HOP_HEADERS
 
 # ---------------------------------------------------------------------------
 # Per-request control headers (all stripped before forwarding upstream)
@@ -410,7 +407,7 @@ class ForwardingHandler(RequestHandler):
         }
         rewritten_headers["host"] = parsed.netloc
 
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "ForwardingHandler: %s %s → %s%s",
             method, target, real_url,
             f" [tag={tag!r}]" if tag else "",

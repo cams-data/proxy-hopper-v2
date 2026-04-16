@@ -22,13 +22,13 @@ to the event loop to wait for an item to become available.
 from __future__ import annotations
 
 import asyncio
-import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
 from .base import Backend
+from ..logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MemoryBackend(Backend):
@@ -58,12 +58,12 @@ class MemoryBackend(Backend):
 
     async def claim_init(self, key: str) -> bool:
         if key in self._init_keys:
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "MemoryBackend: claim_init '%s' → already claimed", key
             )
             return False
         self._init_keys.add(key)
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: claim_init '%s' → claimed", key
         )
         return True
@@ -76,7 +76,7 @@ class MemoryBackend(Backend):
         if key not in self._queues:
             self._queues[key] = asyncio.Queue()
         await self._queues[key].put(value)
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: queue_push '%s' %r (size: %d)",
             key, value, self._queues[key].qsize(),
         )
@@ -88,7 +88,7 @@ class MemoryBackend(Backend):
             self._queues[key] = asyncio.Queue()
         for value in values:
             await self._queues[key].put(value)
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: queue_push_many '%s' [%d values] (size: %d)",
             key, len(values), self._queues[key].qsize(),
         )
@@ -98,12 +98,12 @@ class MemoryBackend(Backend):
             self._queues[key] = asyncio.Queue()
         try:
             result = await asyncio.wait_for(self._queues[key].get(), timeout=timeout)
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "MemoryBackend: queue_pop_blocking '%s' → %r", key, result
             )
             return result
         except (asyncio.TimeoutError, TimeoutError):
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "MemoryBackend: queue_pop_blocking '%s' → timeout after %.2fs", key, timeout
             )
             return None
@@ -119,14 +119,14 @@ class MemoryBackend(Backend):
         # No await between read and write — atomically safe in asyncio
         new = self._counters.get(key, 0) + 1
         self._counters[key] = new
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: counter_increment '%s' → %d", key, new
         )
         return new
 
     async def counter_set(self, key: str, value: int) -> None:
         self._counters[key] = value
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: counter_set '%s' = %d", key, value
         )
 
@@ -141,7 +141,7 @@ class MemoryBackend(Backend):
         if key not in self._sorted:
             self._sorted[key] = {}
         self._sorted[key][member] = score
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: sorted_set_add '%s' member=%r score=%.3f", key, member, score
         )
 
@@ -154,7 +154,7 @@ class MemoryBackend(Backend):
         expired = [m for m, s in self._sorted[key].items() if s <= max_score]
         for m in expired:
             del self._sorted[key][m]
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: sorted_set_pop_by_max_score '%s' max=%.3f → %d: %s",
             key, max_score, len(expired), expired,
         )
@@ -169,7 +169,7 @@ class MemoryBackend(Backend):
 
     async def kv_set(self, key: str, value: str) -> None:
         self._kv[key] = value
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: kv_set '%s'", key
         )
 
@@ -178,7 +178,7 @@ class MemoryBackend(Backend):
 
     async def kv_delete(self, key: str) -> None:
         self._kv.pop(key, None)
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: kv_delete '%s'", key
         )
 
@@ -193,7 +193,7 @@ class MemoryBackend(Backend):
         subscribers = self._pubsub.get(channel, [])
         for q in subscribers:
             await q.put(message)
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: publish '%s' → %d subscriber(s)", channel, len(subscribers)
         )
 
@@ -203,7 +203,7 @@ class MemoryBackend(Backend):
         if channel not in self._pubsub:
             self._pubsub[channel] = []
         self._pubsub[channel].append(q)
-        logger.trace(  # type: ignore[attr-defined]
+        logger.trace(
             "MemoryBackend: subscribe '%s' (now %d subscriber(s))",
             channel, len(self._pubsub[channel]),
         )
@@ -216,7 +216,7 @@ class MemoryBackend(Backend):
             yield _iter()
         finally:
             self._pubsub[channel].remove(q)
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "MemoryBackend: unsubscribe '%s' (now %d subscriber(s))",
                 channel, len(self._pubsub[channel]),
             )

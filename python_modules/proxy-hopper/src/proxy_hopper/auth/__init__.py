@@ -37,6 +37,7 @@ Custom roles may restrict to named targets; built-in roles allow all.
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
 from dataclasses import dataclass
@@ -47,7 +48,9 @@ import bcrypt as _bcrypt
 import jwt as _jwt
 
 if TYPE_CHECKING:
-    from .config import AuthConfig, OidcConfig
+    from ..config import AuthConfig, OidcConfig
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +228,16 @@ async def authenticate_token(
                 role=role,
                 name=claims.get("name", claims.get("sub", "")),
             )
-        except Exception:
-            pass
+        except _jwt.InvalidTokenError:
+            pass  # invalid signature, expired, wrong audience — normal rejection
+        except Exception as exc:
+            # Unexpected errors (JWKS fetch failure, network timeout, parse error)
+            # are logged at debug so misconfigured OIDC is diagnosable without
+            # spamming logs on every unauthenticated request.
+            logger.debug(
+                "OIDC token validation failed with unexpected error: %s: %s",
+                type(exc).__name__, exc,
+            )
 
     raise ValueError("Invalid or expired token")
 

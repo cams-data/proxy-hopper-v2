@@ -29,16 +29,16 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 
-from .auth import (
+from . import (
     AuthenticatedUser,
     Permission,
     create_access_token,
     make_fastapi_deps,
-    verify_password,  # re-exported from auth for admin login use
+    verify_password,
 )
 
 if TYPE_CHECKING:
-    from .config import ProxyHopperConfig
+    from ..config import ProxyHopperConfig
 
 logger = logging.getLogger(__name__)
 

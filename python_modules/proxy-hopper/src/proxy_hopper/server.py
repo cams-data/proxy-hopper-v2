@@ -18,7 +18,6 @@ is mutated in-place so that handler callbacks always see the current state.
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING
 
 from .handlers import (
@@ -28,6 +27,7 @@ from .handlers import (
     _reason,            # noqa: F401 — re-exported; imported directly by tests
     _write_error,
 )
+from .logging_config import get_logger
 from .metrics import get_metrics
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from .pool_store import IPPoolStore
     from .target_manager import TargetManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _MAX_HEADER_SIZE = 65_536   # 64 KiB
 
@@ -146,22 +146,34 @@ class ProxyServer:
     # ------------------------------------------------------------------
 
     async def _config_change_listener(self) -> None:
-        """Subscribe to DynamicConfigStore changes and sync managers."""
+        """Subscribe to DynamicConfigStore changes and sync managers.
+
+        Automatically restarts on unexpected errors with exponential backoff
+        so a transient backend blip does not permanently disable hot-reload.
+        """
         assert self._dynamic_config is not None
-        try:
-            async with self._dynamic_config.subscribe_changes() as events:
-                async for event in events:
-                    try:
-                        await self._apply_change(event)
-                    except Exception:
-                        logger.exception(
-                            "ProxyServer: error applying config change event %s/%s",
-                            event.type, event.name,
-                        )
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            logger.exception("ProxyServer: config change listener crashed")
+        backoff = 1.0
+        while True:
+            try:
+                async with self._dynamic_config.subscribe_changes() as events:
+                    backoff = 1.0  # reset on successful subscription
+                    async for event in events:
+                        try:
+                            await self._apply_change(event)
+                        except Exception:
+                            logger.exception(
+                                "ProxyServer: error applying config change event %s/%s",
+                                event.type, event.name,
+                            )
+            except asyncio.CancelledError:
+                return  # normal shutdown — do not restart
+            except Exception:
+                logger.exception(
+                    "ProxyServer: config change listener crashed — restarting in %.0fs",
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
 
     async def _apply_change(self, event: "DynamicConfigChangeEvent") -> None:
         from .dynamic_config import ConfigChangeEvent
@@ -233,7 +245,7 @@ class ProxyServer:
                 if not keep_alive:
                     break
         except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
-            logger.trace(  # type: ignore[attr-defined]
+            logger.trace(
                 "ProxyServer: connection from %s closed abruptly", peer
             )
         except Exception:

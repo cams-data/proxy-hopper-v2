@@ -293,7 +293,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
     # Start admin API if enabled
     admin_task = None
     if server.admin:
-        from .admin import run_admin_server
+        from .auth.admin import run_admin_server
         admin_task = asyncio.create_task(
             run_admin_server(cfg, runtime_secret),
             name="ph:admin",

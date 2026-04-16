@@ -103,3 +103,15 @@ class ReturnReason(Enum):
     SERVER_ERROR = auto()        # 5xx
     CONNECTION_ERROR = auto()    # network failure
     FROM_QUARANTINE = auto()     # internal use by backends
+
+
+# ---------------------------------------------------------------------------
+# Shared HTTP constants
+# ---------------------------------------------------------------------------
+
+#: Headers that must not be forwarded between client↔proxy or proxy↔upstream.
+#: Defined once here; imported by handlers.py and target_manager.py.
+HOP_BY_HOP_HEADERS = frozenset({
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "proxy-connection", "te", "trailers", "transfer-encoding", "upgrade",
+})

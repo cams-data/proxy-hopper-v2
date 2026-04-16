@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import Optional
+from typing import Optional, Protocol, cast
 
 # ---------------------------------------------------------------------------
 # TRACE level  (numeric 5 — below DEBUG=10)
@@ -32,6 +32,33 @@ def _trace(self: logging.Logger, msg: object, *args: object, **kwargs: object) -
 
 
 logging.Logger.trace = _trace  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# Typed logger protocol
+# ---------------------------------------------------------------------------
+
+class TraceLogger(Protocol):
+    """Standard logging.Logger extended with the custom TRACE level method.
+
+    Use ``get_logger(__name__)`` instead of ``logging.getLogger(__name__)``
+    in any module that calls ``logger.trace()``.  This avoids per-call
+    ``# type: ignore[attr-defined]`` suppressions.
+    """
+
+    def trace(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def debug(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def info(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def warning(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def error(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def exception(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def critical(self, msg: object, *args: object, **kwargs: object) -> None: ...
+    def isEnabledFor(self, level: int) -> bool: ...
+
+
+def get_logger(name: str) -> TraceLogger:
+    """Return a logger typed as ``TraceLogger`` so ``.trace()`` calls type-check cleanly."""
+    return cast(TraceLogger, logging.getLogger(name))
 
 
 # ---------------------------------------------------------------------------
