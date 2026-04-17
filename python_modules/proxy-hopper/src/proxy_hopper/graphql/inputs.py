@@ -41,6 +41,7 @@ class TargetInput:
     ip_failures_until_quarantine: int = 5
     quarantine_time: float = 120.0
     default_proxy_port: int = 8080
+    spoof_user_agent: bool = True
     mutable: bool = True
 
 

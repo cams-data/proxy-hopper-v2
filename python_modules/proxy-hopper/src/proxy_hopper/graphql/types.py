@@ -33,6 +33,7 @@ class TargetType:
     ip_failures_until_quarantine: int
     quarantine_time: float
     default_proxy_port: int
+    spoof_user_agent: bool
     mutable: bool
 
 
@@ -89,6 +90,7 @@ def target_to_gql(config: "TargetConfig") -> TargetType:
         ip_failures_until_quarantine=config.ip_failures_until_quarantine,
         quarantine_time=config.quarantine_time,
         default_proxy_port=config.default_proxy_port,
+        spoof_user_agent=config.spoof_user_agent,
         mutable=config.mutable,
     )
 

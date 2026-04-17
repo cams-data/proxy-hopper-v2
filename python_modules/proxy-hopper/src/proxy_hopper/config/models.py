@@ -180,6 +180,7 @@ class TargetConfig(BaseModel):
     quarantine_time: float = Field(default=120.0)
     default_proxy_port: int = Field(default=8080)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    spoof_user_agent: bool = Field(default=True)
     mutable: bool = Field(default=True)
 
     @field_validator("regex")

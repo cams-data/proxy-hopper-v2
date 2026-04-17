@@ -55,6 +55,7 @@ class Mutation:
             ip_failures_until_quarantine=input.ip_failures_until_quarantine,
             quarantine_time=input.quarantine_time,
             default_proxy_port=input.default_proxy_port,
+            spoof_user_agent=input.spoof_user_agent,
             mutable=input.mutable,
         )
         await info.context.repo.add_target(config)
@@ -84,6 +85,7 @@ class Mutation:
             ip_failures_until_quarantine=input.ip_failures_until_quarantine,
             quarantine_time=input.quarantine_time,
             default_proxy_port=input.default_proxy_port,
+            spoof_user_agent=input.spoof_user_agent,
             mutable=input.mutable,
         )
         await info.context.repo.update_target(config)

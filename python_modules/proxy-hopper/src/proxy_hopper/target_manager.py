@@ -281,6 +281,10 @@ class TargetManager:
                 "TargetManager '%s': opening connection to proxy %s for %s %s",
                 self._config.name, identity.address, request.method, request.url,
             )
+            logger.trace(
+                "TargetManager '%s': forwarding headers: %s",
+                self._config.name, forward_headers,
+            )
             async with self._session.request(  # type: ignore[union-attr]
                 method=request.method,
                 url=request.url,
@@ -336,9 +340,24 @@ class TargetManager:
     def _build_request_headers(
         self, request: PendingRequest, identity: Identity
     ) -> dict[str, str]:
-        """Strip hop-by-hop headers and apply identity fingerprint + cookies."""
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
-        return identity.apply_to_headers(headers)
+        """Strip hop-by-hop headers and apply identity fingerprint + cookies.
+
+        Always ensures a browser-like User-Agent is set so that aiohttp's
+        default "Python/x.x aiohttp/x.x" string is never forwarded upstream.
+        When identity is enabled the identity's UA is used; when disabled a
+        random browser profile UA is injected as a fallback.
+        """
+        # Strip hop-by-hop headers and user-agent — the proxy must never leak
+        # the client's aiohttp UA string to the upstream server.
+        _STRIP = _HOP_BY_HOP | {"user-agent"}
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in _STRIP}
+        result = identity.apply_to_headers(headers)
+        if self._config.spoof_user_agent and "user-agent" not in {k.lower() for k in result}:
+            from .identity.fingerprint import get_profile
+            result["user-agent"] = get_profile().user_agent
+        # Explicit overrides win over everything — identity, fallback UA, client headers.
+        result.update(request.header_overrides)
+        return result
 
     async def _retry_or_resolve_failure(
         self,

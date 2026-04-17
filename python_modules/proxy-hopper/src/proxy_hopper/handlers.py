@@ -77,6 +77,18 @@ _TAG_HEADER     = "x-proxy-hopper-tag"
 _RETRIES_HEADER = "x-proxy-hopper-retries"
 _AUTH_HEADER    = "x-proxy-hopper-auth"
 
+# Known control headers — never treated as header overrides.
+_CONTROL_HEADERS: frozenset[str] = frozenset({
+    _TARGET_HEADER, _TAG_HEADER, _RETRIES_HEADER, _AUTH_HEADER,
+})
+
+# Any X-Proxy-Hopper-{Header} that is NOT a known control key is treated as
+# an explicit header override forwarded to the upstream under the derived name:
+#   X-Proxy-Hopper-User-Agent: Mozilla/5.0 ...  →  user-agent: Mozilla/5.0 ...
+#   X-Proxy-Hopper-Accept: application/json     →  accept: application/json
+# Overrides win over identity fingerprint headers and the random-UA fallback.
+_OVERRIDE_PREFIX = "x-proxy-hopper-"
+
 # ---------------------------------------------------------------------------
 # Low-level I/O helpers
 # ---------------------------------------------------------------------------
@@ -148,6 +160,7 @@ async def _submit_and_respond(
     *,
     tag: str = "",
     num_retries_override: int | None = None,
+    header_overrides: dict[str, str] | None = None,
 ) -> None:
     """Read body → find manager → submit → await response → write reply."""
     # --- Read body ---
@@ -192,6 +205,7 @@ async def _submit_and_respond(
         max_queue_wait=manager._config.max_queue_wait,
         num_retries=num_retries,
         tag=tag,
+        header_overrides=dict(header_overrides) if header_overrides else {},
     )
     await manager.submit(pending)
 
@@ -400,12 +414,20 @@ class ForwardingHandler(RequestHandler):
 
         # Rewrite Host to the target host; strip all X-Proxy-Hopper-* headers
         # so the upstream server never sees any proxy control headers.
+        # Non-control X-Proxy-Hopper-{Header} entries become header overrides
+        # that win over identity fingerprint headers and the random-UA fallback.
         parsed = urlparse(real_url)
         rewritten_headers = {
             k: v for k, v in headers.items()
             if not k.startswith("x-proxy-hopper-")
         }
         rewritten_headers["host"] = parsed.netloc
+
+        header_overrides = {
+            k[len(_OVERRIDE_PREFIX):]: v
+            for k, v in headers.items()
+            if k.startswith(_OVERRIDE_PREFIX) and k not in _CONTROL_HEADERS
+        }
 
         logger.trace(
             "ForwardingHandler: %s %s → %s%s",
@@ -417,6 +439,7 @@ class ForwardingHandler(RequestHandler):
             self._managers,
             tag=tag,
             num_retries_override=num_retries_override,
+            header_overrides=header_overrides,
         )
 
 

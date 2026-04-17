@@ -30,6 +30,7 @@ _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipFailuresUntilQuarantine": "ip_failures_until_quarantine",
     "quarantineTime": "quarantine_time",
     "defaultProxyPort": "default_proxy_port",
+    "spoofUserAgent": "spoof_user_agent",
     "mutable": "mutable",
 }
 

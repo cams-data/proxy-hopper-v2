@@ -53,6 +53,7 @@ class PendingRequest:
     num_retries: int
     tag: str = ""                  # X-Proxy-Hopper-Tag value (propagated to metrics)
     failure_count: int = 0
+    header_overrides: dict[str, str] = field(default_factory=dict)  # X-Proxy-Hopper-{Header} values
 
     @property
     def deadline(self) -> float:
@@ -79,6 +80,7 @@ class PendingRequest:
             num_retries=self.num_retries,
             tag=self.tag,
             failure_count=self.failure_count + 1,
+            header_overrides=self.header_overrides,
         )
 
 
