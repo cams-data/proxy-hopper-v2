@@ -11,7 +11,7 @@ import pytest
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import TargetConfig
 from proxy_hopper.models import PendingRequest, ProxyResponse
-from proxy_hopper.pool import IPPool
+from proxy_hopper.pool import IdentityQueue
 from proxy_hopper.pool_store import IPPoolStore
 from proxy_hopper.target_manager import TargetManager
 
@@ -82,7 +82,7 @@ class TestDispatcher:
         mgr, _ = manager_and_backend
         fake_response = ProxyResponse(status=200, headers={}, body=b"OK")
 
-        async def fake_execute(address, request):
+        async def fake_execute(uuid, identity, request):
             request.future.set_result(fake_response)
 
         with patch.object(mgr, "_execute_request", side_effect=fake_execute):
@@ -114,17 +114,17 @@ class TestDispatcher:
     async def test_no_ip_returns_503(self):
         cfg = make_config(max_queue_wait=0.1)
         raw_backend, pool_store = await make_pool_store()
-        # Pre-claim init so the pool's start() skips seeding — pool has no IPs.
+        # Pre-claim init so the queue's start() skips seeding — queue has no identities.
         await pool_store.claim_init(cfg.name)
 
         mgr = TargetManager(cfg, pool_store)
-        # Start just the dispatcher, not pool (pool is already set up)
+        # Start just the dispatcher, not the full queue (queue is already set up)
         mgr._running = True
         mgr._tasks = [
             asyncio.create_task(mgr._dispatcher_worker(), name="ph:dispatcher:test")
         ]
-        # Pool still needs to be started so its _backend reference is set
-        await mgr._pool.start()
+        # Queue still needs to be started so its sweep task is running
+        await mgr._queue.start()
 
         req = make_request(max_queue_wait=0.1)
         await mgr.submit(req)
@@ -137,24 +137,27 @@ class TestDispatcher:
 
 
 class TestExecuteRequest:
-    async def test_success_calls_pool_record_success(self, manager_and_backend):
+    async def test_success_calls_queue_record_success(self, manager_and_backend):
         mgr, backend = manager_and_backend
-        address = await mgr._pool.acquire(timeout=1.0)
+        result = await mgr._queue.acquire(timeout=1.0)
+        assert result is not None
+        uuid, identity = result
 
         record_success = AsyncMock()
-        with patch.object(mgr._pool, "record_success", record_success):
+        with patch.object(mgr._queue, "record_success", record_success):
             req = make_request()
             from aioresponses import aioresponses
             with aioresponses() as m:
                 m.get("http://example.com/", status=200, body=b"hello")
-                await mgr._execute_request(address, req)
+                await mgr._execute_request(uuid, identity, req)
 
             args, _ = record_success.call_args
-            assert args[0] == address
-            assert isinstance(args[1], float)
+            assert args[0] == uuid
+            assert args[1] is identity
+            assert isinstance(args[2], float)
             assert req.future.result().status == 200
 
-    async def test_rate_limit_calls_pool_record_failure_and_requeues(self):
+    async def test_rate_limit_calls_queue_record_failure_and_requeues(self):
         cfg = make_config(ip_list=["1.2.3.4:8080"])
         raw_backend, pool_store = await make_pool_store()
         mgr = TargetManager(cfg, pool_store)
@@ -165,19 +168,22 @@ class TestExecuteRequest:
         dispatcher.cancel()
         await asyncio.gather(dispatcher, return_exceptions=True)
 
-        address = await mgr._pool.acquire(timeout=1.0)
-        record_failure = AsyncMock()
+        result = await mgr._queue.acquire(timeout=1.0)
+        assert result is not None
+        uuid, identity = result
+        record_failure = AsyncMock(return_value=False)
 
-        with patch.object(mgr._pool, "record_failure", record_failure):
+        with patch.object(mgr._queue, "record_failure", record_failure):
             req = make_request(num_retries=2)
             from aioresponses import aioresponses
             with aioresponses() as m:
                 m.get("http://example.com/", status=429, body=b"rate limited")
-                await mgr._execute_request(address, req)
+                await mgr._execute_request(uuid, identity, req)
 
             args, _ = record_failure.call_args
-            assert args[0] == address
-            assert isinstance(args[1], float)
+            assert args[0] == uuid
+            assert args[1] is identity
+            assert isinstance(args[2], float)
             assert not req.future.done()
             retry = mgr._request_queue.get_nowait()
             assert retry.failure_count == 1
@@ -188,15 +194,17 @@ class TestExecuteRequest:
 
     async def test_connection_error_requeues_if_retries_remain(self, manager_and_backend):
         mgr, backend = manager_and_backend
-        address = await mgr._pool.acquire(timeout=1.0)
+        result = await mgr._queue.acquire(timeout=1.0)
+        assert result is not None
+        uuid, identity = result
 
-        with patch.object(mgr._pool, "record_failure", AsyncMock()):
+        with patch.object(mgr._queue, "record_failure", AsyncMock(return_value=False)):
             req = make_request(num_retries=2)
             import aiohttp
             from aioresponses import aioresponses
             with aioresponses() as m:
                 m.get("http://example.com/", exception=aiohttp.ClientConnectionError("fail"))
-                await mgr._execute_request(address, req)
+                await mgr._execute_request(uuid, identity, req)
 
             assert not req.future.done()
             assert mgr._request_queue.qsize() == 1
@@ -209,8 +217,8 @@ class TestShutdown:
         mgr = TargetManager(cfg, pool_store)
         await mgr.start()
 
-        # Drain the pool so requests sit in queue waiting for an IP
-        await mgr._pool.acquire(timeout=1.0)
+        # Drain the queue so requests wait for an identity
+        await mgr._queue.acquire(timeout=1.0)
 
         req = make_request(max_queue_wait=30.0)
         await mgr.submit(req)
@@ -230,7 +238,7 @@ class TestShutdown:
 
         completed = asyncio.Event()
 
-        async def slow_execute(address, request):
+        async def slow_execute(uuid, identity, request):
             await asyncio.sleep(0.1)
             request.future.set_result(ProxyResponse(status=200, headers={}, body=b"ok"))
             completed.set()
@@ -251,7 +259,7 @@ class TestShutdown:
         mgr = TargetManager(cfg, pool_store)
         await mgr.start()
 
-        async def hanging_execute(address, request):
+        async def hanging_execute(uuid, identity, request):
             await asyncio.sleep(999)
 
         with patch.object(mgr, "_execute_request", side_effect=hanging_execute):

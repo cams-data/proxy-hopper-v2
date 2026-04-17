@@ -202,18 +202,33 @@ class ProxyServer:
                 return
             old = next((m for m in self._managers if m._config.name == event.name), None)
 
-            # Push any newly added IPs into the live pool before rebuilding the
-            # manager.  The pool's SETNX init-guard is already claimed, so the
-            # new manager's start() won't re-seed — we must push the delta here.
-            if old is not None and self._pool_store is not None:
+            # Diff IPs: create identities for new addresses and retire removed ones.
+            # The pool's SETNX init-guard is already claimed, so the new manager's
+            # start() won't re-seed — we handle the delta here via the old manager's
+            # shared backend queue.
+            if old is not None:
                 old_addrs = {ip.address for ip in old._config.resolved_ips}
                 new_addrs = {ip.address for ip in config.resolved_ips}
+                addr_to_ip = {ip.address: ip for ip in config.resolved_ips}
                 for addr in new_addrs - old_addrs:
+                    resolved_ip = addr_to_ip[addr]
                     try:
-                        await self._pool_store.push_ip(config.name, addr)
+                        await old.add_address(
+                            addr,
+                            provider=resolved_ip.provider,
+                            region_tag=resolved_ip.region_tag,
+                        )
                     except Exception:
                         logger.exception(
-                            "ProxyServer: failed to push new IP '%s' to live pool for target '%s'",
+                            "ProxyServer: failed to add identity for new IP '%s' on target '%s'",
+                            addr, config.name,
+                        )
+                for addr in old_addrs - new_addrs:
+                    try:
+                        await old.retire_address(addr)
+                    except Exception:
+                        logger.exception(
+                            "ProxyServer: failed to retire IP '%s' on target '%s'",
                             addr, config.name,
                         )
 

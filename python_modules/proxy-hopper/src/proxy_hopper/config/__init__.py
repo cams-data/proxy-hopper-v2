@@ -134,10 +134,6 @@ Full config file reference
     # identity:
     #   enabled             Master switch.                                       [default: false]
     #   cookies             Persist and replay session cookies per (IP, target). [default: true]
-    #   profile             Fixed fingerprint profile name, or omit for random
-    #                       selection per identity.
-    #                       Valid values: chrome-windows, chrome-macos,
-    #                       safari-macos, firefox-linux, firefox-windows.
     #   rotateAfterRequests Voluntarily rotate identity after N successful
     #                       requests.  Omit to disable.
     #   rotateOn429         Rotate identity immediately on a 429 response.       [default: true]
@@ -145,6 +141,10 @@ Full config file reference
     #                       before it enters service (collects session cookies).
     #     enabled           [default: true when warmup block is present]
     #     path              URL path for the warmup request.                     [default: /]
+    #
+    # Note: fingerprint profiles (User-Agent, Accept-* headers) are randomly
+    # generated per identity from a rolling version window.  There is no longer
+    # a fixed-profile option — each IP gets its own randomly selected persona.
 
     targets:
       - name: general
@@ -158,8 +158,7 @@ Full config file reference
 
       - name: strict-api
         regex: 'api[.]example[.]com'
-        ipList:
-          - "proxy-5.example.com:3128"
+        ipPool: pool-1
         minRequestInterval: 10s
         maxQueueWait: 60s
         numRetries: 1

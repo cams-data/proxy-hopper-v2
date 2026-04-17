@@ -2,7 +2,7 @@
 
 The backend abstracts the underlying storage engine (asyncio in-process vs
 Redis).  It knows nothing about:
-  - Quarantine thresholds or cooldowns          → IPPool / IPPoolStore
+  - Quarantine thresholds or cooldowns          → IdentityQueue / IPPoolStore
   - What keys mean (target names, IP addresses) → IPPoolStore / DynamicConfigStore
   - Configuration objects                        → DynamicConfigStore
 

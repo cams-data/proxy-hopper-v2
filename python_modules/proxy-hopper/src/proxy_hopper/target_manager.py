@@ -2,10 +2,10 @@
 
 TargetManager owns:
   - The local asyncio request queue (tied to live TCP connections / Futures)
-  - The dispatcher coroutine that pairs requests with available IPs
+  - The dispatcher coroutine that pairs requests with available identities
   - HTTP forwarding logic (aiohttp) and retry decisions
 
-All IP state and policy is delegated to IPPool.  TargetManager never
+All IP state and policy is delegated to IdentityQueue.  TargetManager never
 imports or touches IPPoolStore or Backend directly.
 """
 
@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from .config import ProxyProvider, TargetConfig
-from .identity import IdentityStore
+from .identity.identity import Identity
 from .logging_config import get_logger
 from .metrics import get_metrics
 from .models import HOP_BY_HOP_HEADERS, PendingRequest, ProxyResponse
-from .pool import IPPool
+from .pool import IdentityQueue
 
 if TYPE_CHECKING:
     from .pool_store import IPPoolStore
@@ -62,21 +62,10 @@ class TargetManager:
             else:
                 self._auth_map[ip.address] = None
 
-        # Identity store — None when identity is disabled for this target.
-        # Must be created before IPPool so the release callback is available.
-        if config.identity.enabled:
-            self._identity_store: IdentityStore | None = IdentityStore(
-                config.name, config.identity
-            )
-        else:
-            self._identity_store = None
-
-        pool_kwargs: dict = {"debug": debug_quarantine}
+        queue_kwargs: dict = {"debug": debug_quarantine}
         if quarantine_sweep_interval is not None:
-            pool_kwargs["sweep_interval"] = quarantine_sweep_interval
-        if self._identity_store is not None:
-            pool_kwargs["on_quarantine_release"] = self._on_quarantine_release
-        self._pool = IPPool(config, backend, **pool_kwargs)
+            queue_kwargs["sweep_interval"] = quarantine_sweep_interval
+        self._queue = IdentityQueue(config, backend, **queue_kwargs)
 
         self._request_queue: asyncio.Queue[PendingRequest] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
@@ -99,12 +88,12 @@ class TargetManager:
             auto_decompress=False,
             connector=connector,
             # Disable aiohttp's built-in cookie jar — the identity system
-            # manages cookies per-(IP, target) manually.  Without this,
-            # aiohttp would accumulate cookies in a single shared jar across
-            # all IPs, which defeats per-identity isolation.
+            # manages cookies per-(IP, target) in the backend.  Without this,
+            # aiohttp would accumulate cookies in a shared jar across all IPs,
+            # defeating per-identity isolation.
             cookie_jar=aiohttp.DummyCookieJar(),
         )
-        await self._pool.start()
+        await self._queue.start()
         self._running = True
         self._tasks = [
             asyncio.create_task(
@@ -160,30 +149,26 @@ class TargetManager:
                 self._config.name, rejected,
             )
 
-        await self._pool.stop()
+        await self._queue.stop()
         if self._session is not None:
             await self._session.close()
             self._session = None
         logger.info("TargetManager '%s' stopped", self._config.name)
 
     # ------------------------------------------------------------------
-    # Identity callbacks
+    # Dynamic IP management (called by ProxyServer on target:update events)
     # ------------------------------------------------------------------
 
-    async def _on_quarantine_release(self, address: str) -> None:
-        """Called by IPPool's sweep when an IP returns from quarantine.
+    async def add_address(
+        self, address: str, provider: str = "", region_tag: str = ""
+    ) -> None:
+        """Add a new proxy IP — create its identity and push UUID to the queue."""
+        self._auth_map[address] = None  # updated when manager is rebuilt from full config
+        await self._queue.add_address(address, provider=provider, region_tag=region_tag)
 
-        Rotates the identity so the IP re-enters the pool with a fresh persona.
-        Warmup (if configured) would be triggered here in a future phase.
-        """
-        if self._identity_store is None:
-            return
-        self._identity_store.rotate(address, reason="quarantine_release")
-        if self._config.identity.warmup and self._config.identity.warmup.enabled:
-            logger.debug(
-                "TargetManager '%s': warmup configured for %s — not yet implemented",
-                self._config.name, address,
-            )
+    async def retire_address(self, address: str) -> None:
+        """Mark a proxy IP as retired — its identity is discarded on next pop."""
+        await self._queue.retire_address(address)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -233,10 +218,10 @@ class TargetManager:
                 continue
 
             queue_wait = time.monotonic() - request.arrival_time
-            address = await self._pool.acquire(request.time_remaining())
-            if address is None:
+            result = await self._queue.acquire(request.time_remaining())
+            if result is None:
                 logger.warning(
-                    "TargetManager '%s': no IP available for %s %s within %.2fs — dropping",
+                    "TargetManager '%s': no identity available for %s %s within %.2fs — dropping",
                     self._config.name, request.method, request.url, request.time_remaining(),
                 )
                 get_metrics().record_queue_expired(self._config.name)
@@ -247,14 +232,15 @@ class TargetManager:
                 self._request_queue.task_done()
                 continue
 
+            uuid, identity = result
             get_metrics().record_queue_wait(self._config.name, queue_wait)
 
             logger.debug(
                 "TargetManager '%s': dispatching %s %s via %s",
-                self._config.name, request.method, request.url, address,
+                self._config.name, request.method, request.url, identity.address,
             )
             task = asyncio.create_task(
-                self._execute_request(address, request),
+                self._execute_request(uuid, identity, request),
                 name=f"ph:execute:{self._config.name}",
             )
             self._inflight.add(task)
@@ -281,17 +267,19 @@ class TargetManager:
     # Request execution — top-level entry point
     # ------------------------------------------------------------------
 
-    async def _execute_request(self, address: str, request: PendingRequest) -> None:
-        identity, forward_headers = self._build_request_headers(request, address)
-        proxy_url = f"http://{address}"
-        proxy_auth = self._auth_map.get(address)
+    async def _execute_request(
+        self, uuid: str, identity: Identity, request: PendingRequest
+    ) -> None:
+        forward_headers = self._build_request_headers(request, identity)
+        proxy_url = f"http://{identity.address}"
+        proxy_auth = self._auth_map.get(identity.address)
         start = time.monotonic()
         outcome = "unknown"
 
         try:
             logger.trace(
                 "TargetManager '%s': opening connection to proxy %s for %s %s",
-                self._config.name, address, request.method, request.url,
+                self._config.name, identity.address, request.method, request.url,
             )
             async with self._session.request(  # type: ignore[union-attr]
                 method=request.method,
@@ -311,19 +299,19 @@ class TargetManager:
 
                 if resp.status in _RETRIABLE_STATUSES:
                     outcome = "rate_limited" if resp.status == 429 else "server_error"
-                    await self._handle_retriable_response(address, request, identity, resp.status, elapsed)
+                    await self._handle_retriable_response(uuid, identity, request, resp.status, elapsed)
                 else:
                     outcome = "success"
-                    await self._handle_success(address, request, identity, resp, body, elapsed)
+                    await self._handle_success(uuid, identity, request, resp, body, elapsed)
 
         except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
             outcome = "connection_error"
             logger.warning(
                 "TargetManager '%s': connection error via %s for %s %s: %s",
-                self._config.name, address, request.method, request.url, exc,
+                self._config.name, identity.address, request.method, request.url, exc,
             )
             await self._handle_request_exception(
-                address, request, identity, exc,
+                uuid, identity, request, exc,
                 status=502, reason="connection_error",
             )
 
@@ -331,10 +319,10 @@ class TargetManager:
             outcome = "error"
             logger.exception(
                 "TargetManager '%s': unexpected error via %s for %s %s",
-                self._config.name, address, request.method, request.url,
+                self._config.name, identity.address, request.method, request.url,
             )
             await self._handle_request_exception(
-                address, request, identity, exc,
+                uuid, identity, request, exc,
                 status=502, reason="proxy_error",
             )
 
@@ -346,41 +334,11 @@ class TargetManager:
     # ------------------------------------------------------------------
 
     def _build_request_headers(
-        self, request: PendingRequest, address: str
-    ) -> tuple["Identity | None", dict[str, str]]:
-        """Strip hop-by-hop headers and apply identity fingerprint + cookies.
-
-        Returns ``(identity, headers)`` — identity is None when the identity
-        system is disabled for this target.
-        """
-        from .identity.identity import Identity  # local import avoids cycle
+        self, request: PendingRequest, identity: Identity
+    ) -> dict[str, str]:
+        """Strip hop-by-hop headers and apply identity fingerprint + cookies."""
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP}
-        identity: Identity | None = (
-            self._identity_store.get_or_create(address)
-            if self._identity_store is not None
-            else None
-        )
-        if identity is not None:
-            headers = identity.apply_to_headers(headers)
-        return identity, headers
-
-    def _rotate_on_failure(
-        self,
-        address: str,
-        identity: "Identity | None",
-        was_quarantined: bool,
-        extra_reason: str | None = None,
-    ) -> None:
-        """Rotate the identity when the IP was quarantined or an explicit reason is given.
-
-        *extra_reason* is used for 429 + rotate_on_429 (reason="429").
-        """
-        if identity is None or self._identity_store is None:
-            return
-        if was_quarantined:
-            self._identity_store.rotate(address, reason="quarantine")
-        elif extra_reason is not None:
-            self._identity_store.rotate(address, reason=extra_reason)
+        return identity.apply_to_headers(headers)
 
     async def _retry_or_resolve_failure(
         self,
@@ -389,11 +347,7 @@ class TargetManager:
         reason: str,
         detail: str,
     ) -> None:
-        """Re-queue the request for retry or resolve the future with an error response.
-
-        Called after any failure — retriable upstream status, connection error,
-        or unexpected exception.
-        """
+        """Re-queue the request for retry or resolve the future with an error response."""
         if request.can_retry():
             get_metrics().record_retry(self._config.name)
             logger.debug(
@@ -412,21 +366,26 @@ class TargetManager:
 
     async def _handle_retriable_response(
         self,
-        address: str,
+        uuid: str,
+        identity: Identity,
         request: PendingRequest,
-        identity: "Identity | None",
         status: int,
         elapsed: float,
     ) -> None:
         """Handle a 429 / 502 / 503 / 504 response from upstream."""
         logger.warning(
             "TargetManager '%s': %s %s via %s → %d (%.3fs)",
-            self._config.name, request.method, request.url, address, status, elapsed,
+            self._config.name, request.method, request.url, identity.address, status, elapsed,
         )
-        was_quarantined = await self._pool.record_failure(address, elapsed)
-        # Rotate on quarantine; also rotate immediately on 429 when configured.
-        extra = "429" if (status == 429 and self._config.identity.rotate_on_429) else None
-        self._rotate_on_failure(address, identity, was_quarantined, extra_reason=extra)
+        will_rotate = status == 429 and self._config.identity.rotate_on_429
+        was_quarantined = await self._queue.record_failure(
+            uuid, identity, elapsed, return_uuid=not will_rotate
+        )
+        if not was_quarantined and will_rotate:
+            # Not yet quarantined — rotate identity immediately on 429.
+            # record_failure was called with return_uuid=False so the old UUID
+            # was not scheduled for return; rotate disposes of it cleanly.
+            await self._queue.rotate(uuid, identity, elapsed)
         await self._retry_or_resolve_failure(
             request, status, "upstream_error",
             f"Upstream returned {status} after exhausting retries",
@@ -434,9 +393,9 @@ class TargetManager:
 
     async def _handle_success(
         self,
-        address: str,
+        uuid: str,
+        identity: Identity,
         request: PendingRequest,
-        identity: "Identity | None",
         resp: "aiohttp.ClientResponse",
         body: bytes,
         elapsed: float,
@@ -444,30 +403,33 @@ class TargetManager:
         """Handle a successful (non-retriable) upstream response."""
         logger.debug(
             "TargetManager '%s': %s %s via %s → %d (%.3fs)",
-            self._config.name, request.method, request.url, address, resp.status, elapsed,
+            self._config.name, request.method, request.url, identity.address, resp.status, elapsed,
         )
-        await self._pool.record_success(address, elapsed)
-        if identity is not None and self._identity_store is not None:
-            identity.update_from_response(list(resp.raw_headers))
-            identity.record_request()
-            if self._identity_store.needs_rotation(address):
-                self._identity_store.rotate(address, reason="request_limit")
+        identity.update_from_response(list(resp.raw_headers))
+        identity.record_request()
+
+        limit = self._config.identity.rotate_after_requests
+        if limit is not None and identity.request_count >= limit:
+            # Hit request limit — voluntary rotation; IP was healthy so reset failures.
+            await self._queue.rotate(uuid, identity, elapsed, reset_failures=True)
+        else:
+            await self._queue.record_success(uuid, identity, elapsed)
+
         if not request.future.done():
             request.future.set_result(ProxyResponse(resp.status, dict(resp.headers), body))
 
     async def _handle_request_exception(
         self,
-        address: str,
+        uuid: str,
+        identity: Identity,
         request: PendingRequest,
-        identity: "Identity | None",
         exc: BaseException,
         *,
         status: int,
         reason: str,
     ) -> None:
         """Shared failure handler for connection errors and unexpected exceptions."""
-        was_quarantined = await self._pool.record_failure(address)
-        self._rotate_on_failure(address, identity, was_quarantined)
+        await self._queue.record_failure(uuid, identity, 0.0)
         await self._retry_or_resolve_failure(
             request, status, reason,
             f"{type(exc).__name__}: {exc}",
@@ -481,7 +443,7 @@ class TargetManager:
         while self._running:
             await asyncio.sleep(5)
             try:
-                status = await self._pool.get_status()
+                status = await self._queue.get_status()
                 m = get_metrics()
                 m.set_available_ips(self._config.name, status["available_ips"])
                 m.set_quarantined_ips(self._config.name, len(status["quarantined_ips"]))

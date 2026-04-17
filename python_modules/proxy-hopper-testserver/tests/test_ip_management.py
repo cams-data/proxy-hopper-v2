@@ -1,13 +1,17 @@
 """Integration tests for runtime IP pool management.
 
 These tests verify the observable behaviour when IPs are added, removed, or
-swapped in a running TargetManager.  They manipulate the IPPoolStore directly,
-which is exactly what ProxyRepository propagates to the live pool when its
-config mutations (add_ip, remove_ip, swap_ip) are combined with a pool-store
-push/pop.
+swapped in a running TargetManager.  Management operations go through the
+TargetManager public API (add_address / retire_address), which is the same
+path ProxyServer uses when it applies hot-reload config change events.
 
-Each test runs against every registered backend (memory + Redis), so a
-failure against one but not the other surfaces a backend contract violation.
+Pool drain helper
+-----------------
+Some tests need to exhaust the pool to simulate "all IPs busy / removed".
+Since the pool queue now stores UUID strings (not address strings), the helper
+pops UUIDs until the queue is empty, discarding them.  This is equivalent to
+temporarily removing every identity from service — the manager cannot dispatch
+new requests until UUIDs are returned or new ones are pushed.
 
 Test matrix
 -----------
@@ -17,12 +21,12 @@ Remove-IP:
   - an in-flight request via a removed IP still completes before the pool drains
 
 Add-IP:
-  - pushing a new IP to an exhausted pool allows requests to succeed
+  - adding an IP to an exhausted pool allows requests to succeed
   - adding IPs increases concurrent throughput
 
 Swap-IP:
-  - old broken proxy drained from pool; new healthy proxy added — requests recover
-  - new IP receives traffic after old IP is removed from pool
+  - old broken proxy retired; new healthy proxy added — requests recover
+  - new IP receives traffic after old IP is retired
   - swap with a working old proxy and a broken new proxy makes requests fail
 
 Pool exhaustion:
@@ -46,7 +50,7 @@ from conftest import make_target_config
 
 
 # ---------------------------------------------------------------------------
-# Helpers (mirrors test_integration.py helpers; kept local to avoid coupling)
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _make_request(
@@ -83,15 +87,19 @@ async def _submit(
     return await asyncio.wait_for(req.future, timeout=timeout)
 
 
-async def _drain_pool(backend, target_name: str) -> list[str]:
-    """Pop every IP from the pool queue and return them (without blocking)."""
-    drained: list[str] = []
+async def _drain_pool(backend, target_name: str) -> int:
+    """Pop every UUID from the pool queue and return the count drained.
+
+    UUIDs are discarded — this leaves the pool empty so that subsequent
+    acquire() calls will block until new identities are created and pushed.
+    """
+    count = 0
     while True:
-        addr = await backend.pop_ip(target_name, timeout=0.05)
-        if addr is None:
+        uuid = await backend.pop_identity_uuid(target_name, timeout=0.05)
+        if uuid is None:
             break
-        drained.append(addr)
-    return drained
+        count += 1
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -112,9 +120,8 @@ class TestRemoveIp:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Drain the only IP from the live pool.
-        drained = await _drain_pool(backend, cfg.name)
-        assert proxies[0].address in drained
+        # Retire the only identity — acquire() will discard it and find nothing.
+        await mgr.retire_address(proxies[0].address)
 
         result = await _submit(mgr, upstream.url + "/test", timeout=2.0, max_queue_wait=1.0)
         assert result.status == 503
@@ -136,8 +143,8 @@ class TestRemoveIp:
 
         size_before = await backend.pool_size(cfg.name)
 
-        # Pop one IP — simulates a remove_ip that drained it from the pool.
-        removed = await backend.pop_ip(cfg.name, timeout=0.1)
+        # Pop one UUID — simulates draining one identity from the pool.
+        removed = await backend.pop_identity_uuid(cfg.name, timeout=0.1)
         assert removed is not None
 
         size_after = await backend.pool_size(cfg.name)
@@ -163,7 +170,7 @@ class TestRemoveIp:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Submit the request — it dispatches immediately (IP available).
+        # Submit the request — it dispatches immediately (identity available).
         req = _make_request(upstream.url + "/slow", max_queue_wait=5.0)
         await mgr.submit(req)
 
@@ -181,7 +188,7 @@ class TestRemoveIp:
     async def test_removed_proxy_no_longer_receives_traffic(
         self, backend, proxies, upstream
     ):
-        """After removing one proxy from the pool, it no longer handles requests."""
+        """After retiring a proxy, it no longer handles requests."""
         upstream.set_mode("normal")
         cfg = make_target_config(
             ip_list=[proxies[0].address, proxies[1].address],
@@ -191,13 +198,10 @@ class TestRemoveIp:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Drain proxy[0] from the pool — only proxy[1] remains.
-        drained = await _drain_pool(backend, cfg.name)
-        # Push proxy[1] back — keep only one IP in pool.
-        if proxies[1].address in drained:
-            await backend.push_ip(cfg.name, proxies[1].address)
+        # Retire proxy[0] — acquire() will discard its UUID and use proxy[1].
+        await mgr.retire_address(proxies[0].address)
 
-        # Set proxy[0] to refuse — if it somehow gets used, the request fails.
+        # proxy[0] in refuse mode — if it somehow received a request, it would fail.
         proxies[0].set_mode("refuse")
         proxies[1].set_mode("forward")
 
@@ -216,7 +220,7 @@ class TestAddIp:
     async def test_add_ip_to_exhausted_pool_allows_requests(
         self, backend, proxies, upstream
     ):
-        """Pushing a new IP into an empty pool restores service."""
+        """Adding an IP into an empty pool restores service."""
         upstream.set_mode("normal")
         proxies[0].set_mode("forward")
 
@@ -236,8 +240,8 @@ class TestAddIp:
         )
         assert result.status == 503
 
-        # Push the IP back — simulates add_ip propagated to the live pool.
-        await backend.push_ip(cfg.name, proxies[0].address)
+        # Add the IP back — creates a fresh identity and pushes its UUID.
+        await mgr.add_address(proxies[0].address)
 
         # Now requests should succeed.
         result = await _submit(mgr, upstream.url + "/ok", timeout=5.0)
@@ -262,8 +266,8 @@ class TestAddIp:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Add a second IP to the live pool.
-        await backend.push_ip(cfg.name, proxies[1].address)
+        # Add a second IP — creates an identity and pushes its UUID to the queue.
+        await mgr.add_address(proxies[1].address)
 
         start = time.monotonic()
         r1, r2 = await asyncio.gather(
@@ -283,7 +287,7 @@ class TestAddIp:
     async def test_add_ip_with_broken_proxy_new_ip_handles_traffic(
         self, backend, proxies, upstream
     ):
-        """Old proxy breaks, new IP pushed into pool — requests succeed again."""
+        """Old proxy breaks, new IP added — requests succeed again via the new IP."""
         upstream.set_mode("normal")
 
         cfg = make_target_config(
@@ -298,9 +302,9 @@ class TestAddIp:
         # Break proxy[0] — it will start returning 502.
         proxies[0].set_mode("error_response", status=502)
 
-        # Push a healthy proxy[1] as replacement (simulates add_ip to pool).
+        # Add a healthy proxy[1] as replacement.
         proxies[1].set_mode("forward")
-        await backend.push_ip(cfg.name, proxies[1].address)
+        await mgr.add_address(proxies[1].address)
 
         # With 1 retry, the request should fail on proxy[0] then succeed on proxy[1].
         result = await _submit(mgr, upstream.url + "/test", num_retries=1, timeout=5.0)
@@ -318,7 +322,7 @@ class TestSwapIp:
     async def test_swap_broken_proxy_for_healthy_one(
         self, backend, proxies, upstream
     ):
-        """Drain the broken proxy, push a healthy one — requests recover."""
+        """Retire the broken proxy, add a healthy one — requests recover."""
         upstream.set_mode("normal")
         proxies[0].set_mode("refuse")
         proxies[1].set_mode("forward")
@@ -335,9 +339,9 @@ class TestSwapIp:
         result = await _submit(mgr, upstream.url + "/test", timeout=3.0)
         assert result.status == 502
 
-        # Swap: drain old broken IP from pool, push healthy new IP.
-        await _drain_pool(backend, cfg.name)
-        await backend.push_ip(cfg.name, proxies[1].address)
+        # Swap: retire old broken IP, add healthy new IP.
+        await mgr.retire_address(proxies[0].address)
+        await mgr.add_address(proxies[1].address)
 
         result = await _submit(mgr, upstream.url + "/test", timeout=5.0)
         assert result.status == 200
@@ -347,7 +351,7 @@ class TestSwapIp:
     async def test_swap_healthy_proxy_for_broken_one_makes_requests_fail(
         self, backend, proxies, upstream
     ):
-        """Drain the working proxy, push a broken one — requests start failing."""
+        """Retire the working proxy, add a broken one — requests start failing."""
         upstream.set_mode("normal")
         proxies[0].set_mode("forward")
         proxies[1].set_mode("refuse")
@@ -364,9 +368,11 @@ class TestSwapIp:
         result = await _submit(mgr, upstream.url + "/test", timeout=3.0)
         assert result.status == 200
 
-        # Swap: drain proxy[0], push broken proxy[1].
+        # Swap: drain proxy[0]'s UUID from queue (it returned after the success),
+        # retire it, and add broken proxy[1].
         await _drain_pool(backend, cfg.name)
-        await backend.push_ip(cfg.name, proxies[1].address)
+        await mgr.retire_address(proxies[0].address)
+        await mgr.add_address(proxies[1].address)
 
         result = await _submit(mgr, upstream.url + "/test", timeout=3.0)
         assert result.status in (502, 503)
@@ -376,13 +382,11 @@ class TestSwapIp:
     async def test_swap_ip_old_drains_naturally(
         self, backend, proxies, upstream
     ):
-        """After swap_ip, old IP flows through naturally — it exits the pool after
-        one use; the new IP enters immediately via push."""
+        """After swap, old and new IPs each serve requests — both succeed."""
         upstream.set_mode("normal")
-        proxies[0].set_mode("forward")  # old IP — will drain after one use
+        proxies[0].set_mode("forward")  # original IP
         proxies[1].set_mode("forward")  # new IP
 
-        # Start with both IPs in pool; only proxy[0] is in config.
         cfg = make_target_config(
             ip_list=[proxies[0].address],
             min_request_interval=0.0,
@@ -391,12 +395,10 @@ class TestSwapIp:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Simulate swap: push new IP into pool alongside old one.
-        # The old IP will flow through on the next request and not be re-added
-        # (since in a real swap the config no longer lists it).
-        await backend.push_ip(cfg.name, proxies[1].address)
+        # Simulate swap: add new IP alongside old one.
+        await mgr.add_address(proxies[1].address)
 
-        # Both requests succeed.
+        # Both requests succeed — one per identity.
         r1 = await _submit(mgr, upstream.url + "/a", timeout=5.0)
         r2 = await _submit(mgr, upstream.url + "/b", timeout=5.0)
         assert r1.status == 200
@@ -423,7 +425,7 @@ class TestPoolExhaustion:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Drain every IP.
+        # Drain every UUID.
         await _drain_pool(backend, cfg.name)
 
         results = await asyncio.gather(*[
@@ -438,7 +440,7 @@ class TestPoolExhaustion:
     async def test_restore_ip_after_exhaustion_resumes_service(
         self, backend, proxies, upstream
     ):
-        """After full pool exhaustion, pushing one IP back resumes service."""
+        """After full pool exhaustion, adding one IP back resumes service."""
         upstream.set_mode("normal")
         proxies[0].set_mode("forward")
 
@@ -458,8 +460,8 @@ class TestPoolExhaustion:
         )
         assert fail_result.status == 503
 
-        # Restore IP.
-        await backend.push_ip(cfg.name, proxies[0].address)
+        # Restore IP — creates a fresh identity and pushes its UUID.
+        await mgr.add_address(proxies[0].address)
 
         # Wait for the next dispatcher iteration, then verify recovery.
         await asyncio.sleep(0.05)
@@ -508,15 +510,15 @@ class TestPoolExhaustion:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Drain two of the three IPs.
+        # Drain two of the three UUIDs.
         for _ in range(2):
-            addr = await backend.pop_ip(cfg.name, timeout=0.1)
-            assert addr is not None
+            uuid = await backend.pop_identity_uuid(cfg.name, timeout=0.1)
+            assert uuid is not None
 
         size = await backend.pool_size(cfg.name)
         assert size == 1
 
-        # One remaining IP should still serve requests.
+        # One remaining identity should still serve requests.
         result = await _submit(mgr, upstream.url + "/test", timeout=5.0)
         assert result.status == 200
 
@@ -525,12 +527,13 @@ class TestPoolExhaustion:
     async def test_new_ip_added_while_requests_queued_unblocks_them(
         self, backend, proxies, upstream
     ):
-        """Requests queued behind an empty pool unblock when a new IP is pushed."""
+        """Requests queued behind an empty pool unblock when a new IP is added."""
         upstream.set_mode("normal")
         proxies[0].set_mode("forward")
 
         cfg = make_target_config(
             ip_list=[proxies[0].address],
+            min_request_interval=0.0,
             max_queue_wait=5.0,
         )
         mgr = TargetManager(cfg, backend)
@@ -545,9 +548,11 @@ class TestPoolExhaustion:
         await mgr.submit(req1)
         await mgr.submit(req2)
 
-        # After a short delay, push an IP to unblock them.
+        # After a short delay, add an IP — creates identity and pushes UUID,
+        # unblocking the dispatcher.  With min_request_interval=0.0, the UUID
+        # returns to the queue immediately after the first request, serving both.
         await asyncio.sleep(0.1)
-        await backend.push_ip(cfg.name, proxies[0].address)
+        await mgr.add_address(proxies[0].address)
 
         # Both should eventually resolve (sequentially via the one IP).
         r1 = await asyncio.wait_for(req1.future, timeout=5.0)
