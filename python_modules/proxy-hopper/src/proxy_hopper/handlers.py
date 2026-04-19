@@ -131,11 +131,17 @@ def _write_http_response(
     http_version: str,
 ) -> None:
     status_line = f"{http_version} {response.status} {_reason(response.status)}\r\n"
+    # Filter hop-by-hop headers. Also drop any upstream Content-Length — we will
+    # always emit the correct value based on the actual buffered body length.
+    _SKIP = _HOP_BY_HOP | {"content-length"}
     header_lines = "".join(
         f"{k}: {v}\r\n"
         for k, v in response.headers.items()
-        if k.lower() not in _HOP_BY_HOP
+        if k.lower() not in _SKIP
     )
+    # Always set Content-Length so the client knows when the body ends,
+    # even when the upstream used Transfer-Encoding: chunked (which we strip).
+    header_lines += f"Content-Length: {len(response.body)}\r\n"
     writer.write((status_line + header_lines + "\r\n").encode("latin-1") + response.body)
 
 
@@ -247,6 +253,12 @@ async def _submit_and_respond(
 
     get_metrics().record_response(manager._config.name, response.status, tag=tag)
 
+    logger.trace(
+        "ProxyServer: %s %s → %d response headers: %s (body: %d bytes)",
+        method, url, response.status,
+        dict(response.headers),
+        len(response.body),
+    )
     _write_http_response(writer, response, http_version)
     await writer.drain()
 
