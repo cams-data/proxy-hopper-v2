@@ -35,6 +35,7 @@ class TargetType:
     default_proxy_port: int
     spoof_user_agent: bool
     mutable: bool
+    static: bool
 
 
 @strawberry.type
@@ -48,6 +49,7 @@ class IpPoolType:
     name: str
     ip_requests: list[IpRequestType]
     mutable: bool
+    static: bool
 
 
 @strawberry.type
@@ -56,6 +58,7 @@ class ProviderType:
     ip_list: list[str]
     region_tag: Optional[str]
     mutable: bool
+    static: bool
     #: True when Basic Auth credentials are stored — credentials are never returned.
     has_auth: bool
 
@@ -92,6 +95,7 @@ def target_to_gql(config: "TargetConfig") -> TargetType:
         default_proxy_port=config.default_proxy_port,
         spoof_user_agent=config.spoof_user_agent,
         mutable=config.mutable,
+        static=config.static,
     )
 
 
@@ -103,6 +107,7 @@ def pool_to_gql(pool: "IpPool") -> IpPoolType:
             for req in pool.ip_requests
         ],
         mutable=pool.mutable,
+        static=pool.static,
     )
 
 
@@ -112,5 +117,6 @@ def provider_to_gql(provider: "ProxyProvider") -> ProviderType:
         ip_list=list(provider.ip_list),
         region_tag=provider.region_tag,
         mutable=provider.mutable,
+        static=provider.static,
         has_auth=provider.auth is not None,
     )

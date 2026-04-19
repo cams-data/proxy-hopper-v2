@@ -57,6 +57,7 @@ class Mutation:
             default_proxy_port=input.default_proxy_port,
             spoof_user_agent=input.spoof_user_agent,
             mutable=input.mutable,
+            static=input.static,
         )
         await info.context.repo.add_target(config)
         return target_to_gql(config)
@@ -87,6 +88,7 @@ class Mutation:
             default_proxy_port=input.default_proxy_port,
             spoof_user_agent=input.spoof_user_agent,
             mutable=input.mutable,
+            static=input.static,
         )
         await info.context.repo.update_target(config)
         return target_to_gql(config)

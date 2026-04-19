@@ -28,6 +28,7 @@ class IpPoolInput:
     name: str
     ip_requests: list[IpRequestInput]
     mutable: bool = True
+    static: bool = False
 
 
 @strawberry.input
@@ -43,6 +44,7 @@ class TargetInput:
     default_proxy_port: int = 8080
     spoof_user_agent: bool = True
     mutable: bool = True
+    static: bool = False
 
 
 @strawberry.input
@@ -51,6 +53,7 @@ class ProviderInput:
     ip_list: list[str]
     region_tag: Optional[str] = None
     mutable: bool = True
+    static: bool = False
     auth: Optional[BasicAuthInput] = None
 
 
@@ -65,6 +68,7 @@ def pool_input_to_model(inp: IpPoolInput):
         name=inp.name,
         ip_requests=[IpRequest(provider=r.provider, count=r.count) for r in inp.ip_requests],
         mutable=inp.mutable,
+        static=inp.static,
     )
 
 
@@ -79,5 +83,6 @@ def provider_input_to_model(inp: ProviderInput):
         ip_list=inp.ip_list,
         region_tag=inp.region_tag,
         mutable=inp.mutable,
+        static=inp.static,
         auth=auth,
     )

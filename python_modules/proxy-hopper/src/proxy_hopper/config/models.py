@@ -125,6 +125,7 @@ class ProxyProvider(BaseModel):
     ip_list: list[str] = Field(min_length=1)
     region_tag: Optional[str] = None
     mutable: bool = True
+    static: bool = False
 
     def resolved_ip_list(self, default_port: int = 8080) -> list[tuple[str, int]]:
         """Return list of (host, port) tuples."""
@@ -146,6 +147,7 @@ class IpPool(BaseModel):
     name: str
     ip_requests: list[IpRequest] = Field(min_length=1)
     mutable: bool = True
+    static: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +184,7 @@ class TargetConfig(BaseModel):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     spoof_user_agent: bool = Field(default=True)
     mutable: bool = Field(default=True)
+    static: bool = Field(default=False)
 
     @field_validator("regex")
     @classmethod

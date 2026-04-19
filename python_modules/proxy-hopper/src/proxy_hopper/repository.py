@@ -212,6 +212,11 @@ class ProxyRepository:
                 "Use add_target to create it."
             )
         existing = _dict_to_target(json.loads(existing_raw))
+        if existing.static:
+            raise ValueError(
+                f"Target '{config.name}' is config-static and cannot be updated via the API. "
+                "Edit the YAML configuration file instead."
+            )
         if not existing.mutable:
             raise ValueError(
                 f"Target '{config.name}' is not mutable. "
@@ -226,6 +231,14 @@ class ProxyRepository:
 
     async def remove_target(self, name: str) -> None:
         """Remove a target and notify all instances."""
+        existing_raw = await self._backend.kv_get(f"{_TARGET_PREFIX}{name}")
+        if existing_raw is not None:
+            existing = _dict_to_target(json.loads(existing_raw))
+            if existing.static:
+                raise ValueError(
+                    f"Target '{name}' is config-static and cannot be removed via the API. "
+                    "Remove it from the YAML configuration file instead."
+                )
         await self._backend.kv_delete(f"{_TARGET_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="target", type="remove", name=name))
         logger.info("ProxyRepository: target '%s' removed", name)
@@ -275,6 +288,11 @@ class ProxyRepository:
                 "Use add_provider to create it."
             )
         existing = _dict_to_provider(json.loads(existing_raw))
+        if existing.static:
+            raise ValueError(
+                f"Provider '{provider.name}' is config-static and cannot be updated via the API. "
+                "Edit the YAML configuration file instead."
+            )
         if not existing.mutable:
             raise ValueError(
                 f"Provider '{provider.name}' is not mutable. "
@@ -290,6 +308,14 @@ class ProxyRepository:
 
     async def remove_provider(self, name: str) -> None:
         """Remove a provider and notify.  Does not remove IPs from pools/targets."""
+        existing_raw = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{name}")
+        if existing_raw is not None:
+            existing = _dict_to_provider(json.loads(existing_raw))
+            if existing.static:
+                raise ValueError(
+                    f"Provider '{name}' is config-static and cannot be removed via the API. "
+                    "Remove it from the YAML configuration file instead."
+                )
         await self._backend.kv_delete(f"{_PROVIDER_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="provider", type="remove", name=name))
         logger.info("ProxyRepository: provider '%s' removed", name)
@@ -372,6 +398,11 @@ class ProxyRepository:
                 "Use add_pool to create it."
             )
         existing = _dict_to_pool(json.loads(existing_raw))
+        if existing.static:
+            raise ValueError(
+                f"Pool '{pool.name}' is config-static and cannot be updated via the API. "
+                "Edit the YAML configuration file instead."
+            )
         if not existing.mutable:
             raise ValueError(
                 f"Pool '{pool.name}' is not mutable. "
@@ -387,6 +418,14 @@ class ProxyRepository:
 
     async def remove_pool(self, name: str) -> None:
         """Remove a pool and notify all instances."""
+        existing_raw = await self._backend.kv_get(f"{_POOL_PREFIX}{name}")
+        if existing_raw is not None:
+            existing = _dict_to_pool(json.loads(existing_raw))
+            if existing.static:
+                raise ValueError(
+                    f"Pool '{name}' is config-static and cannot be removed via the API. "
+                    "Remove it from the YAML configuration file instead."
+                )
         await self._backend.kv_delete(f"{_POOL_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="pool", type="remove", name=name))
         logger.info("ProxyRepository: pool '%s' removed", name)
@@ -412,34 +451,48 @@ class ProxyRepository:
     # ------------------------------------------------------------------
 
     async def seed_target(self, config: TargetConfig) -> None:
-        """Persist *config* only if no target with this name is already stored."""
+        """Persist *config* from YAML.
+
+        Managed entities (static=True, the default for YAML-defined targets) are
+        always overwritten so that config-file changes take effect on restart.
+        Unstatic entities are written only if no entry already exists.
+        """
         existing = await self._backend.kv_get(f"{_TARGET_PREFIX}{config.name}")
-        if existing is None:
-            await self._backend.kv_set(
-                f"{_TARGET_PREFIX}{config.name}",
-                json.dumps(_target_to_dict(config)),
-            )
-            logger.debug("ProxyRepository: seeded target '%s'", config.name)
+        if existing is not None and not config.static:
+            return
+        await self._backend.kv_set(
+            f"{_TARGET_PREFIX}{config.name}",
+            json.dumps(_target_to_dict(config)),
+        )
+        logger.debug("ProxyRepository: seeded target '%s' (static=%s)", config.name, config.static)
 
     async def seed_provider(self, provider: ProxyProvider) -> None:
-        """Persist *provider* only if no provider with this name is already stored."""
+        """Persist *provider* from YAML.
+
+        Managed providers are always overwritten; unstatic are write-if-not-exists.
+        """
         existing = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{provider.name}")
-        if existing is None:
-            await self._backend.kv_set(
-                f"{_PROVIDER_PREFIX}{provider.name}",
-                json.dumps(_provider_to_dict(provider)),
-            )
-            logger.debug("ProxyRepository: seeded provider '%s'", provider.name)
+        if existing is not None and not provider.static:
+            return
+        await self._backend.kv_set(
+            f"{_PROVIDER_PREFIX}{provider.name}",
+            json.dumps(_provider_to_dict(provider)),
+        )
+        logger.debug("ProxyRepository: seeded provider '%s' (static=%s)", provider.name, provider.static)
 
     async def seed_pool(self, pool: IpPool) -> None:
-        """Persist *pool* only if no pool with this name is already stored."""
+        """Persist *pool* from YAML.
+
+        Managed pools are always overwritten; unstatic are write-if-not-exists.
+        """
         existing = await self._backend.kv_get(f"{_POOL_PREFIX}{pool.name}")
-        if existing is None:
-            await self._backend.kv_set(
-                f"{_POOL_PREFIX}{pool.name}",
-                json.dumps(_pool_to_dict(pool)),
-            )
-            logger.debug("ProxyRepository: seeded pool '%s'", pool.name)
+        if existing is not None and not pool.static:
+            return
+        await self._backend.kv_set(
+            f"{_POOL_PREFIX}{pool.name}",
+            json.dumps(_pool_to_dict(pool)),
+        )
+        logger.debug("ProxyRepository: seeded pool '%s' (static=%s)", pool.name, pool.static)
 
     # ------------------------------------------------------------------
     # Pub/sub change subscription
