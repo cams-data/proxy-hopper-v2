@@ -1,25 +1,20 @@
-"""Browser fingerprint profiles for the identity system.
+"""Browser fingerprint profiles — header bundles for the identity system.
 
-Each ``FingerprintProfile`` is an internally-consistent bundle of HTTP
-headers that a particular browser/OS combination would send.  Consistency
-matters more than realism: a single identity must never mix headers from
-different profiles (e.g. a Chrome User-Agent with a Firefox Accept header).
+Each call to ``get_profile()`` returns a ``FingerprintProfile`` with a
+randomly selected browser/OS combination and a version number sampled from
+a realistic rolling window.  Version numbers advance roughly in line with
+the actual browser release cadence, reducing the risk of identities being
+flagged for using an obviously stale UA string.
 
-All profiles are registered in ``PROFILES``.  ``get_profile`` resolves a
-name to a profile, or picks a random one when no name is given.
-
-Adding a profile
-----------------
-Add a new ``FingerprintProfile`` entry to ``PROFILES`` with a descriptive
-key.  No other changes are needed — ``get_profile(None)`` will include it
-in the random selection pool automatically.
+Profile headers are embedded into the ``Identity`` object at creation time
+so they remain consistent for the lifetime of that identity regardless of
+which instance creates or loads it.
 """
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -31,7 +26,6 @@ class FingerprintProfile:
     outside the scope of this module.
     """
 
-    name: str
     user_agent: str
     accept: str
     accept_language: str
@@ -48,16 +42,32 @@ class FingerprintProfile:
 
 
 # ---------------------------------------------------------------------------
-# Built-in profiles
+# Version pools — update periodically as browser releases advance
 # ---------------------------------------------------------------------------
 
-PROFILES: dict[str, FingerprintProfile] = {
-    "chrome-windows": FingerprintProfile(
-        name="chrome-windows",
+_CHROME_MAJOR_VERSIONS: list[int] = list(range(120, 128))   # Chrome 120–127
+_FIREFOX_MAJOR_VERSIONS: list[int] = list(range(120, 129))  # Firefox 120–128
+
+# (macOS version string, Safari version, WebKit build)
+_SAFARI_VARIANTS: list[tuple[str, str, str]] = [
+    ("14_4_1", "17.4.1", "605.1.15"),
+    ("14_5",   "17.5",   "605.1.15"),
+    ("15_0",   "18.0",   "618.2.12"),
+    ("15_1",   "18.1",   "618.2.12"),
+]
+
+
+# ---------------------------------------------------------------------------
+# Per-platform profile generators
+# ---------------------------------------------------------------------------
+
+def _chrome_windows() -> FingerprintProfile:
+    v = random.choice(_CHROME_MAJOR_VERSIONS)
+    return FingerprintProfile(
         user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{v}.0.0.0 Safari/537.36"
         ),
         accept=(
             "text/html,application/xhtml+xml,application/xml;q=0.9,"
@@ -66,13 +76,16 @@ PROFILES: dict[str, FingerprintProfile] = {
         ),
         accept_language="en-US,en;q=0.9",
         accept_encoding="gzip, deflate, br, zstd",
-    ),
-    "chrome-macos": FingerprintProfile(
-        name="chrome-macos",
+    )
+
+
+def _chrome_macos() -> FingerprintProfile:
+    v = random.choice(_CHROME_MAJOR_VERSIONS)
+    return FingerprintProfile(
         user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            f"AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/{v}.0.0.0 Safari/537.36"
         ),
         accept=(
             "text/html,application/xhtml+xml,application/xml;q=0.9,"
@@ -81,57 +94,63 @@ PROFILES: dict[str, FingerprintProfile] = {
         ),
         accept_language="en-US,en;q=0.9",
         accept_encoding="gzip, deflate, br, zstd",
-    ),
-    "safari-macos": FingerprintProfile(
-        name="safari-macos",
+    )
+
+
+def _safari_macos() -> FingerprintProfile:
+    os_ver, safari_ver, webkit_ver = random.choice(_SAFARI_VARIANTS)
+    return FingerprintProfile(
         user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-            "Version/17.4.1 Safari/605.1.15"
+            f"Mozilla/5.0 (Macintosh; Intel Mac OS X {os_ver}) "
+            f"AppleWebKit/{webkit_ver} (KHTML, like Gecko) "
+            f"Version/{safari_ver} Safari/{webkit_ver}"
         ),
         accept="text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         accept_language="en-US,en;q=0.9",
         accept_encoding="gzip, deflate, br",
-    ),
-    "firefox-windows": FingerprintProfile(
-        name="firefox-windows",
+    )
+
+
+def _firefox_windows() -> FingerprintProfile:
+    v = random.choice(_FIREFOX_MAJOR_VERSIONS)
+    return FingerprintProfile(
         user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) "
-            "Gecko/20100101 Firefox/125.0"
+            f"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:{v}.0) "
+            f"Gecko/20100101 Firefox/{v}.0"
         ),
         accept="text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         accept_language="en-US,en;q=0.5",
         accept_encoding="gzip, deflate, br, zstd",
-    ),
-    "firefox-linux": FingerprintProfile(
-        name="firefox-linux",
+    )
+
+
+def _firefox_linux() -> FingerprintProfile:
+    v = random.choice(_FIREFOX_MAJOR_VERSIONS)
+    return FingerprintProfile(
         user_agent=(
-            "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) "
-            "Gecko/20100101 Firefox/125.0"
+            f"Mozilla/5.0 (X11; Linux x86_64; rv:{v}.0) "
+            f"Gecko/20100101 Firefox/{v}.0"
         ),
         accept="text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         accept_language="en-US,en;q=0.5",
         accept_encoding="gzip, deflate, br, zstd",
-    ),
-}
-
-VALID_PROFILE_NAMES: frozenset[str] = frozenset(PROFILES)
-
-_PROFILE_LIST: list[FingerprintProfile] = list(PROFILES.values())
+    )
 
 
-def get_profile(name: Optional[str]) -> FingerprintProfile:
-    """Return the named profile, or a random one if *name* is None.
+_GENERATORS = [
+    _chrome_windows,
+    _chrome_macos,
+    _safari_macos,
+    _firefox_windows,
+    _firefox_linux,
+]
 
-    Raises ``KeyError`` for an unrecognised name so config validation catches
-    it early rather than silently falling back to random.
+
+def get_profile() -> FingerprintProfile:
+    """Return a randomly generated fingerprint profile.
+
+    Each call picks a random browser/OS platform and samples a version
+    number from a realistic rolling window so identities never all present
+    the same stale UA string.
     """
-    if name is None:
-        return random.choice(_PROFILE_LIST)
-    try:
-        return PROFILES[name]
-    except KeyError:
-        valid = ", ".join(sorted(PROFILES))
-        raise KeyError(
-            f"Unknown fingerprint profile {name!r}. Valid profiles: {valid}"
-        ) from None
+    return random.choice(_GENERATORS)()

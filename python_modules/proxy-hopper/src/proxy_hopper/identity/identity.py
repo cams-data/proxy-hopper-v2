@@ -1,8 +1,16 @@
 """The Identity class — per-(IP, target) client persona.
 
-An ``Identity`` bundles a fingerprint profile (User-Agent + Accept-* headers)
-with an optional cookie jar.  It is the unit that gets created on first use
-and rotated (discarded + replaced) when an IP is quarantined or a 429 fires.
+An ``Identity`` bundles the proxy address it is bound to, a set of browser
+fingerprint headers (User-Agent, Accept-*), and an optional cookie jar.  It
+is the unit that is created at startup (and on quarantine release) and
+rotated (discarded + replaced) when a 429 fires or a request-count limit
+is hit.
+
+Serialisation
+-------------
+``Identity`` can be round-tripped through a plain JSON-serialisable dict via
+``to_dict()`` / ``from_dict()``.  This is the form stored in the Backend KV
+so that all running instances share the same state.
 
 Cookie handling
 ---------------
@@ -12,8 +20,10 @@ forwarding to a known upstream, so domain scoping adds no value.  Deleted
 cookies (``Max-Age: 0`` or ``Expires`` in the past) are removed from the
 store on the next ``update_from_response`` call.
 
-``Identity`` is not thread-safe.  It is accessed only from within a single
-``TargetManager``'s asyncio event-loop context, so no locking is required.
+Thread safety
+-------------
+``Identity`` is not thread-safe.  It is only ever accessed from within a
+single asyncio event-loop context, so no locking is required.
 """
 
 from __future__ import annotations
@@ -22,10 +32,6 @@ import logging
 import time
 from dataclasses import dataclass, field
 from http.cookies import SimpleCookie
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .fingerprint import FingerprintProfile
 
 logger = logging.getLogger(__name__)
 
@@ -36,37 +42,68 @@ _EPOCH_DATES = frozenset({
 })
 
 # Safety limits — prevent unbounded memory growth from a misbehaving upstream.
-_MAX_COOKIES = 50           # max number of cookies stored per identity
+_MAX_COOKIES = 50             # max number of cookies stored per identity
 _MAX_COOKIE_VALUE_LEN = 4096  # max byte length of a single cookie value
 
 
 @dataclass
 class Identity:
-    """A client persona attached to a single (IP address, target) pair.
+    """A client persona bound to a single (IP address, target) pair.
 
     Attributes
     ----------
-    profile
-        The fingerprint profile that supplies User-Agent and Accept-* values.
+    address
+        The proxy address (``host:port``) this identity is bound to.
+    headers
+        Fingerprint headers (User-Agent, Accept, Accept-Language,
+        Accept-Encoding) pre-computed at creation time.  Empty dict when the
+        identity system is disabled for the target.
     cookies_enabled
         Whether this identity should persist and replay cookies.  Controlled
         by ``IdentityConfig.cookies``; stored here so ``Identity`` is
-        self-contained and the caller does not need to re-check config.
-    created_at
-        Monotonic timestamp of creation — used for logging and future TTL.
+        self-contained.
     request_count
         Number of requests dispatched through this identity.  Incremented by
-        ``record_request``; compared against ``rotate_after_requests`` by
-        ``IdentityStore``.
+        ``record_request``; compared against ``rotate_after_requests`` by the
+        caller.
     cookies
         Active cookie store.  Only populated when ``cookies_enabled`` is True.
+    created_at
+        Monotonic timestamp of creation — used for logging.  Not serialised;
+        reset to the current time on ``from_dict``.
     """
 
-    profile: "FingerprintProfile"
+    address: str
+    headers: dict[str, str]
     cookies_enabled: bool
-    created_at: float = field(default_factory=time.monotonic)
     request_count: int = 0
     cookies: dict[str, str] = field(default_factory=dict)
+    created_at: float = field(default_factory=time.monotonic)
+
+    # ------------------------------------------------------------------
+    # Serialisation
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serialisable dict suitable for Backend KV storage."""
+        return {
+            "address": self.address,
+            "headers": self.headers,
+            "cookies_enabled": self.cookies_enabled,
+            "request_count": self.request_count,
+            "cookies": self.cookies,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Identity":
+        """Reconstruct an ``Identity`` from a dict returned by ``to_dict``."""
+        return cls(
+            address=data["address"],
+            headers=data.get("headers", {}),
+            cookies_enabled=data["cookies_enabled"],
+            request_count=data.get("request_count", 0),
+            cookies=dict(data.get("cookies", {})),
+        )
 
     # ------------------------------------------------------------------
     # Outgoing request helpers
@@ -83,7 +120,7 @@ class Identity:
         the store is non-empty.  If the caller already sent a ``cookie``
         header it is replaced (the identity's cookies are authoritative).
         """
-        merged = {**headers, **self.profile.as_headers()}
+        merged = {**headers, **self.headers}
         if self.cookies_enabled and self.cookies:
             merged["cookie"] = "; ".join(
                 f"{k}={v}" for k, v in self.cookies.items()

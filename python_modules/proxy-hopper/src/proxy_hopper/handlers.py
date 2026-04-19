@@ -77,6 +77,18 @@ _TAG_HEADER     = "x-proxy-hopper-tag"
 _RETRIES_HEADER = "x-proxy-hopper-retries"
 _AUTH_HEADER    = "x-proxy-hopper-auth"
 
+# Known control headers — never treated as header overrides.
+_CONTROL_HEADERS: frozenset[str] = frozenset({
+    _TARGET_HEADER, _TAG_HEADER, _RETRIES_HEADER, _AUTH_HEADER,
+})
+
+# Any X-Proxy-Hopper-{Header} that is NOT a known control key is treated as
+# an explicit header override forwarded to the upstream under the derived name:
+#   X-Proxy-Hopper-User-Agent: Mozilla/5.0 ...  →  user-agent: Mozilla/5.0 ...
+#   X-Proxy-Hopper-Accept: application/json     →  accept: application/json
+# Overrides win over identity fingerprint headers and the random-UA fallback.
+_OVERRIDE_PREFIX = "x-proxy-hopper-"
+
 # ---------------------------------------------------------------------------
 # Low-level I/O helpers
 # ---------------------------------------------------------------------------
@@ -119,11 +131,17 @@ def _write_http_response(
     http_version: str,
 ) -> None:
     status_line = f"{http_version} {response.status} {_reason(response.status)}\r\n"
+    # Filter hop-by-hop headers. Also drop any upstream Content-Length — we will
+    # always emit the correct value based on the actual buffered body length.
+    _SKIP = _HOP_BY_HOP | {"content-length"}
     header_lines = "".join(
         f"{k}: {v}\r\n"
         for k, v in response.headers.items()
-        if k.lower() not in _HOP_BY_HOP
+        if k.lower() not in _SKIP
     )
+    # Always set Content-Length so the client knows when the body ends,
+    # even when the upstream used Transfer-Encoding: chunked (which we strip).
+    header_lines += f"Content-Length: {len(response.body)}\r\n"
     writer.write((status_line + header_lines + "\r\n").encode("latin-1") + response.body)
 
 
@@ -148,6 +166,7 @@ async def _submit_and_respond(
     *,
     tag: str = "",
     num_retries_override: int | None = None,
+    header_overrides: dict[str, str] | None = None,
 ) -> None:
     """Read body → find manager → submit → await response → write reply."""
     # --- Read body ---
@@ -192,6 +211,7 @@ async def _submit_and_respond(
         max_queue_wait=manager._config.max_queue_wait,
         num_retries=num_retries,
         tag=tag,
+        header_overrides=dict(header_overrides) if header_overrides else {},
     )
     await manager.submit(pending)
 
@@ -233,6 +253,12 @@ async def _submit_and_respond(
 
     get_metrics().record_response(manager._config.name, response.status, tag=tag)
 
+    logger.trace(
+        "ProxyServer: %s %s → %d response headers: %s (body: %d bytes)",
+        method, url, response.status,
+        dict(response.headers),
+        len(response.body),
+    )
     _write_http_response(writer, response, http_version)
     await writer.drain()
 
@@ -400,12 +426,20 @@ class ForwardingHandler(RequestHandler):
 
         # Rewrite Host to the target host; strip all X-Proxy-Hopper-* headers
         # so the upstream server never sees any proxy control headers.
+        # Non-control X-Proxy-Hopper-{Header} entries become header overrides
+        # that win over identity fingerprint headers and the random-UA fallback.
         parsed = urlparse(real_url)
         rewritten_headers = {
             k: v for k, v in headers.items()
             if not k.startswith("x-proxy-hopper-")
         }
         rewritten_headers["host"] = parsed.netloc
+
+        header_overrides = {
+            k[len(_OVERRIDE_PREFIX):]: v
+            for k, v in headers.items()
+            if k.startswith(_OVERRIDE_PREFIX) and k not in _CONTROL_HEADERS
+        }
 
         logger.trace(
             "ForwardingHandler: %s %s → %s%s",
@@ -417,6 +451,7 @@ class ForwardingHandler(RequestHandler):
             self._managers,
             tag=tag,
             num_retries_override=num_retries_override,
+            header_overrides=header_overrides,
         )
 
 

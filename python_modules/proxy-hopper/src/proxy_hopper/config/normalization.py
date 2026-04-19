@@ -30,7 +30,9 @@ _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipFailuresUntilQuarantine": "ip_failures_until_quarantine",
     "quarantineTime": "quarantine_time",
     "defaultProxyPort": "default_proxy_port",
+    "spoofUserAgent": "spoof_user_agent",
     "mutable": "mutable",
+    "static": "static",
 }
 
 _IDENTITY_CAMEL_TO_SNAKE: dict[str, str] = {
@@ -42,6 +44,7 @@ _IDENTITY_WARMUP_CAMEL_TO_SNAKE: dict[str, str] = {}  # no camelCase fields curr
 
 _POOL_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipRequests": "ip_requests",
+    "static": "static",
 }
 
 _IP_REQUEST_CAMEL_TO_SNAKE: dict[str, str] = {}  # no camelCase fields currently
@@ -49,6 +52,7 @@ _IP_REQUEST_CAMEL_TO_SNAKE: dict[str, str] = {}  # no camelCase fields currently
 _PROVIDER_CAMEL_TO_SNAKE: dict[str, str] = {
     "ipList": "ip_list",
     "regionTag": "region_tag",
+    "static": "static",
 }
 
 _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
@@ -133,6 +137,7 @@ def _normalise_pool_to_model(raw: dict) -> IpPool:
         name=normalised["name"],
         ip_requests=requests,
         mutable=normalised.get("mutable", True),
+        static=normalised.get("static", True),
     )
 
 

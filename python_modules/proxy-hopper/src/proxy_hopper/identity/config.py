@@ -44,12 +44,6 @@ class IdentityConfig(BaseModel):
         Persist and replay session cookies per (IP, target) pair.  Cookies
         received from the upstream are stored and sent on subsequent requests
         through the same IP.  Default: True (when identity is enabled).
-    profile
-        Name of a built-in fingerprint profile to use for all identities on
-        this target.  When omitted, each new identity picks a random profile
-        from the built-in set so different IPs present as different clients.
-        Valid values: ``chrome-windows``, ``chrome-macos``, ``safari-macos``,
-        ``firefox-linux``, ``firefox-windows``.
     rotate_after_requests
         Voluntarily rotate the identity after this many successful requests,
         independently of failures or quarantine.  Useful for shedding sessions
@@ -66,7 +60,6 @@ class IdentityConfig(BaseModel):
 
     enabled: bool = False
     cookies: bool = True
-    profile: Optional[str] = None
     rotate_after_requests: Optional[int] = Field(default=None, ge=1)
     rotate_on_429: bool = True
     warmup: Optional[WarmupConfig] = None

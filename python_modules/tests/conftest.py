@@ -25,7 +25,7 @@ import pytest_asyncio
 
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import ResolvedIP, TargetConfig
-from proxy_hopper.pool import IPPool
+from proxy_hopper.pool import IdentityQueue
 from proxy_hopper.pool_store import IPPoolStore
 from proxy_hopper_redis.backend import RedisBackend
 
@@ -111,12 +111,12 @@ async def backend(pool_store) -> AsyncIterator[IPPoolStore]:
 
 
 @pytest_asyncio.fixture
-async def pool(pool_store, target_config) -> AsyncIterator[IPPool]:
-    """A started IPPool backed by each registered backend type."""
-    p = IPPool(target_config, pool_store)
-    await p.start()
-    yield p
-    await p.stop()
+async def pool(pool_store, target_config) -> AsyncIterator[IdentityQueue]:
+    """A started IdentityQueue backed by each registered backend type."""
+    q = IdentityQueue(target_config, pool_store)
+    await q.start()
+    yield q
+    await q.stop()
 
 
 # ---------------------------------------------------------------------------

@@ -81,6 +81,7 @@ def load_config(path: Path | str) -> ProxyHopperConfig:
         normalised = _normalise_provider(p_raw)
         if "auth" in normalised and isinstance(normalised["auth"], dict):
             normalised["auth"] = BasicAuth(**normalised["auth"])
+        normalised.setdefault("static", True)
         provider = ProxyProvider(**normalised)
         if provider.name in provider_map:
             raise ValueError(f"Duplicate proxyProvider name: '{provider.name}'")
@@ -130,6 +131,7 @@ def load_config(path: Path | str) -> ProxyHopperConfig:
         pool = pool_map[pool_ref]
         resolved_ips = _resolve_pool_ips(pool, provider_map, default_proxy_port)
 
+        normalised.setdefault("static", True)
         targets.append(TargetConfig(
             pool_name=pool_ref,
             resolved_ips=resolved_ips,

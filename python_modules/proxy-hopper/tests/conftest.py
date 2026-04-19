@@ -29,9 +29,6 @@ async def memory_backend(target_config) -> IPPoolStore:
     backend = MemoryBackend()
     await backend.start()
     pool_store = IPPoolStore(backend)
-    await pool_store.claim_init(target_config.name)
-    for ip in target_config.resolved_ips:
-        await pool_store.push_ip(target_config.name, ip.address)
     yield pool_store
     await backend.stop()
 

@@ -31,31 +31,31 @@ class TestClaimInit:
 
 class TestPoolQueue:
     async def test_push_then_pop(self, pool_store):
-        await pool_store.push_ip("t", "1.2.3.4:8080")
-        result = await pool_store.pop_ip("t", timeout=1.0)
-        assert result == "1.2.3.4:8080"
+        await pool_store.push_identity_uuid("t", "uuid-abc")
+        result = await pool_store.pop_identity_uuid("t", timeout=1.0)
+        assert result == "uuid-abc"
 
     async def test_pop_timeout_returns_none(self, pool_store):
-        result = await pool_store.pop_ip("t", timeout=0.1)
+        result = await pool_store.pop_identity_uuid("t", timeout=0.1)
         assert result is None
 
     async def test_fifo_ordering(self, pool_store):
-        await pool_store.push_ip("t", "1.1.1.1:8080")
-        await pool_store.push_ip("t", "2.2.2.2:8080")
-        first = await pool_store.pop_ip("t", timeout=1.0)
-        second = await pool_store.pop_ip("t", timeout=1.0)
-        assert first == "1.1.1.1:8080"
-        assert second == "2.2.2.2:8080"
+        await pool_store.push_identity_uuid("t", "uuid-1")
+        await pool_store.push_identity_uuid("t", "uuid-2")
+        first = await pool_store.pop_identity_uuid("t", timeout=1.0)
+        second = await pool_store.pop_identity_uuid("t", timeout=1.0)
+        assert first == "uuid-1"
+        assert second == "uuid-2"
 
     async def test_pool_size(self, pool_store):
         assert await pool_store.pool_size("t") == 0
-        await pool_store.push_ip("t", "1.1.1.1:8080")
-        await pool_store.push_ip("t", "2.2.2.2:8080")
+        await pool_store.push_identity_uuid("t", "uuid-1")
+        await pool_store.push_identity_uuid("t", "uuid-2")
         assert await pool_store.pool_size("t") == 2
 
     async def test_pool_size_decrements_after_pop(self, pool_store):
-        await pool_store.push_ip("t", "1.1.1.1:8080")
-        await pool_store.pop_ip("t", timeout=1.0)
+        await pool_store.push_identity_uuid("t", "uuid-1")
+        await pool_store.pop_identity_uuid("t", timeout=1.0)
         assert await pool_store.pool_size("t") == 0
 
 

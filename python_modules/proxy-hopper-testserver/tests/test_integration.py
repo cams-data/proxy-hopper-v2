@@ -485,8 +485,8 @@ class TestGracefulShutdown:
         mgr = TargetManager(cfg, backend)
         await mgr.start()
 
-        # Drain the pool so requests queue up waiting for an IP
-        await backend.pop_ip(cfg.name, timeout=0.1)
+        # Drain the pool so requests queue up waiting for an identity
+        await backend.pop_identity_uuid(cfg.name, timeout=0.1)
 
         req = make_request(upstream.url + "/queued", max_queue_wait=30.0)
         await mgr.submit(req)

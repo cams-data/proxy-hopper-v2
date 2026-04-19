@@ -52,17 +52,17 @@ class TestClaimInit:
 
 
 class TestRedisPoolQueue:
-    async def test_ip_stored_in_redis_list(self, redis_backend, target_config):
+    async def test_uuid_stored_in_redis_list(self, redis_backend, target_config):
         raw, store = redis_backend
-        # The fixture seeds 2 IPs
+        # The fixture seeds 2 UUIDs
         pool_k = _pool_key(target_config.name)
         size = await raw._redis.llen(pool_k)
         assert size == 2
 
     async def test_pop_uses_blpop(self, redis_backend, target_config):
         raw, store = redis_backend
-        address = await store.pop_ip(target_config.name, timeout=1.0)
-        assert address is not None
+        uuid = await store.pop_identity_uuid(target_config.name, timeout=1.0)
+        assert uuid is not None
         pool_k = _pool_key(target_config.name)
         assert await raw._redis.llen(pool_k) == 1
 

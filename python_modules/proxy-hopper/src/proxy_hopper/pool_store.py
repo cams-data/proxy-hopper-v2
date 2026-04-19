@@ -1,21 +1,25 @@
-"""IPPoolStore — domain wrapper around Backend for IP pool state.
+"""IPPoolStore — domain wrapper around Backend for IP pool and identity state.
 
 Owns all key naming for pool-related state and translates pool-domain
-operations (target + address) into generic Backend primitives.
+operations into generic Backend primitives.
 
 Key schema
 ----------
-ph:{target}:pool             — Queue  — available IP addresses ("host:port")
-ph:{target}:init             — Init   — SETNX claim for first-start seeding
-ph:{target}:failures:{addr}  — Counter — consecutive failure count for *addr*
-ph:{target}:quarantine       — Sorted set — member=address, score=release_epoch
+ph:{target}:pool                  — Queue      — UUID strings (identity IDs)
+ph:{target}:identity:{uuid}       — KV         — JSON-serialised Identity data
+ph:{target}:ip:{address}          — KV         — active UUID for this address
+ph:{target}:retired:{address}     — KV         — "1" if address is retired
+ph:{target}:init                  — Init       — SETNX claim for first-start seeding
+ph:{target}:failures:{addr}       — Counter    — consecutive failure count for *addr*
+ph:{target}:quarantine            — Sorted set — member=address, score=release_epoch
 
 This class is not a Backend subclass — it holds a Backend and delegates.
-IPPool imports IPPoolStore and passes it to the backend as a typed dependency.
+IdentityQueue imports IPPoolStore and passes it to the backend as a typed dependency.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
@@ -28,6 +32,18 @@ _PREFIX = "ph"
 
 def _pool_key(target: str) -> str:
     return f"{_PREFIX}:{target}:pool"
+
+
+def _identity_key(target: str, uuid: str) -> str:
+    return f"{_PREFIX}:{target}:identity:{uuid}"
+
+
+def _ip_key(target: str, address: str) -> str:
+    return f"{_PREFIX}:{target}:ip:{address}"
+
+
+def _retired_key(target: str, address: str) -> str:
+    return f"{_PREFIX}:{target}:retired:{address}"
 
 
 def _init_key(target: str) -> str:
@@ -57,20 +73,66 @@ class IPPoolStore:
         return await self._backend.claim_init(_init_key(target))
 
     # ------------------------------------------------------------------
-    # Pool queue
+    # Pool queue — stores identity UUID strings
     # ------------------------------------------------------------------
 
-    async def push_ip(self, target: str, address: str) -> None:
-        await self._backend.queue_push(_pool_key(target), address)
+    async def push_identity_uuid(self, target: str, uuid: str) -> None:
+        """Push an identity UUID to the tail of the pool queue."""
+        await self._backend.queue_push(_pool_key(target), uuid)
 
-    async def push_ips(self, target: str, addresses: list[str]) -> None:
-        await self._backend.queue_push_many(_pool_key(target), addresses)
-
-    async def pop_ip(self, target: str, timeout: float) -> Optional[str]:
+    async def pop_identity_uuid(self, target: str, timeout: float) -> Optional[str]:
+        """Pop an identity UUID from the head of the pool queue (blocking)."""
         return await self._backend.queue_pop_blocking(_pool_key(target), timeout)
 
     async def pool_size(self, target: str) -> int:
         return await self._backend.queue_size(_pool_key(target))
+
+    # ------------------------------------------------------------------
+    # Identity KV — full identity JSON stored per UUID
+    # ------------------------------------------------------------------
+
+    async def identity_write(self, target: str, uuid: str, data: dict) -> None:
+        """Serialise and store *data* as the identity for *uuid*."""
+        await self._backend.kv_set(_identity_key(target, uuid), json.dumps(data))
+
+    async def identity_read(self, target: str, uuid: str) -> Optional[dict]:
+        """Return the deserialised identity dict for *uuid*, or None if missing."""
+        raw = await self._backend.kv_get(_identity_key(target, uuid))
+        if raw is None:
+            return None
+        return json.loads(raw)
+
+    async def identity_delete(self, target: str, uuid: str) -> None:
+        """Delete the identity KV entry for *uuid*."""
+        await self._backend.kv_delete(_identity_key(target, uuid))
+
+    # ------------------------------------------------------------------
+    # IP → UUID reverse lookup — one active UUID per address
+    # ------------------------------------------------------------------
+
+    async def ip_set(self, target: str, address: str, uuid: str) -> None:
+        """Record that *uuid* is the active identity for *address*."""
+        await self._backend.kv_set(_ip_key(target, address), uuid)
+
+    async def ip_delete(self, target: str, address: str) -> None:
+        """Remove the active UUID record for *address*."""
+        await self._backend.kv_delete(_ip_key(target, address))
+
+    # ------------------------------------------------------------------
+    # Retired address set — addresses pending discard
+    # ------------------------------------------------------------------
+
+    async def retire_add(self, target: str, address: str) -> None:
+        """Mark *address* as retired.  Its identity will be discarded on next pop."""
+        await self._backend.kv_set(_retired_key(target, address), "1")
+
+    async def retire_check(self, target: str, address: str) -> bool:
+        """Return True if *address* has been marked as retired."""
+        return await self._backend.kv_get(_retired_key(target, address)) is not None
+
+    async def retire_remove(self, target: str, address: str) -> None:
+        """Remove the retired marker for *address* (called after discard)."""
+        await self._backend.kv_delete(_retired_key(target, address))
 
     # ------------------------------------------------------------------
     # Failure counter

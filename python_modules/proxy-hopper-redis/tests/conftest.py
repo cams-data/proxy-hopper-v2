@@ -47,8 +47,9 @@ async def redis_backend(target_config):
 
     store = IPPoolStore(raw)
     await store.claim_init(target_config.name)
-    for ip in target_config.resolved_ips:
-        await store.push_ip(target_config.name, ip.address)
+    # Seed two UUID entries so pool queue tests have data to work with
+    await store.push_identity_uuid(target_config.name, "uuid-1")
+    await store.push_identity_uuid(target_config.name, "uuid-2")
 
     yield raw, store
 
