@@ -104,12 +104,22 @@ config:
     # The admin API listens on admin.port (default 8081) and exposes:
     #   POST /auth/login, GET /health, GET /api/v1/status, POST|GET /graphql
 
-    targets:
-      - name: general
-        regex: '.*'
+    proxyProviders:
+      - name: my-provider
         ipList:
           - "10.0.0.1:3128"
           - "10.0.0.2:3128"
+
+    ipPools:
+      - name: pool-1
+        ipRequests:
+          - provider: my-provider
+            count: 2
+
+    targets:
+      - name: general
+        regex: '.*'
+        ipPool: pool-1
         minRequestInterval: 1s
         maxQueueWait: 30s
         numRetries: 3
