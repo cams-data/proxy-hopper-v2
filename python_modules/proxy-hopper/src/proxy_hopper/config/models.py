@@ -2,6 +2,22 @@
 
 Contains all model classes plus low-level parsing helpers (_parse_duration,
 _parse_address) that the models reference directly.
+
+YAML schema overview
+--------------------
+A config file has five top-level keys:
+
+  server:         ServerConfig — operational settings (port, backend, logging…)
+  auth:           AuthConfig  — access control (API keys, JWT, OIDC, admin user)
+  proxyProviders: list[ProxyProvider] — upstream proxy suppliers with IP lists
+  ipPools:        list[IpPool]        — named pools that draw IPs from providers
+  targets:        list[TargetConfig]  — routing rules that reference an ipPool
+
+All duration fields (minRequestInterval, maxQueueWait, quarantineTime, …)
+accept a string with suffix: ``30s``, ``5m``, ``1h``, or a bare number (seconds).
+
+All camelCase YAML keys are normalised to snake_case before model construction;
+both forms are accepted in config files.
 """
 
 from __future__ import annotations
@@ -104,7 +120,37 @@ class OidcConfig(BaseModel):
 
 
 class AuthConfig(BaseModel):
-    """Top-level auth configuration block."""
+    """Top-level access-control configuration.
+
+    YAML key: ``auth``
+
+    Fields
+    ------
+    enabled
+        Master switch.  When False all auth checks are skipped.  Default: False.
+    jwtSecret (jwt_secret)
+        Secret used to sign locally-issued JWTs (login via ``POST /auth/login``).
+        Use a long random string.  If omitted, a secret is auto-generated at
+        startup — tokens will not survive a restart in that case.
+    jwtExpiryMinutes (jwt_expiry_minutes)
+        Lifetime of issued JWTs in minutes.  Default: ``60``.
+    admin
+        Local admin user for the management UI / admin API.
+        Sub-keys: ``username``, ``passwordHash`` (bcrypt, use
+        ``proxy-hopper hash-password``), ``role`` (default ``"admin"``).
+    apiKeys (api_keys)
+        List of static API keys for machine-to-machine proxy access.
+        Each key has ``name``, ``key``, and ``targets`` (list of target names
+        or ``["*"]`` for all targets).
+    oidc
+        OIDC provider for SSO.  Sub-keys: ``issuer``, ``audience`` (optional),
+        ``rolesClaim`` (JWT claim that maps to a role, default
+        ``"proxy_hopper_role"``).
+    roles
+        Map of role name → ``RoleConfig`` for custom role definitions.
+        Built-in roles (``read``, ``write``, ``admin``) apply when not
+        overridden here.
+    """
     enabled: bool = False
     admin: Optional[AdminUserConfig] = None
     api_keys: list[ApiKeyConfig] = Field(default_factory=list)
@@ -119,7 +165,33 @@ class AuthConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ProxyProvider(BaseModel):
-    """A named proxy supplier with credentials, IPs, and optional region tag."""
+    """A named upstream proxy supplier.
+
+    YAML key: ``proxyProviders``
+
+    Fields
+    ------
+    name
+        Unique identifier referenced by ``ipPools[].ipRequests[].provider``.
+    ipList (ip_list)
+        List of proxy addresses as ``"host:port"`` strings.  At least one
+        address is required.
+    regionTag (region_tag)
+        Optional free-form region label (e.g. ``"US"``, ``"AU"``).  Exposed
+        on resolved IPs for routing or logging purposes.
+    auth
+        Optional Basic Auth credentials sent to the upstream proxy
+        (``Proxy-Authorization: Basic …``).  Sub-keys: ``username``, ``password``.
+    mutable
+        When False, the provider cannot be modified or deleted via the API.
+        Default: True.
+    static
+        When True (the default for YAML-defined providers), the provider is
+        always overwritten from config on startup and rejects API mutations.
+        Set ``static: false`` to allow the API to manage this provider at
+        runtime while still seeding it on first run.  Default: False for
+        API-created providers; True for YAML-defined providers.
+    """
     name: str
     auth: Optional[BasicAuth] = None
     ip_list: list[str] = Field(min_length=1)
@@ -137,13 +209,42 @@ class ProxyProvider(BaseModel):
 # ---------------------------------------------------------------------------
 
 class IpRequest(BaseModel):
-    """A request for IPs from a named provider — declares count only, not which IPs."""
+    """A single provider draw within an ipPool.
+
+    Fields
+    ------
+    provider
+        Name of the ``proxyProvider`` to draw IPs from.
+    count
+        Maximum number of IPs to take from that provider.  If the provider
+        has fewer IPs than requested, all available IPs are used without error.
+    """
     provider: str
     count: int = Field(ge=1)
 
 
 class IpPool(BaseModel):
-    """A named pool of IPs assembled from one or more provider requests."""
+    """A named pool of IPs assembled from one or more provider draws.
+
+    YAML key: ``ipPools``
+
+    Pools are first-class runtime entities — they can be created, updated, and
+    deleted via the admin API (subject to ``mutable`` / ``static`` flags).
+
+    Fields
+    ------
+    name
+        Unique identifier referenced by ``targets[].ipPool``.
+    ipRequests (ip_requests)
+        List of provider draws.  Each draw names a provider and a count; the
+        pool's resolved IP list is the union of all draws in order.
+    mutable
+        When False, the pool cannot be modified or deleted via the API.
+        Default: True.
+    static
+        Same semantics as ``ProxyProvider.static``.  Default: False for
+        API-created pools; True for YAML-defined pools.
+    """
     name: str
     ip_requests: list[IpRequest] = Field(min_length=1)
     mutable: bool = True
@@ -171,6 +272,54 @@ class ResolvedIP(BaseModel):
 # ---------------------------------------------------------------------------
 
 class TargetConfig(BaseModel):
+    """Routing rule that matches requests by URL regex and forwards them via an IP pool.
+
+    YAML key: ``targets``
+
+    Fields
+    ------
+    name
+        Unique identifier for this target.
+    regex
+        Regular expression matched against the full request URL.  The first
+        target whose regex matches is used.
+    ipPool (pool_name)
+        Name of the ``ipPool`` that supplies proxy IPs for this target.
+    minRequestInterval (min_request_interval)
+        Minimum seconds between two consecutive requests through the same IP.
+        Accepts a duration string (``"1s"``, ``"20s"``).  Default: ``1.0``.
+    maxQueueWait (max_queue_wait)
+        Maximum seconds a request will wait for a free IP before giving up.
+        Default: ``30.0``.
+    numRetries (num_retries)
+        Number of times a failed request is retried on a different IP before
+        the error is returned to the client.  Default: ``3``.
+    ipFailuresUntilQuarantine (ip_failures_until_quarantine)
+        Consecutive failures on one IP before it is quarantined.  Default: ``5``.
+    quarantineTime (quarantine_time)
+        Seconds a quarantined IP is held back before re-entering the pool.
+        Accepts a duration string.  Default: ``120.0``.
+    defaultProxyPort (default_proxy_port)
+        Port used when an IP address in the pool has no explicit port.
+        Default: ``8080``.
+    spoofUserAgent (spoof_user_agent)
+        When True, replaces the ``User-Agent`` header with a random browser UA.
+        Can be overridden per-request with ``X-Proxy-Hopper-User-Agent``.
+        Default: True.
+    identity
+        Identity persistence and rotation settings.  See ``IdentityConfig``.
+        All sub-options default to off; set ``identity.enabled: true`` to
+        activate cookie persistence and session rotation for this target.
+    mutable
+        When False, the target cannot be modified or deleted via the API.
+        Default: True.
+    static
+        Same semantics as ``ProxyProvider.static``.  Default: False for
+        API-created targets; True for YAML-defined targets.
+    resolved_ips
+        Snapshot of the pool's IP list at load time.  Set automatically by
+        the loader and repository; do not set this in YAML.
+    """
     name: str
     regex: str
     pool_name: str
@@ -219,6 +368,60 @@ class TargetConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ServerConfig(BaseSettings):
+    """Operational settings for the proxy server process.
+
+    YAML key: ``server``
+    Env var prefix: ``PROXY_HOPPER_``  (e.g. ``PROXY_HOPPER_PORT=8085``)
+
+    Fields
+    ------
+    host
+        Interface to bind.  Default: ``"0.0.0.0"``.
+    port
+        Port the proxy server listens on.  Default: ``8080``.
+    log_level (logLevel)
+        Verbosity: ``TRACE``, ``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``.
+        Default: ``INFO``.
+    log_format (logFormat)
+        ``text`` (human-readable) or ``json`` (structured).  Default: ``text``.
+    log_file (logFile)
+        Optional path to write logs to instead of stderr.
+    backend
+        Storage backend for IP pool and identity state.
+        ``memory`` (single-process, lost on restart) or ``redis``.
+        Default: ``memory``.
+    redis_url (redisUrl)
+        Redis connection URL.  Used when ``backend=redis``.
+        Default: ``"redis://localhost:6379/0"``.
+    proxy_read_timeout (proxyReadTimeout)
+        Optional timeout in seconds for reading the upstream response body.
+        Omit to use aiohttp's default (no explicit read timeout).
+    admin
+        Enable the admin API / GraphQL endpoint.  Default: False.
+    admin_port (adminPort)
+        Port the admin API listens on.  Default: ``8081``.
+    admin_host (adminHost)
+        Interface the admin API binds to.  Default: ``"0.0.0.0"``.
+    metrics
+        Enable Prometheus ``/metrics`` endpoint.  Default: False.
+    metrics_port (metricsPort)
+        Port for the Prometheus metrics HTTP server.  Default: ``9090``.
+    probe
+        Enable background IP health prober.  Default: True.
+    probe_interval (probeInterval)
+        Seconds between probe rounds.  Default: ``60``.
+    probe_timeout (probeTimeout)
+        Per-probe HTTP timeout in seconds.  Default: ``10``.
+    probe_urls (probeUrls)
+        Comma-separated list of URLs used by the prober to test IPs.
+        Default: ``["http://1.1.1.1", "http://www.google.com"]``.
+    debug_quarantine (debugQuarantine)
+        Log verbose quarantine / cooldown events at DEBUG level.  Default: False.
+    debug_probes (debugProbes)
+        Log verbose probe results at DEBUG level.  Default: False.
+    debug_backend (debugBackend)
+        Log verbose backend storage operations at DEBUG level.  Default: False.
+    """
     model_config = SettingsConfigDict(
         env_prefix="PROXY_HOPPER_",
         env_ignore_empty=True,
