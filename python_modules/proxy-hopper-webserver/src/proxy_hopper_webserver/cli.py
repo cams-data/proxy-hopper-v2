@@ -24,17 +24,17 @@ def main() -> None:
               envvar="PROXY_HOPPER_CONFIG",
               type=click.Path(exists=True, path_type=Path),
               help="Path to config file.")
-@click.option("--host", default=None,
+@click.option("--host", default=None, envvar="PROXY_HOPPER_ADMIN_HOST",
               help="Interface to bind the admin server. [default: 0.0.0.0]")
-@click.option("--port", default=None, type=int,
+@click.option("--port", default=None, type=int, envvar="PROXY_HOPPER_ADMIN_PORT",
               help="Port for the admin server. [default: 8081]")
-@click.option("--log-level", default=None,
+@click.option("--log-level", default=None, envvar="PROXY_HOPPER_LOG_LEVEL",
               type=click.Choice(["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"],
                                 case_sensitive=False))
-@click.option("--log-format", default=None,
+@click.option("--log-format", default=None, envvar="PROXY_HOPPER_LOG_FORMAT",
               type=click.Choice(["text", "json"], case_sensitive=False))
-@click.option("--log-file", default=None, metavar="PATH")
-@click.option("--backend", default=None,
+@click.option("--log-file", default=None, metavar="PATH", envvar="PROXY_HOPPER_LOG_FILE")
+@click.option("--backend", default=None, envvar="PROXY_HOPPER_BACKEND",
               type=click.Choice(["memory", "redis"], case_sensitive=False))
 @click.option("--redis-url", default=None, envvar="PROXY_HOPPER_REDIS_URL")
 def admin(
