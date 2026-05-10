@@ -156,27 +156,34 @@ metrics:
     scrapeTimeout: 10s
     additionalLabels: {}
 
-# ── Admin API ────────────────────────────────────────────────────────────────
-# The admin API exposes a management REST interface and GraphQL API on a
-# separate port.  Endpoints:
-#   POST /auth/login          — obtain a JWT (requires auth.admin in config.yaml)
-#   GET  /health              — liveness check (public)
-#   GET  /api/v1/status       — server state   (requires read permission)
-#   POST|GET /graphql         — Strawberry GraphQL API
-#                               (interactive playground at GET /graphql)
+# ── Admin server ─────────────────────────────────────────────────────────────
+# When enabled, a separate Deployment + ClusterIP Service are created for the
+# admin server. The admin server runs `proxy-hopper admin` — it exposes only
+# the management REST API, GraphQL API, and web UI. Proxy runners are
+# completely separate and have no admin HTTP endpoints exposed.
 #
-# Auth config (apiKeys, admin user, OIDC, jwtSecret) lives inside config.yaml,
-# not here.  Enable the admin server here; configure *who* can access it there.
+# Endpoints on the admin server:
+#   GET  /health              — liveness check (public)
+#   POST /auth/login          — obtain a JWT (requires auth.admin in config.yaml)
+#   GET  /api/v1/status       — server state  (requires read permission)
+#   POST|GET /graphql         — Strawberry GraphQL API + interactive playground
+#
+# Auth config (apiKeys, admin user, OIDC, jwtSecret) lives in config.yaml.
+# Use config.existingSecret to keep credentials out of ConfigMaps.
 admin:
   enabled: false
-  # Port the admin API listens on inside the container.
-  # Must match server.adminPort in config.yaml (or PROXY_HOPPER_ADMIN_PORT).
+  replicaCount: 1
+  # Port the admin server listens on inside the container.
   port: 8081
-  # Expose the admin port via the proxy Service (adds a named port "admin").
-  # Set to false if you want the admin API reachable only inside the cluster
-  # via direct pod access or a separate, more restricted Service.
   service:
-    enabled: true
+    type: ClusterIP
+  resources: {}
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
+    # limits:
+    #   cpu: 500m
+    #   memory: 256Mi
 
 # ── Redis subchart ───────────────────────────────────────────────────────────
 # Uses the Bitnami Redis chart as an optional dependency.

@@ -114,6 +114,10 @@ class IPPoolStore:
         """Record that *uuid* is the active identity for *address*."""
         await self._backend.kv_set(_ip_key(target, address), uuid)
 
+    async def ip_get(self, target: str, address: str) -> Optional[str]:
+        """Return the active UUID for *address*, or None if not set."""
+        return await self._backend.kv_get(_ip_key(target, address))
+
     async def ip_delete(self, target: str, address: str) -> None:
         """Remove the active UUID record for *address*."""
         await self._backend.kv_delete(_ip_key(target, address))
@@ -163,6 +167,10 @@ class IPPoolStore:
 
     async def quarantine_list(self, target: str) -> list[str]:
         return await self._backend.sorted_set_members(_quarantine_key(target))
+
+    async def quarantine_list_with_scores(self, target: str) -> list[tuple[str, float]]:
+        """Return (address, release_at_epoch) for all currently quarantined IPs."""
+        return await self._backend.sorted_set_members_with_scores(_quarantine_key(target))
 
     # ------------------------------------------------------------------
     # Compound read — single round trip where possible

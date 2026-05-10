@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "proxy-hopper-webserver"
+dynamic = ["version"]
+description = "Admin web server and GraphQL API for Proxy Hopper"
+requires-python = ">=3.12"
+dependencies = [
+    "proxy-hopper>=0.0.0",
+    "fastapi>=0.111",
+    "python-multipart>=0.0.9",
+    "strawberry-graphql[fastapi]>=0.220",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+uvloop = [
+    "uvloop>=0.19; sys_platform != 'win32'",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+proxy-hopper-webserver = "proxy_hopper_webserver.cli:main"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+search_parent_directories = true
+tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:[._-](?:a|alpha|b|beta|c|pre|preview|rc)[0-9.]*)?)$"
+fallback_version = "0.0.0.dev0"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/proxy_hopper_webserver"]
+
+[tool.uv.sources]
+proxy-hopper = { path = "../proxy-hopper", editable = true }
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

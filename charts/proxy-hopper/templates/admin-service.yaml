@@ -1,0 +1,22 @@
+{{- if .Values.admin.enabled -}}
+# Admin Service — ClusterIP only by default.
+# The admin API + web UI should not be publicly exposed; use port-forward or
+# an internal ingress restricted by a NetworkPolicy.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "proxy-hopper.fullname" . }}-admin
+  labels:
+    {{- include "proxy-hopper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  type: {{ .Values.admin.service.type }}
+  ports:
+    - port: {{ .Values.admin.port }}
+      targetPort: admin
+      protocol: TCP
+      name: admin
+  selector:
+    {{- include "proxy-hopper.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+{{- end }}

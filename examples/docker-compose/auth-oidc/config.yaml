@@ -100,9 +100,8 @@ server:
   logFormat: text
   backend: memory
 
-  # Admin API — management REST API + GraphQL on a separate port.
-  # Endpoints: POST /auth/login, GET /health, GET /api/v1/status,
-  #            POST|GET /graphql  (Strawberry GraphQL playground at GET /graphql)
-  admin: true
+  # Admin port — used by the separate proxy-hopper-admin service.
+  # The runner (proxy-hopper service) does NOT expose an admin API.
+  # PROXY_HOPPER_ADMIN_PORT env var in docker-compose.yml takes precedence.
   adminPort: 8081
   adminHost: 0.0.0.0

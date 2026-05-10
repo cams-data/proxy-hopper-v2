@@ -22,7 +22,8 @@ services:
       start_period: 5s
 
   # -------------------------------------------------------------------------
-  # Proxy Hopper — scale this service for horizontal throughput
+  # Proxy runner — scale this service for horizontal throughput.
+  # No admin API exposed on runners; use the admin service below instead.
   # -------------------------------------------------------------------------
   proxy-hopper:
     build:
@@ -32,8 +33,7 @@ services:
     restart: unless-stopped
     ports:
       - "${PROXY_PORT:-8080}:8080"     # proxy — point your HTTP clients here
-      - "${METRICS_PORT:-9090}:9090"   # Prometheus /metrics  (only if metrics enabled)
-      # - "${ADMIN_PORT:-8081}:8081"   # Admin API  (only if PROXY_HOPPER_ADMIN=true)
+      # - "${METRICS_PORT:-9090}:9090" # Prometheus /metrics (uncomment + enable below)
     volumes:
       - ./config.yaml:/etc/proxy-hopper/config.yaml:ro
     environment:
@@ -46,10 +46,6 @@ services:
       # Uncomment to enable Prometheus metrics:
       # PROXY_HOPPER_METRICS: "true"
       # PROXY_HOPPER_METRICS_PORT: "9090"
-      # Uncomment to enable the admin API + GraphQL (add auth: block to config.yaml first):
-      # PROXY_HOPPER_ADMIN: "true"
-      # PROXY_HOPPER_ADMIN_PORT: "8081"
-      # GraphQL playground available at http://localhost:8081/graphql when enabled.
     depends_on:
       redis:
         condition: service_healthy
@@ -60,6 +56,43 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # Admin server — GraphQL API + web UI for managing the proxy pool.
+  # Uncomment this service and add an auth: block to config.yaml to enable.
+  # The admin server is a separate process using the same image and config.
+  #
+  # Access the web UI at http://localhost:8081
+  # GraphQL playground at http://localhost:8081/graphql
+  # -------------------------------------------------------------------------
+  # proxy-hopper-admin:
+  #   build:
+  #     context: .
+  #     args:
+  #       VERSION: "${PROXY_HOPPER_VERSION:-0.1.0}"
+  #   command: ["admin", "--config", "/etc/proxy-hopper/config.yaml"]
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${ADMIN_PORT:-8081}:8081"   # admin web UI + GraphQL API
+  #   volumes:
+  #     - ./config.yaml:/etc/proxy-hopper/config.yaml:ro
+  #   environment:
+  #     PROXY_HOPPER_ADMIN_HOST: "0.0.0.0"
+  #     PROXY_HOPPER_ADMIN_PORT: "8081"
+  #     PROXY_HOPPER_BACKEND: "redis"
+  #     PROXY_HOPPER_REDIS_URL: "redis://redis:6379/0"
+  #     PROXY_HOPPER_LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+  #     PROXY_HOPPER_LOG_FORMAT: "${LOG_FORMAT:-json}"
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   healthcheck:
+  #     test: ["CMD", "python", "-c",
+  #            "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+  #     interval: 15s
+  #     timeout: 5s
+  #     retries: 3
+  #     start_period: 10s
 
 volumes:
   redis-data:

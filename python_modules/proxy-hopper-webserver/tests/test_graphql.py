@@ -8,9 +8,9 @@ import pytest_asyncio
 from proxy_hopper.auth import AuthenticatedUser
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import AuthConfig, IpPool, IpRequest, ProxyProvider, ResolvedIP, TargetConfig
-from proxy_hopper.graphql import schema
-from proxy_hopper.graphql.context import Context
 from proxy_hopper.repository import ProxyRepository
+from proxy_hopper_webserver.graphql import schema
+from proxy_hopper_webserver.graphql.context import Context
 
 
 # ---------------------------------------------------------------------------
@@ -205,10 +205,8 @@ mutation($name: String!) { removeTarget(name: $name) }
 
 class TestMutationAddTarget:
     async def test_add_persists_and_returns_target(self, repo):
-        # Seed pool so the mutation can resolve IPs
         await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
         await repo.add_pool(_make_pool("pool", "prov", 1))
-
         result = await _run(ADD_TARGET, repo, variables={
             "input": {"name": "t", "regex": ".*", "poolName": "pool"}
         })
@@ -254,7 +252,6 @@ class TestMutationUpdateTarget:
         await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
         await repo.add_pool(_make_pool("pool", "prov", 1))
         await repo.add_target(_make_target("t", "pool"))
-
         result = await _run(UPDATE_TARGET, repo, variables={
             "input": {"name": "t", "regex": ".*", "poolName": "pool", "minRequestInterval": 9.0}
         })
@@ -316,10 +313,7 @@ mutation($name: String!) { removePool(name: $name) }
 class TestMutationAddPool:
     async def test_add_persists_and_returns_pool(self, repo):
         result = await _run(ADD_POOL, repo, variables={
-            "input": {
-                "name": "p",
-                "ipRequests": [{"provider": "prov", "count": 3}],
-            }
+            "input": {"name": "p", "ipRequests": [{"provider": "prov", "count": 3}]}
         })
         assert result.errors is None
         p = result.data["addPool"]
@@ -336,7 +330,6 @@ class TestMutationAddPool:
 
 class TestMutationUpdatePool:
     async def test_update_changes_count(self, repo):
-        # Seed provider so cascade doesn't fail
         await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
         await repo.add_pool(_make_pool("p", "prov", 1))
         result = await _run(UPDATE_POOL, repo, variables={
@@ -416,8 +409,7 @@ class TestMutationAddProvider:
         assert result.data["addProvider"]["hasAuth"] is True
 
     async def test_add_duplicate_returns_error(self, repo):
-        p = ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"])
-        await repo.add_provider(p)
+        await repo.add_provider(ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"]))
         result = await _run(ADD_PROVIDER, repo, variables={
             "input": {"name": "prov", "ipList": ["2.2.2.2:3128"]}
         })

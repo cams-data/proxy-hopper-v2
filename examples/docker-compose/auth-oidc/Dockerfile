@@ -7,13 +7,13 @@ ARG UVLOOP=true
 
 RUN pip install --no-cache-dir \
     "https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/proxy_hopper-${VERSION}-py3-none-any.whl" \
+    "https://github.com/${GITHUB_REPO}/releases/download/v${VERSION}/proxy_hopper_webserver-${VERSION}-py3-none-any.whl" \
  && if [ "$UVLOOP" = "true" ]; then pip install --no-cache-dir uvloop; fi
 
 VOLUME ["/etc/proxy-hopper"]
 
 EXPOSE 8080
-# Admin API port — only active when server.admin=true / PROXY_HOPPER_ADMIN=true
 EXPOSE 8081
 
-ENTRYPOINT ["proxy-hopper", "run"]
-CMD ["--config", "/etc/proxy-hopper/config.yaml"]
+ENTRYPOINT ["proxy-hopper"]
+CMD ["run", "--config", "/etc/proxy-hopper/config.yaml"]

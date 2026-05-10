@@ -1,0 +1,143 @@
+"""CLI for proxy-hopper-webserver — admin server entrypoint."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+from pathlib import Path
+from typing import Optional
+
+import click
+
+from proxy_hopper.config import load_config
+from proxy_hopper.logging_config import configure_logging
+
+
+@click.group()
+def main() -> None:
+    """Proxy Hopper web server — admin API and UI."""
+
+
+@main.command()
+@click.option("--config", "-c", required=False, default=None,
+              envvar="PROXY_HOPPER_CONFIG",
+              type=click.Path(exists=True, path_type=Path),
+              help="Path to config file.")
+@click.option("--host", default=None,
+              help="Interface to bind the admin server. [default: 0.0.0.0]")
+@click.option("--port", default=None, type=int,
+              help="Port for the admin server. [default: 8081]")
+@click.option("--log-level", default=None,
+              type=click.Choice(["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"],
+                                case_sensitive=False))
+@click.option("--log-format", default=None,
+              type=click.Choice(["text", "json"], case_sensitive=False))
+@click.option("--log-file", default=None, metavar="PATH")
+@click.option("--backend", default=None,
+              type=click.Choice(["memory", "redis"], case_sensitive=False))
+@click.option("--redis-url", default=None, envvar="PROXY_HOPPER_REDIS_URL")
+def admin(
+    config: Optional[Path],
+    host: Optional[str],
+    port: Optional[int],
+    log_level: Optional[str],
+    log_format: Optional[str],
+    log_file: Optional[str],
+    backend: Optional[str],
+    redis_url: Optional[str],
+) -> None:
+    """Start the admin server (GraphQL API + web UI).
+
+    Connects to the same backend as the proxy runners but runs no proxy
+    listener.  Deploy as a separate pod with a single replica.
+    """
+    if config is None:
+        click.echo("Error: --config / PROXY_HOPPER_CONFIG is required.", err=True)
+        sys.exit(1)
+
+    cfg = load_config(config)
+    server = cfg.server
+
+    if host is not None:
+        server.admin_host = host
+    if port is not None:
+        server.admin_port = port
+    if log_level is not None:
+        server.log_level = log_level
+    if log_format is not None:
+        server.log_format = log_format
+    if log_file is not None:
+        server.log_file = log_file
+    if backend is not None:
+        server.backend = backend
+    if redis_url is not None:
+        server.redis_url = redis_url
+
+    configure_logging(
+        level=server.log_level,
+        log_file=server.log_file,
+        log_format=server.log_format,
+    )
+
+    if not server.debug_backend:
+        for _logger in ("proxy_hopper.backend.memory", "proxy_hopper_redis.backend"):
+            logging.getLogger(_logger).setLevel(logging.WARNING)
+
+    try:
+        import uvloop
+        uvloop.run(_run_admin(cfg))
+    except ImportError:
+        asyncio.run(_run_admin(cfg))
+
+
+async def _run_admin(cfg) -> None:
+    from proxy_hopper.auth import make_runtime_secret
+    from proxy_hopper.pool_store import IPPoolStore
+    from proxy_hopper.repository import ProxyRepository
+
+    from .app import run_admin_server
+
+    log = logging.getLogger(__name__)
+    server = cfg.server
+    runtime_secret = make_runtime_secret(cfg.auth.jwt_secret)
+
+    if server.backend == "redis":
+        try:
+            from proxy_hopper_redis import RedisBackend
+        except ImportError:
+            log.error(
+                "Redis backend requested but proxy-hopper-redis is not installed. "
+                "Run: pip install proxy-hopper-redis"
+            )
+            return
+        backend = RedisBackend(server.redis_url)
+    else:
+        from proxy_hopper.backend.memory import MemoryBackend
+        backend = MemoryBackend()
+
+    await backend.start()
+
+    from proxy_hopper.events import EventBus
+
+    repo = ProxyRepository(backend)
+    event_bus = EventBus(backend)
+
+    for p in cfg.providers:
+        await repo.seed_provider(p)
+    for pool in cfg.pools:
+        await repo.seed_pool(pool)
+    for t in cfg.targets:
+        await repo.seed_target(t)
+
+    log.info(
+        "Admin server starting on %s:%d (backend=%s)",
+        server.admin_host, server.admin_port, server.backend,
+    )
+
+    try:
+        await run_admin_server(cfg, runtime_secret, repo=repo, event_bus=event_bus)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        log.info("Admin server shutting down…")
+    finally:
+        await backend.stop()

@@ -35,6 +35,7 @@ from .metrics import get_metrics
 
 if TYPE_CHECKING:
     from .config import AuthConfig, ProxyProvider, TargetConfig
+    from .events import EventBus
     from .pool_store import IPPoolStore
     from .repository import ProxyRepository
     from .target_manager import TargetManager
@@ -87,6 +88,7 @@ class ProxyServer:
         proxy_read_timeout: float | None = None,
         debug_quarantine: bool = False,
         quarantine_sweep_interval: float | None = None,
+        event_bus: "EventBus | None" = None,
     ) -> None:
         from .handlers import VALID_MODES
         self._managers = target_managers
@@ -99,6 +101,7 @@ class ProxyServer:
         self._proxy_read_timeout = proxy_read_timeout
         self._debug_quarantine = debug_quarantine
         self._quarantine_sweep_interval = quarantine_sweep_interval
+        self._event_bus = event_bus
         self._change_listener_task: asyncio.Task | None = None
         self._handlers: list[RequestHandler] = _build_handlers(
             target_managers,
@@ -277,6 +280,7 @@ class ProxyServer:
             providers=self._providers,
             proxy_read_timeout=self._proxy_read_timeout,
             debug_quarantine=self._debug_quarantine,
+            event_bus=self._event_bus,
             **kwargs,
         )
 

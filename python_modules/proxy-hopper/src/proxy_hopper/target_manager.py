@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from .config import ProxyProvider, TargetConfig
+from .events import EventBus, RequestEvent
 from .identity.identity import Identity
 from .logging_config import get_logger
 from .metrics import get_metrics
@@ -43,14 +44,18 @@ class TargetManager:
         proxy_read_timeout: float | None = None,
         debug_quarantine: bool = False,
         quarantine_sweep_interval: float | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self._config = config
         self._regex = config.compiled_regex()
+        self._event_bus = event_bus
 
         # Build auth map: address → aiohttp.BasicAuth (from provider credentials)
         provider_map = {p.name: p for p in (providers or [])}
         self._auth_map: dict[str, aiohttp.BasicAuth | None] = {}
+        self._addr_to_provider: dict[str, str | None] = {}
         for ip in config.resolved_ips:
+            self._addr_to_provider[ip.address] = ip.provider
             if ip.provider and ip.provider in provider_map:
                 p = provider_map[ip.provider]
                 if p.auth is not None:
@@ -164,6 +169,7 @@ class TargetManager:
     ) -> None:
         """Add a new proxy IP — create its identity and push UUID to the queue."""
         self._auth_map[address] = None  # updated when manager is rebuilt from full config
+        self._addr_to_provider[address] = provider or None
         await self._queue.add_address(address, provider=provider, region_tag=region_tag)
 
     async def retire_address(self, address: str) -> None:
@@ -275,6 +281,9 @@ class TargetManager:
         proxy_auth = self._auth_map.get(identity.address)
         start = time.monotonic()
         outcome = "unknown"
+        _evt_status: int | None = None
+        _evt_resp_headers: dict[str, str] = {}
+        _evt_error: str | None = None
 
         try:
             logger.trace(
@@ -300,6 +309,8 @@ class TargetManager:
             ) as resp:
                 body = await resp.read()
                 elapsed = time.monotonic() - start
+                _evt_status = resp.status
+                _evt_resp_headers = dict(resp.headers)
 
                 if resp.status in _RETRIABLE_STATUSES:
                     outcome = "rate_limited" if resp.status == 429 else "server_error"
@@ -310,6 +321,7 @@ class TargetManager:
 
         except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
             outcome = "connection_error"
+            _evt_error = f"{type(exc).__name__}: {exc}"
             logger.warning(
                 "TargetManager '%s': connection error via %s for %s %s: %s",
                 self._config.name, identity.address, request.method, request.url, exc,
@@ -321,6 +333,7 @@ class TargetManager:
 
         except Exception as exc:  # pragma: no cover
             outcome = "error"
+            _evt_error = f"{type(exc).__name__}: {exc}"
             logger.exception(
                 "TargetManager '%s': unexpected error via %s for %s %s",
                 self._config.name, identity.address, request.method, request.url,
@@ -331,7 +344,26 @@ class TargetManager:
             )
 
         finally:
-            get_metrics().record_request(self._config.name, outcome, time.monotonic() - start, tag=request.tag)
+            total_elapsed = time.monotonic() - start
+            get_metrics().record_request(self._config.name, outcome, total_elapsed, tag=request.tag)
+            if self._event_bus is not None:
+                asyncio.create_task(
+                    self._event_bus.publish(RequestEvent.create(
+                        target=self._config.name,
+                        method=request.method,
+                        url=request.url,
+                        proxy_ip=identity.address,
+                        provider=self._addr_to_provider.get(identity.address),
+                        status_code=_evt_status,
+                        success=outcome == "success",
+                        attempt=request.failure_count,
+                        elapsed_ms=total_elapsed * 1000,
+                        error=_evt_error,
+                        request_headers=forward_headers,
+                        response_headers=_evt_resp_headers,
+                    )),
+                    name=f"ph:event:{self._config.name}",
+                )
 
     # ------------------------------------------------------------------
     # Request execution — decomposed helpers

@@ -1,0 +1,99 @@
+# Admin server — separate Deployment from the proxy runners.
+#
+# The admin server exposes the GraphQL API and web UI on port 8081.
+# It reads the same ConfigMap / Secret as the runners so auth config,
+# jwtSecret, and target definitions are shared.
+#
+# Deploy one admin replica per cluster (or per namespace in multi-tenant
+# setups). The admin server is stateless — it reads pool state from Redis.
+# Do NOT put it behind the same LoadBalancer as the runners; expose it via
+# an internal ingress or restrict access with a NetworkPolicy.
+#
+# Apply:
+#   kubectl apply -f admin-deployment.yaml -n proxy-hopper
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy-hopper-admin
+  namespace: proxy-hopper
+  labels:
+    app.kubernetes.io/name: proxy-hopper
+    app.kubernetes.io/component: admin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: proxy-hopper
+      app.kubernetes.io/component: admin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: proxy-hopper
+        app.kubernetes.io/component: admin
+    spec:
+      containers:
+        - name: proxy-hopper-admin
+          # Use the same image as the runners — same tag, different command.
+          image: your-registry/proxy-hopper:latest
+          imagePullPolicy: Always
+          # "admin" subcommand — starts only the admin server, not the proxy.
+          args:
+            - admin
+            - --config
+            - /etc/proxy-hopper/config.yaml
+          ports:
+            - name: admin
+              containerPort: 8081
+              protocol: TCP
+          env:
+            - name: PROXY_HOPPER_ADMIN_HOST
+              value: "0.0.0.0"
+            - name: PROXY_HOPPER_ADMIN_PORT
+              value: "8081"
+            - name: PROXY_HOPPER_BACKEND
+              value: "redis"
+            - name: PROXY_HOPPER_REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-hopper-redis
+                  key: redis-url
+            - name: PROXY_HOPPER_CONFIG
+              value: /etc/proxy-hopper/config.yaml
+            - name: PROXY_HOPPER_LOG_LEVEL
+              value: "INFO"
+            - name: PROXY_HOPPER_LOG_FORMAT
+              value: "json"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/proxy-hopper
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 2
+
+      volumes:
+        - name: config
+          # Use existingSecret instead if config.yaml contains credentials.
+          # kubectl create secret generic proxy-hopper-config \
+          #   --from-file=config.yaml=./config-with-auth.yaml
+          configMap:
+            name: proxy-hopper-config

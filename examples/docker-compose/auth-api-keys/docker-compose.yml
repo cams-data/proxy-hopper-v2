@@ -1,4 +1,9 @@
 services:
+
+  # ---------------------------------------------------------------------------
+  # Proxy runner — handles actual proxy traffic.
+  # Runners have no admin API exposed; the admin service below owns that.
+  # ---------------------------------------------------------------------------
   proxy-hopper:
     build:
       context: .
@@ -7,8 +12,7 @@ services:
     restart: unless-stopped
     ports:
       - "${PROXY_PORT:-8080}:8080"     # proxy — point your HTTP clients here
-      - "${ADMIN_PORT:-8081}:8081"     # admin API — login, health, status, GraphQL
-      # - "${METRICS_PORT:-9090}:9090" # Prometheus /metrics  (only if metrics enabled)
+      # - "${METRICS_PORT:-9090}:9090" # Prometheus /metrics (uncomment + enable below)
     volumes:
       # config.yaml is mounted read-only — it contains credentials, so keep it
       # out of the image and manage it as a secret outside version control.
@@ -29,3 +33,41 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Admin server — GraphQL API + web UI on a separate process.
+  # Reads the same config.yaml as the runner (auth, targets, jwtSecret).
+  # Separate process = separate k8s Deployment in production, separate scaling,
+  # and runners have zero HTTP endpoints exposed by default.
+  #
+  # Access the web UI at http://localhost:8081
+  # GraphQL playground at http://localhost:8081/graphql
+  # ---------------------------------------------------------------------------
+  proxy-hopper-admin:
+    build:
+      context: .
+      args:
+        VERSION: "${PROXY_HOPPER_VERSION:-0.1.0}"
+    # "admin" subcommand replaces the default "run" CMD
+    command: ["admin", "--config", "/etc/proxy-hopper/config.yaml"]
+    restart: unless-stopped
+    ports:
+      - "${ADMIN_PORT:-8081}:8081"     # admin web UI + GraphQL API
+    volumes:
+      - ./config.yaml:/etc/proxy-hopper/config.yaml:ro
+    environment:
+      PROXY_HOPPER_ADMIN_HOST: "0.0.0.0"
+      PROXY_HOPPER_ADMIN_PORT: "8081"
+      PROXY_HOPPER_BACKEND: "memory"
+      PROXY_HOPPER_LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      PROXY_HOPPER_LOG_FORMAT: "${LOG_FORMAT:-text}"
+    depends_on:
+      proxy-hopper:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

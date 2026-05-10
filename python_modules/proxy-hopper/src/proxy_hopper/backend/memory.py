@@ -22,6 +22,8 @@ to the event loop to wait for an item to become available.
 from __future__ import annotations
 
 import asyncio
+import collections
+import itertools
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
@@ -41,6 +43,7 @@ class MemoryBackend(Backend):
         self._kv: dict[str, str] = {}
         self._pubsub: dict[str, list[asyncio.Queue[str]]] = {}
         self._init_keys: set[str] = set()
+        self._logs: dict[str, collections.deque] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -162,6 +165,25 @@ class MemoryBackend(Backend):
 
     async def sorted_set_members(self, key: str) -> list[str]:
         return list(self._sorted[key].keys()) if key in self._sorted else []
+
+    async def sorted_set_members_with_scores(self, key: str) -> list[tuple[str, float]]:
+        return list(self._sorted[key].items()) if key in self._sorted else []
+
+    # ------------------------------------------------------------------
+    # Rolling log
+    # ------------------------------------------------------------------
+
+    async def log_append(self, key: str, value: str, max_len: int) -> None:
+        if key not in self._logs or self._logs[key].maxlen != max_len:
+            existing = list(self._logs[key]) if key in self._logs else []
+            self._logs[key] = collections.deque(existing, maxlen=max_len)
+        self._logs[key].appendleft(value)
+
+    async def log_read(self, key: str, limit: int) -> list[str]:
+        dq = self._logs.get(key)
+        if not dq:
+            return []
+        return list(itertools.islice(dq, limit))
 
     # ------------------------------------------------------------------
     # Key-value store

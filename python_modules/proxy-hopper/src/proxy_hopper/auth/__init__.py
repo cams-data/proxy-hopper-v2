@@ -42,7 +42,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import bcrypt as _bcrypt
 import jwt as _jwt
@@ -288,60 +288,3 @@ def make_runtime_secret(configured_secret: str) -> str:
     return configured_secret if configured_secret else secrets.token_hex(32)
 
 
-# ---------------------------------------------------------------------------
-# FastAPI dependency factories
-# ---------------------------------------------------------------------------
-
-def make_fastapi_deps(auth_config: "AuthConfig", runtime_secret: str):
-    """Return ``(get_current_user, require)`` FastAPI dependency factories.
-
-    Called once at admin app startup.  *auth_config* and *runtime_secret* are
-    captured in closures so they do not need to be injected per-request.
-
-    Usage::
-
-        get_current_user, require = make_fastapi_deps(cfg.auth, secret)
-
-        @app.get("/protected")
-        async def protected(user = Depends(require(Permission.write))):
-            ...
-    """
-    from fastapi import Depends, HTTPException, status
-    from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-
-    bearer = HTTPBearer(auto_error=False)
-
-    async def get_current_user(
-        credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
-    ) -> AuthenticatedUser:
-        if not auth_config.enabled:
-            # Auth disabled — grant anonymous admin access so the API is usable
-            return AuthenticatedUser(sub="anonymous", role="admin", name="anonymous")
-        if credentials is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Authentication required",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        try:
-            return await authenticate_token(credentials.credentials, auth_config, runtime_secret)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=str(exc),
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-
-    def require(permission: Permission):
-        """Return a FastAPI dependency that enforces *permission*."""
-        async def dep(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
-            perms = get_permissions(user.role, auth_config)
-            if permission not in perms:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Permission '{permission.value}' required",
-                )
-            return user
-        return dep
-
-    return get_current_user, require

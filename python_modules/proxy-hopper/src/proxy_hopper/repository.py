@@ -583,6 +583,58 @@ class ProxyRepository:
                 pool.name, target.name,
             )
 
+    # ------------------------------------------------------------------
+    # Runtime IP state — reads from pool backend keys directly
+    # ------------------------------------------------------------------
+
+    async def get_target_ip_runtime_states(self, target_name: str) -> list[dict]:
+        """Return runtime state for every resolved IP on *target_name*.
+
+        Each entry contains: address, host, port, provider, failures,
+        quarantined, release_at, user_agent, request_count, cookies_enabled.
+        Returns an empty list if the target does not exist.
+        """
+        from .pool_store import IPPoolStore
+
+        config = await self.get_target(target_name)
+        if config is None:
+            return []
+
+        store = IPPoolStore(self._backend)
+        quarantine_scores = await store.quarantine_list_with_scores(target_name)
+        quarantined_map: dict[str, float] = dict(quarantine_scores)
+
+        results = []
+        for ip in config.resolved_ips:
+            address = f"{ip.host}:{ip.port}"
+            failures = await store.get_failures(target_name, address)
+            quarantined = address in quarantined_map
+            release_at = quarantined_map.get(address)
+
+            uuid = await store.ip_get(target_name, address)
+            identity_data: dict | None = None
+            if uuid:
+                identity_data = await store.identity_read(target_name, uuid)
+
+            id_headers: dict = (identity_data or {}).get("headers", {})
+            id_cookies: dict = (identity_data or {}).get("cookies", {})
+            results.append({
+                "address": address,
+                "host": ip.host,
+                "port": ip.port,
+                "provider": ip.provider,
+                "failures": failures,
+                "quarantined": quarantined,
+                "release_at": release_at,
+                "user_agent": id_headers.get("user-agent"),
+                "request_count": (identity_data or {}).get("request_count", 0),
+                "cookies_enabled": (identity_data or {}).get("cookies_enabled", False),
+                "profile_headers": [{"name": k, "value": v} for k, v in id_headers.items()],
+                "cookies": [{"name": k, "value": v} for k, v in id_cookies.items()],
+                "identity_enabled": config.identity.enabled,
+            })
+        return results
+
     async def _publish(self, event: ChangeEvent) -> None:
         payload = json.dumps({
             "entity": event.entity,

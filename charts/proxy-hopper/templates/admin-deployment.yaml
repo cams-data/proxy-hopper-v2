@@ -1,0 +1,112 @@
+{{- if .Values.admin.enabled -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "proxy-hopper.fullname" . }}-admin
+  labels:
+    {{- include "proxy-hopper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  replicas: {{ .Values.admin.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "proxy-hopper.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: admin
+  template:
+    metadata:
+      annotations:
+        {{- if and (not .Values.config.existingConfigMap) (not .Values.config.existingSecret) }}
+        checksum/config: {{ .Values.config.inline | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "proxy-hopper.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: admin
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "proxy-hopper.serviceAccountName" . }}
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: proxy-hopper-admin
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          image: {{ include "proxy-hopper.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # "admin" subcommand — starts only the admin server, not the proxy.
+          args:
+            - admin
+            - --config
+            - /etc/proxy-hopper/config.yaml
+          env:
+            - name: PROXY_HOPPER_ADMIN_HOST
+              value: "0.0.0.0"
+            - name: PROXY_HOPPER_ADMIN_PORT
+              value: {{ .Values.admin.port | quote }}
+            {{- if eq .Values.backend.type "redis" }}
+            - name: PROXY_HOPPER_BACKEND
+              value: redis
+            - name: PROXY_HOPPER_REDIS_URL
+              value: {{ include "proxy-hopper.redisUrl" . }}
+            {{- end }}
+          ports:
+            - name: admin
+              containerPort: {{ .Values.admin.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: admin
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 2
+          {{- with .Values.admin.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/proxy-hopper
+              readOnly: true
+      volumes:
+        - name: config
+          {{- if eq (include "proxy-hopper.configIsSecret" .) "true" }}
+          secret:
+            secretName: {{ include "proxy-hopper.configName" . }}
+          {{- else }}
+          configMap:
+            name: {{ include "proxy-hopper.configName" . }}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

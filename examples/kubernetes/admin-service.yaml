@@ -1,0 +1,32 @@
+# Admin server Service — ClusterIP only (internal access).
+#
+# The admin API + web UI should NOT be exposed via a public LoadBalancer.
+# Access it via:
+#   kubectl port-forward svc/proxy-hopper-admin 8081:8081 -n proxy-hopper
+#   open http://localhost:8081
+#
+# To expose it inside the cluster to other services (e.g. an internal ingress),
+# create an Ingress that routes to this Service and restrict it with a
+# NetworkPolicy or ingress auth middleware.
+#
+# Apply:
+#   kubectl apply -f admin-service.yaml -n proxy-hopper
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy-hopper-admin
+  namespace: proxy-hopper
+  labels:
+    app.kubernetes.io/name: proxy-hopper
+    app.kubernetes.io/component: admin
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: proxy-hopper
+    app.kubernetes.io/component: admin
+  ports:
+    - name: admin
+      port: 8081
+      targetPort: admin
+      protocol: TCP

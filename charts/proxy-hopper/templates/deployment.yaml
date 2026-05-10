@@ -11,6 +11,7 @@ spec:
   selector:
     matchLabels:
       {{- include "proxy-hopper.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: proxy
   template:
     metadata:
       annotations:
@@ -23,6 +24,7 @@ spec:
         {{- end }}
       labels:
         {{- include "proxy-hopper.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: proxy
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -59,13 +61,8 @@ spec:
             - --redis-url
             - {{ include "proxy-hopper.redisUrl" . }}
             {{- end }}
-          {{- if .Values.admin.enabled }}
-          env:
-            - name: PROXY_HOPPER_ADMIN
-              value: "true"
-            - name: PROXY_HOPPER_ADMIN_PORT
-              value: {{ .Values.admin.port | quote }}
-          {{- end }}
+          # Runners expose only the proxy port (and optionally metrics).
+          # The admin server is a separate Deployment — see admin-deployment.yaml / admin.enabled.
           ports:
             - name: http
               containerPort: 8080
@@ -73,11 +70,6 @@ spec:
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
-              protocol: TCP
-            {{- end }}
-            {{- if .Values.admin.enabled }}
-            - name: admin
-              containerPort: {{ .Values.admin.port }}
               protocol: TCP
             {{- end }}
           livenessProbe:

@@ -30,16 +30,12 @@ Redis backend is enabled.
 {{- end }}
 {{- if .Values.admin.enabled }}
 
-Admin API is enabled on port {{ .Values.admin.port }}.
-{{- if eq .Values.service.type "LoadBalancer" }}
-  export ADMIN_IP=$(kubectl get svc {{ include "proxy-hopper.fullname" . }} -n {{ .Release.Namespace }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-  echo "http://$ADMIN_IP:{{ .Values.admin.port }}"
-{{- else }}
-  kubectl port-forward svc/{{ include "proxy-hopper.fullname" . }} {{ .Values.admin.port }}:{{ .Values.admin.port }} -n {{ .Release.Namespace }}
-  echo "http://localhost:{{ .Values.admin.port }}"
-{{- end }}
+Admin server is running as a separate Deployment ({{ include "proxy-hopper.fullname" . }}-admin).
+Access it via port-forward (it is ClusterIP-only by default):
 
-  Docs:    http://localhost:{{ .Values.admin.port }}/docs
+  kubectl port-forward svc/{{ include "proxy-hopper.fullname" . }}-admin {{ .Values.admin.port }}:{{ .Values.admin.port }} -n {{ .Release.Namespace }}
+
+  Web UI:  http://localhost:{{ .Values.admin.port }}
   Health:  http://localhost:{{ .Values.admin.port }}/health
   Status:  http://localhost:{{ .Values.admin.port }}/api/v1/status  (requires auth)
   GraphQL: http://localhost:{{ .Values.admin.port }}/graphql         (playground + API)
@@ -58,5 +54,5 @@ Admin API is enabled on port {{ .Values.admin.port }}.
   Use config.existingSecret to keep credentials out of ConfigMaps.
 {{- else }}
 
-Admin API is disabled (set admin.enabled=true to enable).
+Admin server is disabled (set admin.enabled=true to deploy a separate admin Deployment).
 {{- end }}

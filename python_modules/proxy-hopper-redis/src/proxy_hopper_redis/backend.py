@@ -183,6 +183,29 @@ class RedisBackend(Backend):
     async def sorted_set_members(self, key: str) -> list[str]:
         return await self._redis.zrange(key, 0, -1)
 
+    async def sorted_set_members_with_scores(self, key: str) -> list[tuple[str, float]]:
+        """ZRANGE key 0 -1 WITHSCORES — returns (member, score) pairs."""
+        raw = await self._redis.zrange(key, 0, -1, withscores=True)
+        return [(member, float(score)) for member, score in raw]
+
+    # ------------------------------------------------------------------
+    # Rolling log (Redis List — newest first, bounded by LTRIM)
+    # ------------------------------------------------------------------
+
+    async def log_append(self, key: str, value: str, max_len: int) -> None:
+        """LPUSH + LTRIM — prepend value, keep at most max_len entries."""
+        async with self._redis.pipeline(transaction=False) as pipe:
+            pipe.lpush(key, value)
+            pipe.ltrim(key, 0, max_len - 1)
+            await pipe.execute()
+        logger.trace(  # type: ignore[attr-defined]
+            "RedisBackend: log_append '%s' (max=%d)", key, max_len
+        )
+
+    async def log_read(self, key: str, limit: int) -> list[str]:
+        """LRANGE key 0 limit-1 — newest-first slice."""
+        return await self._redis.lrange(key, 0, limit - 1)
+
     # ------------------------------------------------------------------
     # Compound read — single pipeline round trip
     # ------------------------------------------------------------------

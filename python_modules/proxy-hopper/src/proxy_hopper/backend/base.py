@@ -146,6 +146,10 @@ class Backend(ABC):
     async def sorted_set_members(self, key: str) -> list[str]:
         """Return all current members of the sorted set (for status/metrics)."""
 
+    @abstractmethod
+    async def sorted_set_members_with_scores(self, key: str) -> list[tuple[str, float]]:
+        """Return all (member, score) pairs in the sorted set."""
+
     # ------------------------------------------------------------------
     # Compound read — queue size + sorted set members in one shot
     # ------------------------------------------------------------------
@@ -179,6 +183,22 @@ class Backend(ABC):
     @abstractmethod
     async def kv_list(self, prefix: str) -> list[tuple[str, str]]:
         """Return all (key, value) pairs whose key starts with *prefix*."""
+
+    # ------------------------------------------------------------------
+    # Append-only rolling log — for event history
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    async def log_append(self, key: str, value: str, max_len: int) -> None:
+        """Prepend *value* to the log at *key* and trim to *max_len* entries.
+
+        Newest entry is always at index 0.  Implemented as LPUSH + LTRIM in
+        Redis; appendleft on a bounded deque in MemoryBackend.
+        """
+
+    @abstractmethod
+    async def log_read(self, key: str, limit: int) -> list[str]:
+        """Return the *limit* most-recent log entries, newest first."""
 
     # ------------------------------------------------------------------
     # Pub/sub — lightweight change notification

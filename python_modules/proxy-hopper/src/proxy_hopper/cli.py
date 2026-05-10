@@ -11,13 +11,13 @@ block or via environment variables.
 
 Usage examples
 --------------
-# Minimal — all settings from env vars or YAML server: block
+# Start the proxy server
 proxy-hopper run --config config.yaml
 
-# Override specific settings at the command line
-proxy-hopper run --config config.yaml --port 9000 --log-level DEBUG
+# Start the admin server (GraphQL API + web UI) — separate deployment
+proxy-hopper admin --config config.yaml
 
-# All server settings via environment variables (Docker / Kubernetes)
+# All proxy settings via environment variables (Docker / Kubernetes)
 PROXY_HOPPER_CONFIG=/etc/proxy-hopper/config.yaml \\
 PROXY_HOPPER_PORT=8080 \\
 PROXY_HOPPER_LOG_LEVEL=INFO \\
@@ -53,6 +53,14 @@ _CTX: dict = {}
 @click.group()
 def main() -> None:
     """Proxy Hopper — rotating proxy server."""
+
+
+# Load the admin command from proxy-hopper-webserver if installed.
+try:
+    from proxy_hopper_webserver.cli import admin as _admin_cmd
+    main.add_command(_admin_cmd, name="admin")
+except ImportError:
+    pass
 
 
 @main.command("hash-password")
@@ -249,8 +257,11 @@ async def _run(targets, providers, server, cfg=None) -> None:
     from .pool_store import IPPoolStore
     from .repository import ProxyRepository
 
+    from .events import EventBus
+
     pool_store = IPPoolStore(backend)
     repo = ProxyRepository(backend)
+    event_bus = EventBus(backend)
 
     # Seed providers, pools, and targets from YAML (write-if-not-exists).
     # Repository is the source of truth; YAML is only applied on first run.
@@ -272,6 +283,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
             providers=providers,
             proxy_read_timeout=server.proxy_read_timeout,
             debug_quarantine=server.debug_quarantine,
+            event_bus=event_bus,
         )
         for t in all_targets
     ]
@@ -286,6 +298,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
         providers=providers,
         proxy_read_timeout=server.proxy_read_timeout,
         debug_quarantine=server.debug_quarantine,
+        event_bus=event_bus,
     )
 
     prober = None
@@ -301,15 +314,6 @@ async def _run(targets, providers, server, cfg=None) -> None:
         )
         await prober.start()
 
-    # Start admin API if enabled
-    admin_task = None
-    if server.admin:
-        from .auth.admin import run_admin_server
-        admin_task = asyncio.create_task(
-            run_admin_server(cfg, runtime_secret, repo=repo),
-            name="ph:admin",
-        )
-
     try:
         await proxy.start()
         log.info(
@@ -322,9 +326,8 @@ async def _run(targets, providers, server, cfg=None) -> None:
         log.info("Shutting down…")
     finally:
         await proxy.stop()
-        if admin_task is not None:
-            admin_task.cancel()
-            await asyncio.gather(admin_task, return_exceptions=True)
         if prober:
             await prober.stop()
         await backend.stop()
+
+

@@ -81,10 +81,25 @@ jobs:
           git-cliff --config cliff.toml --unreleased --strip header > release-notes.md
           cat release-notes.md
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: admin-ui/package-lock.json
+
+      - name: Build admin UI
+        run: |
+          cd admin-ui
+          npm ci
+          npm run build
+          cp -r dist ../python_modules/proxy-hopper-webserver/src/proxy_hopper_webserver/ui/
+
       - name: Build wheels and sdists
         run: |
           uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper
           uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper-redis
+          uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper-webserver
 
       - name: Create GitHub pre-release
         env:

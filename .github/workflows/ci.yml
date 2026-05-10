@@ -59,6 +59,12 @@ jobs:
           uv sync --python ${{ matrix.python-version }} --all-extras
           uv run pytest --tb=short -q
 
+      - name: Run proxy-hopper-webserver tests
+        working-directory: python_modules/proxy-hopper-webserver
+        run: |
+          uv sync --python ${{ matrix.python-version }} --all-extras
+          uv run pytest --tb=short -q
+
       - name: Run contract tests (all backends)
         working-directory: python_modules/tests
         env:
