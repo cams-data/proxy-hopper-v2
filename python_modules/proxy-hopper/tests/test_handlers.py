@@ -384,3 +384,63 @@ class TestRetriesHeader:
         server._server.close()
         await server._server.wait_closed()
         assert submitted[0].num_retries == 1  # target default
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — X-Proxy-Hopper-Force-IP header
+# ---------------------------------------------------------------------------
+
+class TestForceIPHeader:
+    async def _submit_with_headers(self, extra_headers: bytes) -> list[PendingRequest]:
+        mgr = make_manager()
+        submitted: list[PendingRequest] = []
+
+        async def fake_submit(req: PendingRequest) -> None:
+            submitted.append(req)
+            req.future.set_result(ProxyResponse(200, {}, b"ok"))
+
+        server = ProxyServer([mgr], host="127.0.0.1", port=0)
+        server._server = await asyncio.start_server(
+            server._handle_client, host="127.0.0.1", port=0
+        )
+        port = server._server.sockets[0].getsockname()[1]
+
+        with patch.object(mgr, "submit", side_effect=fake_submit):
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(
+                b"GET /api HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Proxy-Hopper-Target: https://example.com\r\n"
+                + extra_headers +
+                b"\r\n"
+            )
+            await writer.drain()
+            await asyncio.wait_for(reader.read(4096), timeout=2.0)
+            writer.close()
+
+        server._server.close()
+        await server._server.wait_closed()
+        return submitted
+
+    async def test_force_ip_parsed_onto_pending_request(self):
+        submitted = await self._submit_with_headers(
+            b"X-Proxy-Hopper-Force-IP: 1.2.3.4:8080\r\n"
+        )
+        assert len(submitted) == 1
+        assert submitted[0].force_ip == "1.2.3.4:8080"
+
+    async def test_force_ip_stripped_from_forwarded_headers(self):
+        submitted = await self._submit_with_headers(
+            b"X-Proxy-Hopper-Force-IP: 1.2.3.4:8080\r\n"
+        )
+        assert "x-proxy-hopper-force-ip" not in submitted[0].headers
+
+    async def test_force_ip_not_treated_as_header_override(self):
+        submitted = await self._submit_with_headers(
+            b"X-Proxy-Hopper-Force-IP: 1.2.3.4:8080\r\n"
+        )
+        assert "force-ip" not in submitted[0].header_overrides
+
+    async def test_no_force_ip_header_leaves_force_ip_empty(self):
+        submitted = await self._submit_with_headers(b"")
+        assert submitted[0].force_ip == ""

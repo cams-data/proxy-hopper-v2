@@ -54,6 +54,7 @@ class PendingRequest:
     tag: str = ""                  # X-Proxy-Hopper-Tag value (propagated to metrics)
     failure_count: int = 0
     header_overrides: dict[str, str] = field(default_factory=dict)  # X-Proxy-Hopper-{Header} values
+    force_ip: str = ""             # X-Proxy-Hopper-Force-IP: host:port — bypass pool selection
 
     @property
     def deadline(self) -> float:
@@ -81,6 +82,7 @@ class PendingRequest:
             tag=self.tag,
             failure_count=self.failure_count + 1,
             header_overrides=self.header_overrides,
+            force_ip=self.force_ip,
         )
 
 

@@ -53,6 +53,10 @@ logger = get_logger(__name__)
 _QUARANTINE_SWEEP_INTERVAL = 5.0  # seconds between quarantine expiry checks
 
 
+class PinnedAcquireError(Exception):
+    """Raised by ``acquire_pinned`` when the requested IP is unavailable."""
+
+
 class IdentityQueue:
     """Manages the IP rotation policy for a single target via backend-stored identities."""
 
@@ -300,6 +304,69 @@ class IdentityQueue:
             "available_ips": size,
             "quarantined_ips": quarantined,
         }
+
+    async def acquire_pinned(self, address: str) -> tuple[str, Identity]:
+        """Return (uuid, identity) for a specific address without removing it from the queue.
+
+        Unlike ``acquire``, this does NOT pop the UUID — the IP remains available
+        for normal pool rotation concurrently.  Used exclusively for force-IP requests
+        (``X-ProxyHopper-Force-IP``) where the caller wants to route through a
+        specific proxy IP regardless of pool order.
+
+        Raises ``PinnedAcquireError`` if the address is unknown, retired, or quarantined.
+        """
+        uuid = await self._backend.ip_get(self._config.name, address)
+        if uuid is None:
+            raise PinnedAcquireError(f"address {address!r} is not registered in target pool")
+
+        data = await self._backend.identity_read(self._config.name, uuid)
+        if data is None:
+            raise PinnedAcquireError(f"address {address!r} has no identity data (pool inconsistency)")
+
+        if await self._backend.retire_check(self._config.name, address):
+            raise PinnedAcquireError(f"address {address!r} is retired")
+
+        quarantined = await self._backend.quarantine_list(self._config.name)
+        if address in quarantined:
+            raise PinnedAcquireError(f"address {address!r} is quarantined")
+
+        if self._debug:
+            logger.debug(
+                "IdentityQueue '%s': pinned acquire for %s (uuid=%s)",
+                self._config.name, address, uuid,
+            )
+        return uuid, Identity.from_dict(data)
+
+    async def record_pinned_success(self, uuid: str, identity: Identity) -> None:
+        """Persist updated identity after a successful pinned request (no queue interaction)."""
+        await self._backend.identity_write(self._config.name, uuid, identity.to_dict())
+
+    async def record_pinned_failure(self, uuid: str, identity: Identity) -> None:
+        """Increment failure counter for *address* after a failed pinned request.
+
+        Quarantines the IP if the threshold is reached.  The UUID is deleted
+        from KV on quarantine (consistent with normal quarantine behaviour);
+        the queue entry will be discarded when it surfaces during normal acquire.
+        """
+        threshold = self._config.ip_failures_until_quarantine
+        failures = await self._backend.increment_failures(self._config.name, identity.address)
+        provider, region = self._ip_meta.get(identity.address, ("", ""))
+        get_metrics().set_ip_failure_count(
+            self._config.name, identity.address, failures,
+            provider=provider, region=region,
+        )
+        if failures >= threshold:
+            release_at = time.time() + self._config.quarantine_time
+            await self._backend.quarantine_add(self._config.name, identity.address, release_at)
+            get_metrics().record_quarantine_event(
+                self._config.name, identity.address,
+                provider=provider, region=region,
+            )
+            logger.warning(
+                "IdentityQueue '%s': %s quarantined (force-IP path) after %d consecutive failures",
+                self._config.name, identity.address, failures,
+            )
+            await self._backend.identity_delete(self._config.name, uuid)
 
     # ------------------------------------------------------------------
     # Internal helpers

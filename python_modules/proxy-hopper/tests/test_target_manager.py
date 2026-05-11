@@ -296,3 +296,130 @@ class TestPendingRequest:
         assert req.can_retry()
         assert req.clone_for_retry().can_retry()
         assert not req.clone_for_retry().clone_for_retry().can_retry()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — X-Proxy-Hopper-Force-IP (pinned IP execution)
+# ---------------------------------------------------------------------------
+
+class TestAcquirePinned:
+    async def test_returns_identity_for_valid_address(self, manager_and_backend):
+        mgr, _ = manager_and_backend
+        from proxy_hopper.pool import PinnedAcquireError
+        uuid, identity = await mgr._queue.acquire_pinned("1.2.3.4:8080")
+        assert identity.address == "1.2.3.4:8080"
+
+    async def test_raises_for_unknown_address(self, manager_and_backend):
+        mgr, _ = manager_and_backend
+        from proxy_hopper.pool import PinnedAcquireError
+        with pytest.raises(PinnedAcquireError, match="not registered"):
+            await mgr._queue.acquire_pinned("9.9.9.9:9999")
+
+    async def test_raises_for_retired_address(self, manager_and_backend):
+        mgr, pool_store = manager_and_backend
+        from proxy_hopper.pool import PinnedAcquireError
+        await pool_store.retire_add("test", "1.2.3.4:8080")
+        with pytest.raises(PinnedAcquireError, match="retired"):
+            await mgr._queue.acquire_pinned("1.2.3.4:8080")
+
+    async def test_raises_for_quarantined_address(self, manager_and_backend):
+        mgr, pool_store = manager_and_backend
+        from proxy_hopper.pool import PinnedAcquireError
+        import time as _time
+        await pool_store.quarantine_add("test", "1.2.3.4:8080", _time.time() + 60)
+        with pytest.raises(PinnedAcquireError, match="quarantined"):
+            await mgr._queue.acquire_pinned("1.2.3.4:8080")
+
+    async def test_does_not_remove_ip_from_pool(self, manager_and_backend):
+        mgr, pool_store = manager_and_backend
+        before = await pool_store.pool_size("test")
+        await mgr._queue.acquire_pinned("1.2.3.4:8080")
+        after = await pool_store.pool_size("test")
+        assert after == before  # UUID stays in queue
+
+
+class TestExecutePinnedRequest:
+    async def test_success_resolves_future_and_updates_identity(self, manager_and_backend):
+        mgr, _ = manager_and_backend
+        uuid, identity = await mgr._queue.acquire_pinned("1.2.3.4:8080")
+        record_success = AsyncMock()
+        with patch.object(mgr._queue, "record_pinned_success", record_success):
+            req = make_request()
+            from aioresponses import aioresponses
+            with aioresponses() as m:
+                m.get("http://example.com/", status=200, body=b"ok")
+                await mgr._execute_pinned_request(uuid, identity, req)
+        assert req.future.result().status == 200
+        record_success.assert_awaited_once()
+
+    async def test_retriable_status_calls_pinned_failure(self, manager_and_backend):
+        mgr, _ = manager_and_backend
+        uuid, identity = await mgr._queue.acquire_pinned("1.2.3.4:8080")
+        record_failure = AsyncMock()
+        with patch.object(mgr._queue, "record_pinned_failure", record_failure):
+            req = make_request(num_retries=2)
+            from aioresponses import aioresponses
+            with aioresponses() as m:
+                m.get("http://example.com/", status=429)
+                await mgr._execute_pinned_request(uuid, identity, req)
+        assert req.future.result().status == 429
+        record_failure.assert_awaited_once()
+
+    async def test_connection_error_resolves_502(self, manager_and_backend):
+        mgr, _ = manager_and_backend
+        uuid, identity = await mgr._queue.acquire_pinned("1.2.3.4:8080")
+        record_failure = AsyncMock()
+        with patch.object(mgr._queue, "record_pinned_failure", record_failure):
+            req = make_request()
+            import aiohttp as _aiohttp
+            from aioresponses import aioresponses
+            with aioresponses() as m:
+                m.get("http://example.com/", exception=_aiohttp.ClientConnectionError("fail"))
+                await mgr._execute_pinned_request(uuid, identity, req)
+        assert req.future.result().status == 502
+        record_failure.assert_awaited_once()
+
+
+class TestForcedIPDispatch:
+    async def test_unknown_force_ip_returns_502(self):
+        cfg = make_config()
+        raw_backend, pool_store = await make_pool_store()
+        mgr = TargetManager(cfg, pool_store)
+        await mgr.start()
+
+        req = PendingRequest(
+            method="GET", url="http://example.com/", headers={}, body=None,
+            future=asyncio.get_event_loop().create_future(),
+            arrival_time=time.monotonic(),
+            max_queue_wait=2.0, num_retries=0,
+            force_ip="9.9.9.9:9999",
+        )
+        await mgr.submit(req)
+        result = await asyncio.wait_for(req.future, timeout=2.0)
+        assert result.status == 502
+        assert "not registered" in result.body.decode()
+
+        await mgr.stop()
+        await raw_backend.stop()
+
+    async def test_valid_force_ip_calls_execute_pinned(self, manager_and_backend):
+        mgr, _ = manager_and_backend
+        pinned_results: list = []
+
+        async def fake_pinned(uuid, identity, request):
+            pinned_results.append(identity.address)
+            request.future.set_result(ProxyResponse(200, {}, b"pinned"))
+
+        with patch.object(mgr, "_execute_pinned_request", side_effect=fake_pinned):
+            req = PendingRequest(
+                method="GET", url="http://example.com/", headers={}, body=None,
+                future=asyncio.get_event_loop().create_future(),
+                arrival_time=time.monotonic(),
+                max_queue_wait=2.0, num_retries=0,
+                force_ip="1.2.3.4:8080",
+            )
+            await mgr.submit(req)
+            result = await asyncio.wait_for(req.future, timeout=2.0)
+
+        assert result.status == 200
+        assert pinned_results == ["1.2.3.4:8080"]

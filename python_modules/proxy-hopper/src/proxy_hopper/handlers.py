@@ -72,14 +72,15 @@ _HOP_BY_HOP = HOP_BY_HOP_HEADERS
 # Per-request control headers (all stripped before forwarding upstream)
 # ---------------------------------------------------------------------------
 
-_TARGET_HEADER  = "x-proxy-hopper-target"
-_TAG_HEADER     = "x-proxy-hopper-tag"
-_RETRIES_HEADER = "x-proxy-hopper-retries"
-_AUTH_HEADER    = "x-proxy-hopper-auth"
+_TARGET_HEADER   = "x-proxy-hopper-target"
+_TAG_HEADER      = "x-proxy-hopper-tag"
+_RETRIES_HEADER  = "x-proxy-hopper-retries"
+_AUTH_HEADER     = "x-proxy-hopper-auth"
+_FORCE_IP_HEADER = "x-proxy-hopper-force-ip"
 
 # Known control headers — never treated as header overrides.
 _CONTROL_HEADERS: frozenset[str] = frozenset({
-    _TARGET_HEADER, _TAG_HEADER, _RETRIES_HEADER, _AUTH_HEADER,
+    _TARGET_HEADER, _TAG_HEADER, _RETRIES_HEADER, _AUTH_HEADER, _FORCE_IP_HEADER,
 })
 
 # Any X-Proxy-Hopper-{Header} that is NOT a known control key is treated as
@@ -167,6 +168,7 @@ async def _submit_and_respond(
     tag: str = "",
     num_retries_override: int | None = None,
     header_overrides: dict[str, str] | None = None,
+    force_ip: str = "",
 ) -> None:
     """Read body → find manager → submit → await response → write reply."""
     # --- Read body ---
@@ -212,6 +214,7 @@ async def _submit_and_respond(
         num_retries=num_retries,
         tag=tag,
         header_overrides=dict(header_overrides) if header_overrides else {},
+        force_ip=force_ip,
     )
     await manager.submit(pending)
 
@@ -413,6 +416,7 @@ class ForwardingHandler(RequestHandler):
         real_url = proxy_target + target   # "https://api.example.com" + "/v1/data?foo=bar"
 
         tag = headers.get(_TAG_HEADER, "")
+        force_ip = headers.get(_FORCE_IP_HEADER, "")
 
         num_retries_override: int | None = None
         raw_retries = headers.get(_RETRIES_HEADER)
@@ -452,6 +456,7 @@ class ForwardingHandler(RequestHandler):
             tag=tag,
             num_retries_override=num_retries_override,
             header_overrides=header_overrides,
+            force_ip=force_ip,
         )
 
 
