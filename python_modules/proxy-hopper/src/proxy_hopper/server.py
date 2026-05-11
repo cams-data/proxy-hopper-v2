@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from .pool_store import IPPoolStore
     from .repository import ProxyRepository
     from .target_manager import TargetManager
+    from .token_manager import TokenManager
 
 logger = get_logger(__name__)
 
@@ -89,6 +90,7 @@ class ProxyServer:
         debug_quarantine: bool = False,
         quarantine_sweep_interval: float | None = None,
         event_bus: "EventBus | None" = None,
+        token_manager: "TokenManager | None" = None,
     ) -> None:
         from .handlers import VALID_MODES
         self._managers = target_managers
@@ -103,6 +105,7 @@ class ProxyServer:
         self._quarantine_sweep_interval = quarantine_sweep_interval
         self._event_bus = event_bus
         self._change_listener_task: asyncio.Task | None = None
+        self._token_manager = token_manager
         self._handlers: list[RequestHandler] = _build_handlers(
             target_managers,
             enabled_modes if enabled_modes is not None else set(VALID_MODES),
@@ -117,6 +120,10 @@ class ProxyServer:
     async def start(self) -> None:
         for mgr in self._managers:
             await mgr.start()
+        if self._token_manager is not None:
+            await self._token_manager.start(
+                [mgr._config for mgr in self._managers]
+            )
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self._host,
@@ -142,6 +149,8 @@ class ProxyServer:
             await self._server.wait_closed()
         for mgr in self._managers:
             await mgr.stop()
+        if self._token_manager is not None:
+            await self._token_manager.stop()
 
     async def serve_forever(self) -> None:
         async with self._server:
@@ -281,6 +290,7 @@ class ProxyServer:
             proxy_read_timeout=self._proxy_read_timeout,
             debug_quarantine=self._debug_quarantine,
             event_bus=self._event_bus,
+            token_manager=self._token_manager,
             **kwargs,
         )
 

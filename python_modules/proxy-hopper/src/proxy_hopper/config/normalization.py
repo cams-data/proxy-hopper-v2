@@ -31,6 +31,7 @@ _TARGET_CAMEL_TO_SNAKE: dict[str, str] = {
     "quarantineTime": "quarantine_time",
     "defaultProxyPort": "default_proxy_port",
     "spoofUserAgent": "spoof_user_agent",
+    "authManaged": "auth_managed",
     "mutable": "mutable",
     "static": "static",
 }
@@ -70,6 +71,15 @@ _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
     "probeUrls": "probe_urls",
     "adminPort": "admin_port",
     "adminHost": "admin_host",
+    "authServer": "auth_server",
+}
+
+_AUTH_SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
+    "timeoutSeconds": "timeout_seconds",
+    "refreshThresholdSeconds": "refresh_threshold_seconds",
+    "retryIntervalSeconds": "retry_interval_seconds",
+    "maxRetries": "max_retries",
+    "exposeProxyUrl": "expose_proxy_url",
 }
 
 _AUTH_CAMEL_TO_SNAKE: dict[str, str] = {
@@ -146,12 +156,19 @@ def _normalise_provider(raw: dict) -> dict:
 
 
 def _normalise_server(raw: dict) -> dict:
+    from .models import AuthServerConfig
     out: dict = {}
     for key, value in raw.items():
         out[_SERVER_CAMEL_TO_SNAKE.get(key, key)] = value
     for field in ("probe_interval", "probe_timeout"):
         if field in out and isinstance(out[field], str):
             out[field] = _parse_duration(out[field])
+    if "auth_server" in out and isinstance(out["auth_server"], dict):
+        normalised_auth = {
+            _AUTH_SERVER_CAMEL_TO_SNAKE.get(k, k): v
+            for k, v in out["auth_server"].items()
+        }
+        out["auth_server"] = AuthServerConfig(**normalised_auth)
     return out
 
 

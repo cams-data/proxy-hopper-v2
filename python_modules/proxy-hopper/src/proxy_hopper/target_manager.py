@@ -28,6 +28,7 @@ from .pool import IdentityQueue, PinnedAcquireError
 
 if TYPE_CHECKING:
     from .pool_store import IPPoolStore
+    from .token_manager import TokenManager
 
 logger = get_logger(__name__)
 
@@ -45,6 +46,7 @@ class TargetManager:
         debug_quarantine: bool = False,
         quarantine_sweep_interval: float | None = None,
         event_bus: EventBus | None = None,
+        token_manager: "TokenManager | None" = None,
     ) -> None:
         self._config = config
         self._regex = config.compiled_regex()
@@ -78,6 +80,7 @@ class TargetManager:
         self._running = False
         self._session: aiohttp.ClientSession | None = None
         self._proxy_read_timeout = proxy_read_timeout
+        self._token_manager = token_manager
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -302,7 +305,34 @@ class TargetManager:
     async def _execute_request(
         self, uuid: str, identity: Identity, request: PendingRequest
     ) -> None:
+        # Inject auth headers for auth-managed targets before forwarding.
+        if self._token_manager is not None and self._config.auth_managed:
+            from .token_manager import TokenBrokenError, TokenPendingError
+            try:
+                auth_headers = await self._token_manager.ensure_token(
+                    self._config.name, identity
+                )
+            except (TokenBrokenError, TokenPendingError) as exc:
+                logger.warning(
+                    "TargetManager '%s': auth unavailable for %s — returning 502: %s",
+                    self._config.name, identity.address, exc,
+                )
+                # Return the UUID to the pool without recording a proxy failure.
+                asyncio.create_task(
+                    self._queue._return_after_cooldown(uuid, 0.0),
+                    name=f"ph:pool:auth-skip:{self._config.name}",
+                )
+                if not request.future.done():
+                    request.future.set_result(
+                        self._error_response(502, "auth_unavailable", request, str(exc))
+                    )
+                return
+        else:
+            auth_headers = {}
+
         forward_headers = self._build_request_headers(request, identity)
+        if auth_headers:
+            forward_headers.update(auth_headers)
         proxy_url = f"http://{identity.address}"
         proxy_auth = self._auth_map.get(identity.address)
         start = time.monotonic()

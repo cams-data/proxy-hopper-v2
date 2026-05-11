@@ -207,6 +207,26 @@ class MemoryBackend(Backend):
     async def kv_list(self, prefix: str) -> list[tuple[str, str]]:
         return [(k, v) for k, v in self._kv.items() if k.startswith(prefix)]
 
+    async def kv_set_with_ttl(self, key: str, value: str, ttl_seconds: int) -> None:
+        self._kv[key] = value
+        logger.trace("MemoryBackend: kv_set_with_ttl '%s' (ttl=%ds)", key, ttl_seconds)
+
+    async def lock_acquire(self, key: str, value: str, ttl_seconds: int) -> bool:
+        if key in self._kv:
+            logger.trace("MemoryBackend: lock_acquire '%s' → already held", key)
+            return False
+        self._kv[key] = value
+        logger.trace("MemoryBackend: lock_acquire '%s' → acquired", key)
+        return True
+
+    async def lock_release(self, key: str, value: str) -> bool:
+        if self._kv.get(key) == value:
+            del self._kv[key]
+            logger.trace("MemoryBackend: lock_release '%s' → released", key)
+            return True
+        logger.trace("MemoryBackend: lock_release '%s' → not held by this caller", key)
+        return False
+
     # ------------------------------------------------------------------
     # Pub/sub
     # ------------------------------------------------------------------

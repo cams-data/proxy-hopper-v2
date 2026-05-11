@@ -276,6 +276,17 @@ async def _run(targets, providers, server, cfg=None) -> None:
     # runtime mutations that survived across restarts in the backend).
     all_targets = await repo.list_targets()
 
+    # Build TokenManager if auth_server is configured.
+    token_manager = None
+    if server.auth_server is not None:
+        from .token_manager import TokenManager
+        proxy_url = f"http://{server.host}:{server.port}"
+        token_manager = TokenManager(
+            config=server.auth_server,
+            backend=backend,
+            proxy_url=proxy_url if server.auth_server.expose_proxy_url else None,
+        )
+
     managers = [
         TargetManager(
             t,
@@ -284,6 +295,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
             proxy_read_timeout=server.proxy_read_timeout,
             debug_quarantine=server.debug_quarantine,
             event_bus=event_bus,
+            token_manager=token_manager,
         )
         for t in all_targets
     ]
@@ -299,6 +311,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
         proxy_read_timeout=server.proxy_read_timeout,
         debug_quarantine=server.debug_quarantine,
         event_bus=event_bus,
+        token_manager=token_manager,
     )
 
     prober = None
