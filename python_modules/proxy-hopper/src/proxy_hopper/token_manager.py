@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from .logging_config import get_logger
+from .metrics import get_metrics
 
 if TYPE_CHECKING:
     from .backend.base import Backend
@@ -89,6 +90,8 @@ class TokenManager:
         self._scheduler_task: asyncio.Task | None = None
         # Tracks all (target, addr) pairs seen; used by the refresh scheduler.
         self._known: set[tuple[str, str]] = set()
+        # Local best-effort counter for the auth_broken_ips gauge (per-replica).
+        self._broken_ips: set[tuple[str, str]] = set()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -105,8 +108,16 @@ class TokenManager:
                 for ip in tc.resolved_ips:
                     self._known.add((tc.name, ip.address))
 
+        # Health check probe — non-fatal; just warns if unreachable.
+        await self._probe_health()
+
         # Pre-warm in background — proxy starts accepting requests immediately.
         if self._known:
+            logger.info(
+                "TokenManager: pre-warm started for %d auth-managed pairs",
+                len(self._known),
+                extra={"event": "token_prewarm_started", "pair_count": len(self._known)},
+            )
             asyncio.create_task(
                 self._prewarm(list(self._known)),
                 name="ph:token:prewarm",
@@ -132,6 +143,30 @@ class TokenManager:
             self._session = None
         logger.info("TokenManager: stopped")
 
+    async def _probe_health(self) -> None:
+        """GET /health on the token server at startup. Non-fatal — logs only."""
+        url = f"{self._config.url}/health"
+        try:
+            async with self._get_session().get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=self._config.timeout_seconds),
+            ) as resp:
+                if resp.status < 500:
+                    logger.info(
+                        "TokenManager: token server health check OK (status=%d, url=%s)",
+                        resp.status, url,
+                    )
+                else:
+                    logger.warning(
+                        "TokenManager: token server health check returned %d (url=%s)",
+                        resp.status, url,
+                    )
+        except Exception as exc:
+            logger.warning(
+                "TokenManager: token server health check failed (url=%s): %s",
+                url, exc,
+            )
+
     # ------------------------------------------------------------------
     # Public interface (called by TargetManager per request)
     # ------------------------------------------------------------------
@@ -154,9 +189,19 @@ class TokenManager:
         if stored is not None:
             headers, expires_at, _ = stored
             threshold = self._config.refresh_threshold_seconds
-            if (expires_at - datetime.now(UTC)).total_seconds() > threshold:
+            remaining = (expires_at - datetime.now(UTC)).total_seconds()
+            if remaining > threshold:
                 return headers
             # Token near expiry — fall through to refresh.
+            logger.debug(
+                "TokenManager: token refresh triggered for %s/%s (%.0fs until expiry)",
+                target, addr, remaining,
+                extra={
+                    "event": "token_refresh_triggered",
+                    "target": target, "ip": addr,
+                    "seconds_until_expiry": remaining,
+                },
+            )
 
         # Check broken state.
         broken_count = await self._backend.counter_get(_broken_key(target, addr))
@@ -199,6 +244,8 @@ class TokenManager:
         """Call the token server and persist the result. Lock must be held by caller."""
         addr = identity.address
         host, port_str = addr.rsplit(":", 1)
+        metrics = get_metrics()
+        refresh_start = time.monotonic()
 
         # Load the existing cursor (if any).
         stored = await self._read_token(target, addr)
@@ -226,22 +273,42 @@ class TokenManager:
             body["proxy_url"] = self._proxy_url
 
         try:
+            server_start = time.monotonic()
             async with self._get_session().post(
                 f"{self._config.url}/token",
                 json=body,
                 timeout=aiohttp.ClientTimeout(total=self._config.timeout_seconds),
             ) as resp:
+                server_duration = time.monotonic() - server_start
+                metrics.record_auth_server_request(server_duration)
                 if resp.status != 200:
                     raise RuntimeError(
                         f"token server returned {resp.status}: {await resp.text()}"
                     )
                 data = await resp.json()
 
-        except Exception as exc:
+        except asyncio.TimeoutError as exc:
+            refresh_duration = time.monotonic() - refresh_start
             await self._record_failure(target, addr)
+            metrics.record_auth_token_refresh(target, addr, "failure", refresh_duration)
+            logger.warning(
+                "TokenManager: token server timeout for %s/%s after %.1fs",
+                target, addr, self._config.timeout_seconds,
+                extra={
+                    "event": "token_server_timeout",
+                    "target": target, "ip": addr,
+                    "timeout_seconds": self._config.timeout_seconds,
+                },
+            )
+            raise
+        except Exception as exc:
+            refresh_duration = time.monotonic() - refresh_start
+            await self._record_failure(target, addr)
+            metrics.record_auth_token_refresh(target, addr, "failure", refresh_duration)
             logger.warning(
                 "TokenManager: token fetch failed for %s/%s: %s",
                 target, addr, exc,
+                extra={"event": "token_server_error", "target": target, "ip": addr, "error": str(exc)},
             )
             raise
 
@@ -251,11 +318,32 @@ class TokenManager:
 
         await self._write_token(target, addr, headers, expires_at, new_cursor)
         # Clear broken state on success.
+        was_broken = await self._backend.counter_get(_broken_key(target, addr))
         await self._backend.counter_set(_broken_key(target, addr), 0)
         await self._backend.kv_delete(_retry_at_key(target, addr))
-        logger.debug(
-            "TokenManager: token refreshed for %s/%s (expires %s)",
-            target, addr, expires_at.isoformat(),
+        if (target, addr) in self._broken_ips:
+            self._broken_ips.discard((target, addr))
+            broken_count = sum(1 for (t, _) in self._broken_ips if t == target)
+            get_metrics().set_auth_broken_ips(target, broken_count)
+
+        refresh_duration = time.monotonic() - refresh_start
+        metrics.record_auth_token_refresh(target, addr, "success", refresh_duration)
+
+        if was_broken and was_broken >= self._config.max_retries:
+            logger.info(
+                "TokenManager: %s/%s recovered from AUTH_BROKEN state",
+                target, addr,
+                extra={"event": "ip_recovered_auth_broken", "target": target, "ip": addr},
+            )
+        logger.info(
+            "TokenManager: token acquired for %s/%s (expires %s, duration=%.3fs)",
+            target, addr, expires_at.isoformat(), refresh_duration,
+            extra={
+                "event": "token_acquired",
+                "target": target, "ip": addr,
+                "expires_at": expires_at.isoformat(),
+                "duration_seconds": refresh_duration,
+            },
         )
         return headers
 
@@ -300,10 +388,21 @@ class TokenManager:
         retry_at = datetime.now(UTC) + timedelta(seconds=self._config.retry_interval_seconds)
         await self._backend.kv_set(_retry_at_key(target, addr), retry_at.isoformat())
         if failures >= self._config.max_retries:
-            logger.error(
-                "TokenManager: %s/%s has %d consecutive failures — marking AUTH_BROKEN (quarantine candidate)",
-                target, addr, failures,
-            )
+            newly_broken = (target, addr) not in self._broken_ips
+            self._broken_ips.add((target, addr))
+            broken_count = sum(1 for (t, _) in self._broken_ips if t == target)
+            get_metrics().set_auth_broken_ips(target, broken_count)
+            if newly_broken:
+                logger.error(
+                    "TokenManager: %s/%s has %d consecutive failures — marked AUTH_BROKEN",
+                    target, addr, failures,
+                    extra={
+                        "event": "ip_marked_auth_broken",
+                        "target": target, "ip": addr,
+                        "failure_count": failures,
+                        "retry_at": retry_at.isoformat(),
+                    },
+                )
         else:
             logger.warning(
                 "TokenManager: %s/%s failure %d/%d, retry at %s",
@@ -374,12 +473,16 @@ class TokenManager:
         retry_at_raw = await self._backend.kv_get(_retry_at_key(target, addr))
         if retry_at_raw and now >= datetime.fromisoformat(retry_at_raw):
             logger.info(
-                "TokenManager: scheduler — retry window elapsed for %s/%s",
+                "TokenManager: auth recovery attempt for %s/%s — retry window elapsed",
                 target, addr,
+                extra={"event": "auth_recovery_attempt", "target": target, "ip": addr},
             )
             # Reset broken count to allow the next real request to retry.
             await self._backend.counter_set(_broken_key(target, addr), 0)
             await self._backend.kv_delete(_retry_at_key(target, addr))
+            self._broken_ips.discard((target, addr))
+            broken_count = sum(1 for (t, _) in self._broken_ips if t == target)
+            get_metrics().set_auth_broken_ips(target, broken_count)
 
     # ------------------------------------------------------------------
     # Storage helpers

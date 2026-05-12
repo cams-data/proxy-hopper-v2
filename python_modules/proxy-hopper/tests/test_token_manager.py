@@ -169,22 +169,27 @@ class TestEnsureTokenFetch:
         cfg = make_config(expose_proxy_url=True)
         mgr = TokenManager(cfg, backend, proxy_url="http://proxy:8080")
         body = token_response_body()
-        with aioresponses() as m:
-            m.post(f"{_AUTH_URL}/token", payload=body)
-            await mgr.ensure_token(_TARGET, make_identity())
-        # Verify proxy_url was in request (aioresponses captures call args)
-        call = list(m.requests.values())[0][0]
-        assert call.kwargs["json"]["proxy_url"] == "http://proxy:8080"
+        try:
+            with aioresponses() as m:
+                m.post(f"{_AUTH_URL}/token", payload=body)
+                await mgr.ensure_token(_TARGET, make_identity())
+            call = list(m.requests.values())[0][0]
+            assert call.kwargs["json"]["proxy_url"] == "http://proxy:8080"
+        finally:
+            await mgr.stop()
 
     async def test_proxy_url_omitted_when_expose_false(self, backend):
         cfg = make_config(expose_proxy_url=False)
         mgr = TokenManager(cfg, backend, proxy_url="http://proxy:8080")
         body = token_response_body()
-        with aioresponses() as m:
-            m.post(f"{_AUTH_URL}/token", payload=body)
-            await mgr.ensure_token(_TARGET, make_identity())
-        call = list(m.requests.values())[0][0]
-        assert "proxy_url" not in call.kwargs["json"]
+        try:
+            with aioresponses() as m:
+                m.post(f"{_AUTH_URL}/token", payload=body)
+                await mgr.ensure_token(_TARGET, make_identity())
+            call = list(m.requests.values())[0][0]
+            assert "proxy_url" not in call.kwargs["json"]
+        finally:
+            await mgr.stop()
 
 
 # ---------------------------------------------------------------------------
