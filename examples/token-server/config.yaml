@@ -1,0 +1,91 @@
+# =============================================================================
+# Proxy Hopper — token server example config
+# =============================================================================
+#
+# This config wires proxy-hopper to the token server running in the same
+# Compose project.  Every request through the "httpbin" target will have an
+# Authorization header automatically injected by the token server.
+#
+# The target uses httpbin.org, which echoes all request headers back in the
+# response — making it easy to verify that the Authorization header is present:
+#
+#   curl -H "X-Proxy-Hopper-Target: https://httpbin.org" \
+#        http://localhost:8080/get
+#
+# Look for "Authorization": "Bearer eyJ..." in the response JSON.
+#
+# Prerequisites: you need at least one real external proxy IP in the ipList
+# below.  httpbin.org is the UPSTREAM TARGET — not the proxy.
+#
+# =============================================================================
+
+# =============================================================================
+# TARGETS
+# =============================================================================
+
+targets:
+  # ---------------------------------------------------------------------------
+  # httpbin.org — echoes request headers back as JSON.
+  # authManaged: true tells proxy-hopper to call the token server before
+  # every request and inject the returned Authorization header.
+  # ---------------------------------------------------------------------------
+  - name: httpbin
+    regex: '.*httpbin\.org.*'
+    authManaged: true         # <-- proxy-hopper injects the token automatically
+    ipList:
+      # Replace these with your real external proxy IPs.
+      # Format: "host:port" or bare "host" (uses defaultProxyPort below).
+      - "203.0.113.10:3128"   # placeholder — replace with a real proxy IP
+      - "203.0.113.11:3128"   # placeholder — replace with a real proxy IP
+    defaultProxyPort: 3128
+    minRequestInterval: 2s
+    maxQueueWait: 30s
+    numRetries: 2
+    ipFailuresUntilQuarantine: 3
+    quarantineTime: 5m
+
+  # ---------------------------------------------------------------------------
+  # Catch-all — routes everything else without token injection.
+  # ---------------------------------------------------------------------------
+  - name: general
+    regex: '.*'
+    ipList:
+      - "203.0.113.10:3128"   # same proxies — replace with real IPs
+      - "203.0.113.11:3128"
+    defaultProxyPort: 3128
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+
+# =============================================================================
+# SERVER SETTINGS
+# =============================================================================
+
+server:
+  logLevel: INFO
+  logFormat: json
+
+  # authServer wires in the token server running in the same Compose project.
+  # "token-server" resolves to the container via Docker's built-in DNS.
+  authServer:
+    url: "http://token-server:9000"
+
+    # How long to wait for the token server to respond.
+    timeoutSeconds: 10
+
+    # Start refreshing a token this many seconds before it expires.
+    # Should be less than TOKEN_TTL_MINUTES * 60 in the token server's env.
+    refreshThresholdSeconds: 120
+
+    # How long to wait before retrying after a token server failure.
+    retryIntervalSeconds: 30
+
+    # After this many consecutive failures the proxy IP enters AUTH_BROKEN
+    # state and requests for that IP return 502 until the retry window elapses.
+    maxRetries: 5
+
+    # Set true if your token server needs to know the proxy-hopper public URL
+    # (e.g. to call back for authentication verification).
+    exposeProxyUrl: false
