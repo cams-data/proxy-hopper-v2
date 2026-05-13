@@ -159,6 +159,7 @@ All `X-Proxy-Hopper-*` headers are stripped before the request reaches the upstr
 | `X-Proxy-Hopper-Auth: Bearer <token>` | **Required when auth is enabled.** API key, local JWT, or OIDC access token. See [Authentication](#authentication). |
 | `X-Proxy-Hopper-Tag: <string>` | Optional label propagated to Prometheus metrics as the `tag` label. Use it to break down metrics by endpoint or use-case. |
 | `X-Proxy-Hopper-Retries: <int>` | Override the target's `numRetries` for this request only. Must be a non-negative integer; invalid values fall back to the target default. |
+| `X-Proxy-Hopper-Force-IP: <host:port>` | Pin this request to a specific proxy IP. Bypasses pool rotation entirely — the IP must already be registered in the pool. No retries on failure. |
 
 **Tag example** — identify which endpoints burn through IPs fastest:
 
@@ -173,7 +174,17 @@ session.headers["X-Proxy-Hopper-Tag"] = "search-api"
 session.headers["X-Proxy-Hopper-Retries"] = "0"
 ```
 
-### 5. Validate a config file
+### 5. Force a specific proxy IP
+
+Use `X-Proxy-Hopper-Force-IP` to pin one request to a specific proxy address without changing the rotation state of the pool:
+
+```python
+session.headers["X-Proxy-Hopper-Force-IP"] = "203.0.113.10:3128"
+```
+
+The IP must already be in the target's pool. No retries are made on failure — if the IP is unavailable or quarantined a `502` is returned immediately. Use this for session-sensitive flows where rotating IPs would break state.
+
+### 6. Validate a config file
 
 ```bash
 proxy-hopper validate --config config.yaml
@@ -240,6 +251,7 @@ ipPools:
 | `numRetries` | int | `3` | Retry attempts using a different IP on failure (overridable per-request with `X-Proxy-Hopper-Retries`) |
 | `ipFailuresUntilQuarantine` | int | `5` | Consecutive failures before an IP is quarantined |
 | `quarantineTime` | duration | `120s` | How long a quarantined IP sits out before returning to the pool |
+| `authManaged` | bool | `false` | Enable token injection. Requires `server.authServer` to be configured. Before each forwarded request, proxy-hopper calls the token server and injects the returned headers. |
 
 \* Exactly one of `ipPool` or `ipList` must be provided per target.
 
@@ -266,6 +278,18 @@ All server fields can also be set as `PROXY_HOPPER_*` env vars (e.g. `PROXY_HOPP
 | `probeInterval` | `PROXY_HOPPER_PROBE_INTERVAL` | `60` | Seconds between probe rounds |
 | `probeTimeout` | `PROXY_HOPPER_PROBE_TIMEOUT` | `10` | Per-probe HTTP timeout (seconds) |
 | `probeUrls` | `PROXY_HOPPER_PROBE_URLS` | Cloudflare + Google | Endpoints to probe through each IP. Comma-separated as env var. |
+| `authServer` | — | — | Token server config block. See [Managed auth](#managed-auth--token-server). |
+
+#### `server.authServer` fields
+
+| Field | Default | Description |
+|---|---|---|
+| `url` | required | Base URL of the token server (e.g. `http://token-server:9000`) |
+| `timeoutSeconds` | `10` | HTTP timeout for token server requests |
+| `refreshThresholdSeconds` | `60` | Start refreshing a token this many seconds before it expires |
+| `retryIntervalSeconds` | `30` | Cooldown between retry attempts after a token server failure |
+| `maxRetries` | `5` | Consecutive failures before an IP is marked `AUTH_BROKEN` |
+| `exposeProxyUrl` | `false` | Include the proxy-hopper public URL in the `/token` request body |
 
 ### CLI flags
 
@@ -489,37 +513,200 @@ Paste the output into `auth.admin.passwordHash` in your config.
 
 ---
 
+## Managed auth / token server
+
+Some upstream APIs require per-request Authorization headers that must be periodically refreshed — OAuth access tokens, session cookies, rotating API keys. Proxy-hopper can offload this lifecycle management to a **token server** you implement and deploy alongside it.
+
+When `authManaged: true` is set on a target, proxy-hopper calls the token server before forwarding each request and injects the returned headers automatically. The token is cached per `(target, proxy-IP)` pair and only refreshed when it nears expiry.
+
+### Setup
+
+**1. Configure the token server in `server.authServer`:**
+
+```yaml
+server:
+  authServer:
+    url: "http://token-server:9000"
+    timeoutSeconds: 10
+    refreshThresholdSeconds: 60    # refresh 60s before expiry
+    retryIntervalSeconds: 30       # retry after failure
+    maxRetries: 5                  # broken-state threshold
+    exposeProxyUrl: false
+```
+
+**2. Mark the relevant targets:**
+
+```yaml
+targets:
+  - name: my-api
+    regex: 'api\.example\.com'
+    ipPool: my-pool
+    authManaged: true              # proxy-hopper injects token headers automatically
+    minRequestInterval: 5s
+    numRetries: 2
+```
+
+### Token server API contract
+
+Your token server must implement two endpoints:
+
+#### `POST /token`
+
+Called by proxy-hopper before each forwarded request (or when the cached token nears expiry).
+
+**Request body:**
+
+```json
+{
+  "target":   "my-api",
+  "ip":       "203.0.113.10",
+  "port":     3128,
+  "cursor":   {},
+  "profile": {
+    "user_agent":       "Mozilla/5.0 ...",
+    "accept":           "text/html",
+    "accept_language":  "",
+    "accept_encoding":  "",
+    "extra":            {}
+  }
+}
+```
+
+When `exposeProxyUrl: true`, the request also includes:
+
+```json
+  "proxy_url": "http://proxy-hopper:8080"
+```
+
+| Field | Description |
+|---|---|
+| `target` | Target name from the proxy-hopper config |
+| `ip`, `port` | The external proxy IP and port that will forward this request |
+| `cursor` | Opaque dict returned by your last response for this `(target, ip)` pair — use it to carry session state, refresh tokens, etc. Empty `{}` on first call. |
+| `profile` | Browser fingerprint headers associated with this proxy IP |
+| `proxy_url` | Public URL of this proxy-hopper instance (only when `exposeProxyUrl: true`) |
+
+**Response body:**
+
+```json
+{
+  "headers":    { "Authorization": "Bearer eyJ..." },
+  "expires_at": "2025-06-01T12:00:00+00:00",
+  "cursor":     { "refresh_token": "..." }
+}
+```
+
+| Field | Description |
+|---|---|
+| `headers` | Key-value pairs injected into the upstream request. Replaces any same-named headers from the client. |
+| `expires_at` | ISO-8601 UTC timestamp when this token expires. proxy-hopper refreshes it `refreshThresholdSeconds` before this time. |
+| `cursor` | Returned as-is on the next call for this `(target, ip)`. Use it for anything you need to correlate calls: refresh tokens, sequence numbers, session IDs. |
+
+#### `GET /health`
+
+Must return `2xx` when the token server is ready. proxy-hopper calls this at startup before pre-warming tokens.
+
+### The cursor mechanism
+
+The cursor is an opaque JSON object that proxy-hopper stores per `(target, proxy-IP)` pair and echoes back on every subsequent `/token` call. Use it to carry stateful data your token server needs between calls without running its own database:
+
+```python
+# First call — cursor is {}
+def handle_token(body):
+    if not body["cursor"]:
+        # Fresh start — fetch a new token + refresh token
+        access, refresh, expires = fetch_initial_token(body["target"])
+        return {
+            "headers": {"Authorization": f"Bearer {access}"},
+            "expires_at": expires.isoformat(),
+            "cursor": {"refresh_token": refresh},
+        }
+    else:
+        # Use the stored refresh token to get a new access token
+        refresh = body["cursor"]["refresh_token"]
+        access, new_refresh, expires = refresh_token(refresh)
+        return {
+            "headers": {"Authorization": f"Bearer {access}"},
+            "expires_at": expires.isoformat(),
+            "cursor": {"refresh_token": new_refresh},
+        }
+```
+
+### Broken-state and recovery
+
+When the token server fails, proxy-hopper increments a per-IP failure counter:
+
+- Failures below `maxRetries` → retry after `retryIntervalSeconds`
+- At `maxRetries` consecutive failures → IP enters `AUTH_BROKEN` state; requests for that IP return `502` immediately without calling the token server
+- After `retryIntervalSeconds` in broken state → proxy-hopper attempts recovery; on success the IP returns to normal rotation
+
+The proxy IP itself is not quarantined — broken state is specific to the auth layer. The pool continues rotating other IPs normally.
+
+### Observability
+
+When metrics are enabled (`server.metrics: true`), four auth-specific metrics are exposed:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `proxy_hopper_auth_token_refreshes_total` | Counter | `target`, `ip`, `status` | Token refresh attempts — `status` is `success` or `failure` |
+| `proxy_hopper_auth_token_refresh_duration_seconds` | Histogram | `target`, `ip` | End-to-end refresh duration |
+| `proxy_hopper_auth_broken_ips_current` | Gauge | `target` | IPs currently in `AUTH_BROKEN` state |
+| `proxy_hopper_auth_server_request_duration_seconds` | Histogram | — | Raw HTTP round-trip to the token server |
+
+Structured log events (emitted at `INFO` or `WARNING` level with an `event` field when using `logFormat: json`):
+
+| `event` | Level | Meaning |
+|---|---|---|
+| `token_prewarm_started` | INFO | Startup pre-warm begun |
+| `token_acquired` | INFO | Token fetched or refreshed successfully |
+| `token_refresh_triggered` | DEBUG | Near-expiry refresh initiated |
+| `token_server_timeout` | WARNING | Token server did not respond within `timeoutSeconds` |
+| `token_server_error` | WARNING | Token server returned non-200 or connection failed |
+| `ip_marked_auth_broken` | ERROR | IP reached `maxRetries` failures |
+| `auth_recovery_attempt` | INFO | Retry window elapsed; next request will re-try |
+| `ip_recovered_auth_broken` | INFO | Recovery succeeded; IP back in normal rotation |
+
+### Examples
+
+- [Docker Compose example](../../examples/docker-compose/token-server/) — proxy-hopper + token server + Redis
+- [Kubernetes example](../../examples/kubernetes/) — separate Deployment + Service for the token server
+- [Helm chart](../../charts/proxy-hopper/) — `tokenServer.enabled=true` deploys and wires everything automatically
+
+---
+
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │  ProxyServer  (raw asyncio TCP)                              │
 │                                                              │
-│  _dispatch → RequestHandler (ABC)                           │
+│  _dispatch → RequestHandler (ABC)                            │
 │    └── ForwardingHandler  X-Proxy-Hopper-Target → retry     │
 └──────────────────────────┬───────────────────────────────────┘
                            │ submit(PendingRequest)
         ┌──────────────────▼──────────────────────┐
-        │    TargetManager  (one per target)       │
-        │    asyncio queue + dispatcher            │
-        │    aiohttp outbound requests + retries   │
-        └──────────────────┬──────────────────────┘
-                           │ acquire / record_success / record_failure
-        ┌──────────────────▼──────────────────────┐
-        │    IPPool  (one per target)              │
-        │    quarantine policy, cooldown sweeps    │
-        └──────────────────┬──────────────────────┘
+        │    TargetManager  (one per target)       │◄──── TokenManager
+        │    asyncio queue + dispatcher            │      ensure_token()
+        │    aiohttp outbound requests + retries   │      per (target, ip)
+        └──────────────────┬──────────────────────┘           │
+                           │ acquire / record_success /        │ POST /token
+                           │ record_failure                    ▼
+        ┌──────────────────▼──────────────────────┐   ┌──────────────────┐
+        │    IPPool  (one per target)              │   │  Token server    │
+        │    quarantine policy, cooldown sweeps    │   │  (user-provided) │
+        └──────────────────┬──────────────────────┘   └──────────────────┘
                            │ push / pop / counters
         ┌──────────────────▼──────────────────────┐
-        │    IPPoolBackend                         │
+        │    Backend                               │
         │    Memory | Redis                        │
         └─────────────────────────────────────────┘
 ```
 
 **Key design points:**
 
-- **`RequestHandler` ABC** — the forwarding mode is a `RequestHandler` subclass. Adding a new mode (auth injection, path rewriting, custom protocols) requires only a new subclass registered in `handlers.py` — `ProxyServer` needs no changes.
-- **`IPPoolBackend`** — pure storage interface. Two implementations: in-memory and Redis.
+- **`RequestHandler` ABC** — the forwarding mode is a `RequestHandler` subclass. Adding a new mode requires only a new subclass registered in `handlers.py` — `ProxyServer` needs no changes.
+- **`TokenManager`** — optional singleton, shared across all `TargetManager` instances. Caches tokens per `(target, ip)`, coordinates refreshes with a Redis NX lock (one replica refreshes, others piggyback), and tracks broken state independently of pool quarantine.
+- **`Backend`** — pure storage interface. Two implementations: in-memory and Redis.
 - **`IPPool`** — all quarantine and cooldown policy. Never touches the backend directly.
 - **`TargetManager`** — dispatches requests, runs aiohttp forwarding, handles retries. Never touches the backend directly.
 
@@ -576,6 +763,10 @@ proxy-hopper run --config config.yaml --metrics --metrics-port 9090
 | `proxy_hopper_probe_failure_total` | Counter | `address`, `provider`, `region`, `reason` | Failed background probes |
 | `proxy_hopper_probe_duration_seconds` | Histogram | `address`, `provider`, `region` | Background probe latency |
 | `proxy_hopper_ip_reachable` | Gauge | `address`, `provider`, `region` | `1` if IP passed last probe, `0` if not |
+| `proxy_hopper_auth_token_refreshes_total` | Counter | `target`, `ip`, `status` | Token refresh attempts (`status`: `success`\|`failure`) |
+| `proxy_hopper_auth_token_refresh_duration_seconds` | Histogram | `target`, `ip` | End-to-end token refresh duration |
+| `proxy_hopper_auth_broken_ips_current` | Gauge | `target` | IPs currently in `AUTH_BROKEN` state |
+| `proxy_hopper_auth_server_request_duration_seconds` | Histogram | — | Raw HTTP round-trip to the token server |
 
 `outcome` values: `success`, `rate_limited`, `server_error`, `connection_error`, `no_match`.
 
