@@ -1,0 +1,21 @@
+{{- if .Values.tokenServer.enabled -}}
+# Token server Service — ClusterIP only. proxy-hopper reaches it in-cluster via
+# authServer.url; it should never be exposed publicly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "proxy-hopper.fullname" . }}-token-server
+  labels:
+    {{- include "proxy-hopper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: token-server
+spec:
+  type: {{ .Values.tokenServer.service.type }}
+  ports:
+    - port: {{ .Values.tokenServer.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "proxy-hopper.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: token-server
+{{- end }}

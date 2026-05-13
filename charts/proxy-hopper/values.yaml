@@ -185,6 +185,81 @@ admin:
     #   cpu: 500m
     #   memory: 256Mi
 
+# ── Token server ─────────────────────────────────────────────────────────────
+# When enabled, the chart deploys your custom token server alongside
+# proxy-hopper (a Deployment + ClusterIP Service) and exposes a predictable
+# in-cluster URL.
+#
+# Your token server image must implement:
+#   POST /token  — fetch/refresh a token for a given target + proxy IP
+#   GET  /health — liveness check; must return 2xx when ready
+#
+# The in-cluster service URL is derived automatically as:
+#   http://<release-name>-proxy-hopper-token-server:<tokenServer.port>
+#
+# Wiring into proxy-hopper — add the authServer block to config.inline.
+# config.inline is rendered as a Helm template, so you can reference the
+# helper directly to keep the URL correct regardless of release name:
+#
+#   config:
+#     inline: |
+#       server:
+#         authServer:
+#           url: '{{ include "proxy-hopper.tokenServerUrl" . }}'
+#           timeoutSeconds: 10
+#           refreshThresholdSeconds: 60
+#           retryIntervalSeconds: 30
+#           maxRetries: 5
+#           exposeProxyUrl: false
+#
+#       targets:
+#         - name: my-target
+#           regex: '.*'
+#           authManaged: true
+#           ipPool: my-pool
+#
+# For existingConfigMap / existingSecret, hard-code the URL instead:
+#   http://<your-release>-proxy-hopper-token-server:<tokenServer.port>
+#
+tokenServer:
+  enabled: false
+
+  image:
+    # REQUIRED when enabled — your token server image.
+    # Example: ghcr.io/your-org/my-token-server
+    repository: ""
+    tag: "latest"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  # Port your token server listens on inside the container.
+  # Must match the value used in server.authServer.url in your config.
+  port: 9000
+
+  service:
+    type: ClusterIP
+
+  resources: {}
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
+    # limits:
+    #   cpu: 500m
+    #   memory: 256Mi
+
+  # Extra environment variables for your token server container.
+  env: []
+  # - name: REDIS_URL
+  #   value: "redis://redis:6379/0"
+  # - name: SOME_SECRET
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: my-secret
+  #       key: value
+
+  podAnnotations: {}
+
 # ── Redis subchart ───────────────────────────────────────────────────────────
 # Uses the Bitnami Redis chart as an optional dependency.
 # See https://github.com/bitnami/charts/tree/main/bitnami/redis for full values.

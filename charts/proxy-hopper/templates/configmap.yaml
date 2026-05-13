@@ -7,5 +7,5 @@ metadata:
     {{- include "proxy-hopper.labels" . | nindent 4 }}
 data:
   config.yaml: |
-    {{- .Values.config.inline | nindent 4 }}
+    {{- tpl .Values.config.inline . | nindent 4 }}
 {{- end }}

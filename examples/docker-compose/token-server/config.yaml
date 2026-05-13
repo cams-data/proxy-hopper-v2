@@ -1,0 +1,101 @@
+# =============================================================================
+# Proxy Hopper — token server example config
+# =============================================================================
+#
+# This example shows how to wire a custom token server into proxy-hopper so
+# every outbound request through an auth-managed target automatically carries
+# the correct Authorization headers.
+#
+# The token server is responsible for obtaining and refreshing tokens on behalf
+# of proxy-hopper.  proxy-hopper calls POST /token before each request
+# (using a cached token when it is still fresh) and injects the returned
+# headers into the upstream request.
+#
+# Start with:
+#   TOKEN_SERVER_IMAGE=your-registry/your-token-server:latest \
+#   docker compose up --build
+#
+# =============================================================================
+# PROXY PROVIDERS
+# =============================================================================
+
+proxyProviders:
+  - name: general-provider
+    auth:
+      type: basic
+      username: myuser
+      password: mypassword
+    ipList:
+      - "203.0.113.10:3128"
+      - "203.0.113.11:3128"
+      - "203.0.113.12:3128"
+      - "203.0.113.13:3128"
+    regionTag: US-East
+
+# =============================================================================
+# IP POOLS
+# =============================================================================
+
+ipPools:
+  - name: general-pool
+    ipRequests:
+      - provider: general-provider
+        count: 4
+
+# =============================================================================
+# TARGETS
+# =============================================================================
+# Set authManaged: true on any target whose outbound requests require a token.
+# proxy-hopper will call the token server before forwarding each request and
+# inject the returned headers automatically.
+
+targets:
+  - name: my-api
+    regex: 'api\.example\.com'
+    ipPool: general-pool
+    authManaged: true          # <-- enables token injection for this target
+    minRequestInterval: 5s
+    maxQueueWait: 30s
+    numRetries: 2
+    ipFailuresUntilQuarantine: 3
+    quarantineTime: 5m
+    defaultProxyPort: 3128
+
+  # Catch-all target — no auth token required
+  - name: general
+    regex: '.*'
+    ipPool: general-pool
+    minRequestInterval: 1s
+    maxQueueWait: 30s
+    numRetries: 3
+    ipFailuresUntilQuarantine: 5
+    quarantineTime: 2m
+    defaultProxyPort: 3128
+
+# =============================================================================
+# SERVER SETTINGS
+# =============================================================================
+
+server:
+  # authServer wires in the token server running in the same Compose project.
+  # The service name "token-server" resolves to the container defined in
+  # docker-compose.yml via Docker's built-in DNS.
+  authServer:
+    url: "http://token-server:9000"
+
+    # How long to wait for the token server to respond.
+    timeoutSeconds: 10
+
+    # Start refreshing a token this many seconds before it expires.
+    refreshThresholdSeconds: 60
+
+    # How long to wait before retrying after a token server failure.
+    retryIntervalSeconds: 30
+
+    # After this many consecutive failures, the proxy IP is marked AUTH_BROKEN
+    # and requests for that IP return 502 until the retry window elapses.
+    maxRetries: 5
+
+    # Whether to include the proxy-hopper public URL in the /token request body.
+    # Enable if your token server needs to call back to the proxy.
+    exposeProxyUrl: false

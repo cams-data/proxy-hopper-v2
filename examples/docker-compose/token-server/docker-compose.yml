@@ -1,0 +1,108 @@
+services:
+
+  # -------------------------------------------------------------------------
+  # Redis — shared IP pool state and auth token cache
+  # -------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # -------------------------------------------------------------------------
+  # Token server — your custom implementation.
+  # Replace the image with your own registry/tag.
+  #
+  # Required endpoints:
+  #   POST /token  — fetch or refresh a token for a (target, proxy-ip) pair
+  #   GET  /health — liveness check; return 2xx when ready
+  #
+  # proxy-hopper calls POST /token with a JSON body:
+  #   {
+  #     "target":    "my-target",
+  #     "ip":        "1.2.3.4",
+  #     "port":      3128,
+  #     "cursor":    {},           # opaque; pass back on next call
+  #     "profile":   { ... },      # browser fingerprint headers
+  #     "proxy_url": "http://..."  # only when exposeProxyUrl=true in config
+  #   }
+  #
+  # Expected response:
+  #   {
+  #     "headers":    { "Authorization": "Bearer <token>" },
+  #     "expires_at": "2025-01-01T12:00:00+00:00",
+  #     "cursor":     {}           # opaque; returned as-is on next call
+  #   }
+  # -------------------------------------------------------------------------
+  token-server:
+    image: "${TOKEN_SERVER_IMAGE:-your-registry/your-token-server:latest}"
+    restart: unless-stopped
+    ports:
+      - "${TOKEN_SERVER_PORT:-9000}:9000"   # expose for debugging; not required by proxy-hopper
+    environment:
+      # Pass whatever your token server needs — database URL, secrets, etc.
+      TOKEN_SERVER_PORT: "9000"
+      REDIS_URL: "redis://redis:6379/1"     # optional — if your token server uses Redis
+      # LOG_LEVEL: "INFO"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # -------------------------------------------------------------------------
+  # Proxy runner — scale this service for horizontal throughput.
+  # -------------------------------------------------------------------------
+  proxy-hopper:
+    build:
+      context: .
+      args:
+        VERSION: "${PROXY_HOPPER_VERSION:-0.1.0}"
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-8080}:8080"
+      # - "${METRICS_PORT:-9090}:9090"   # Prometheus /metrics (uncomment + enable below)
+    volumes:
+      - ./config.yaml:/etc/proxy-hopper/config.yaml:ro
+    environment:
+      PROXY_HOPPER_HOST: "0.0.0.0"
+      PROXY_HOPPER_PORT: "8080"
+      PROXY_HOPPER_BACKEND: "redis"
+      PROXY_HOPPER_REDIS_URL: "redis://redis:6379/0"
+      PROXY_HOPPER_LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      PROXY_HOPPER_LOG_FORMAT: "${LOG_FORMAT:-json}"
+      # PROXY_HOPPER_METRICS: "true"
+      # PROXY_HOPPER_METRICS_PORT: "9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+      token-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket; s=socket.create_connection(('localhost',8080),2); s.close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redis-data:
+    driver: local

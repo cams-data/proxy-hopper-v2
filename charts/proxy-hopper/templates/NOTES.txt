@@ -56,3 +56,19 @@ Access it via port-forward (it is ClusterIP-only by default):
 
 Admin server is disabled (set admin.enabled=true to deploy a separate admin Deployment).
 {{- end }}
+{{- if .Values.tokenServer.enabled }}
+
+Token server is running ({{ include "proxy-hopper.fullname" . }}-token-server).
+In-cluster URL — use this as server.authServer.url in your proxy-hopper config:
+
+  {{ include "proxy-hopper.tokenServerUrl" . }}
+
+Tip: config.inline is rendered as a Helm template. You can reference the URL
+directly without hardcoding the release name:
+
+  config:
+    inline: |
+      server:
+        authServer:
+          url: '{{ `{{` }} include "proxy-hopper.tokenServerUrl" . {{ `}}` }}'
+{{- end }}
