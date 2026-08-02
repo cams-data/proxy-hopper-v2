@@ -1,142 +1,72 @@
 # Proxy Hopper
 
-A rotating HTTP/HTTPS proxy server that routes outbound requests through a pool of external proxy IP addresses. Configure your HTTP client to point at Proxy Hopper as its proxy, and Proxy Hopper handles picking an IP, retrying on failure, and quarantining broken proxies automatically.
+A rotating HTTPS proxy server. It sits between your application and the internet, routes outbound requests through a pool of external proxy IP addresses, retries on failure by rotating to a different IP, and automatically quarantines IPs that keep failing.
 
-## How it works
+Clients integrate via **forwarding mode**: set an `X-Proxy-Hopper-Target` header to the real destination and send the request to Proxy Hopper as if it *were* that destination. Because Proxy Hopper owns the full HTTPS request end-to-end, it can retry on 429/5xx responses — something an opaque CONNECT tunnel cannot do. (Older HTTP-proxy and CONNECT-tunnel integration modes existed early in this project's history and were deliberately removed — see [CLEANUP.md](CLEANUP.md) if you find stray references to them.)
 
 ```
-Your app  ──────────────────►  Proxy Hopper  ──►  external proxy IP  ──►  target site
-          HTTP proxy / CONNECT   (rotating)          (from your pool)
-          or URL-forwarding
+Your app  ── X-Proxy-Hopper-Target: https://api.example.com ──►  Proxy Hopper  ──►  external proxy IP  ──►  api.example.com
 ```
-
-- Inbound requests are matched against a list of targets using regular expressions
-- Each target has its own pool of external proxy IPs managed as a FIFO queue
-- IPs that accumulate failures are quarantined for a configurable period, then released back
-- All pool state can be held in-memory (single instance) or Redis (multi-instance HA)
-- Each (IP, target) pair can carry a persistent client identity — browser fingerprint headers and a cookie jar — that rotates automatically with the IP
-
-### Interaction modes
-
-Proxy Hopper supports three ways for clients to send requests. All three use the same IP rotation and retry logic.
-
-| Mode | How to use | Best for |
-|---|---|---|
-| **HTTP proxy** | Set `http_proxy=http://proxy-hopper:8080` | Any HTTP client with proxy support |
-| **CONNECT tunnel** | Set `https_proxy=http://proxy-hopper:8080` | HTTPS via standard proxy settings |
-| **URL forwarding** | Change base URL to `http://proxy-hopper:8080/https/api.example.com` | Full retry on HTTPS requests; one-line integration change |
-
-> **Why forwarding mode?** CONNECT tunnels are opaque byte relays — Proxy Hopper cannot retry a mid-flight HTTPS failure. Forwarding mode lets Proxy Hopper own the full HTTPS request, enabling retries and IP rotation even on 429/5xx responses from the target API.
-
-## Packages
-
-| Package | Description |
-|---|---|
-| [`proxy-hopper`](python_modules/proxy-hopper/) | Core proxy server, in-memory backend, CLI |
-| [`proxy-hopper-redis`](python_modules/proxy-hopper-redis/) | Redis backend for HA multi-instance deployments (`pip install "proxy-hopper[redis]"`) |
-
-## Quick start
-
-```bash
-pip install proxy-hopper
-```
-
-```yaml
-# config.yaml
-proxyProviders:
-  - name: my-provider
-    auth:
-      type: basic
-      username: user
-      password: secret
-    ipList:
-      - "10.0.0.1:3128"
-      - "10.0.0.2:3128"
-      - "10.0.0.3:3128"
-    regionTag: US-East
-
-ipPools:
-  - name: my-pool
-    ipRequests:
-      - provider: my-provider
-        count: 3
-
-targets:
-  - name: general
-    regex: '.*'
-    ipPool: my-pool
-    minRequestInterval: 1s   # hold each IP off the pool for 1s between uses
-    maxQueueWait: 30s        # fail if no IP free within 30s
-    numRetries: 3
-    ipFailuresUntilQuarantine: 5
-    quarantineTime: 2m
-
-    # Optional: attach a persistent browser identity to each IP
-    identity:
-      enabled: true
-      cookies: true             # persist session cookies per IP
-      rotateAfterRequests: 100  # voluntarily rotate after 100 requests
-      rotateOn429: true         # rotate immediately on a 429 response
-      warmup:
-        enabled: true           # prime the identity with a GET before first use
-        path: /
-```
-
-```bash
-proxy-hopper run --config config.yaml
-```
-
-Then use one of the three integration modes:
 
 ```python
-# HTTP/HTTPS proxy mode (standard)
 import requests
-resp = requests.get("https://example.com", proxies={"https": "http://localhost:8080"})
 
-# Forwarding mode (full retry support — set a header, use normal URLs)
 session = requests.Session()
 session.headers["X-Proxy-Hopper-Target"] = "https://example.com"
 resp = session.get("http://localhost:8080/api/endpoint")
 ```
 
 ```bash
-# HTTP proxy mode
-curl --proxy http://localhost:8080 https://example.com
-
-# Forwarding mode
-curl -H "X-Proxy-Hopper-Target: https://example.com" \
-     http://localhost:8080/api/endpoint
+curl -H "X-Proxy-Hopper-Target: https://example.com" http://localhost:8080/api/endpoint
 ```
+
+For the full config reference, auth setup, managed-auth/token-server integration, metrics, and architecture notes, see **[python_modules/proxy-hopper/README.md](python_modules/proxy-hopper/README.md)** — that package README is the canonical deep-dive; this file is an index.
+
+---
+
+## What's in this repo
+
+Proxy Hopper isn't one process — it's six independently-installable pieces sharing a common storage/event contract:
+
+| Piece | What it does |
+|---|---|
+| [`proxy-hopper`](python_modules/proxy-hopper/) | Core engine: the TCP listener, request routing, retry/quarantine logic, config, auth, identity. Start here. |
+| [`proxy-hopper-redis`](python_modules/proxy-hopper-redis/) | Redis implementation of the storage backend, for multi-instance HA (`pip install "proxy-hopper[redis]"`) |
+| [`proxy-hopper-webserver`](python_modules/proxy-hopper-webserver/) | Separate FastAPI process: GraphQL admin API, live SSE event stream, and serves the built admin UI. Only needed if you want the admin API/UI. |
+| [`admin-ui`](admin-ui/) | React/Vite/Tailwind admin frontend — manage targets/providers/pools, watch a live request log |
+| [`proxy-hopper-token-server`](python_modules/proxy-hopper-token-server/) | Optional library + server for target APIs that need managed auth tokens (OAuth, session cookies, etc.) — see [TODO.md](TODO.md), currently has a known broken import |
+| [`proxy-hopper-testserver`](python_modules/proxy-hopper-testserver/) | Test-only fake proxy + fake upstream used by the integration test suite. Not shipped. |
+
+Install just `proxy-hopper` for the proxy itself. Add `proxy-hopper-webserver` (+ build `admin-ui`) if you want the admin API/UI. Add `proxy-hopper-token-server` only if a target needs managed auth.
+
+### Three systems that sound similar but aren't
+
+- **Auth** (`auth/` in core) — gates who may send traffic *to* Proxy Hopper (API keys, local JWT, OIDC).
+- **Identity** (`identity/` in core) — a persistent browser fingerprint + cookie jar Proxy Hopper presents *to the target site*, bound to one (IP, target) pair.
+- **Token server** (`proxy-hopper-token-server`) — fetches and refreshes auth tokens *for the target API itself* (e.g. an OAuth-protected upstream), separate from both of the above.
 
 ## Repository layout
 
 ```
-examples/
-├── docker-compose/
-│   ├── local-backend/     # Single container, in-memory pool
-│   ├── local-redis/       # proxy-hopper + Redis, scalable
-│   ├── auth-api-keys/     # Static API key authentication
-│   └── auth-oidc/         # OIDC SSO authentication
-└── kubernetes/            # Kubernetes manifests (Deployment, HPA, Redis StatefulSet)
 python_modules/
-├── proxy-hopper/          # Core package
-├── proxy-hopper-redis/    # Redis backend add-on
-└── tests/                 # Backend + pool contract tests (run against every backend)
+├── proxy-hopper/              # Core engine — start here
+├── proxy-hopper-redis/        # Redis backend
+├── proxy-hopper-webserver/    # Admin API (GraphQL + SSE), serves admin-ui build
+├── proxy-hopper-token-server/ # Managed-auth token server library + CLI
+├── proxy-hopper-testserver/   # Test-only fakes (not shipped)
+└── tests/                     # Cross-backend contract tests (memory + Redis, parametrized)
+admin-ui/                      # React admin frontend
+charts/proxy-hopper/           # Helm chart (proxy + optional admin + optional token-server)
+docker/                        # Dockerfiles for the published images
+examples/
+├── docker-compose/            # local-backend, local-redis, auth-api-keys, auth-oidc, token-server (placeholder)
+├── kubernetes/                # Raw manifests, non-Helm alternative
+└── token-server/              # Complete, runnable token-server example — see its own README
+monitoring/grafana/dashboards/ # Admin and user-facing Grafana dashboards
+docker-test/, kube-test/       # Gitignored local scratch environments — not shipped, not official examples
 ```
 
-## Deployment examples
-
-| Example | Description |
-|---|---|
-| [docker-compose/local-backend](examples/docker-compose/local-backend/) | Single Docker container, in-memory pool — good for development and single-host deployments |
-| [docker-compose/local-redis](examples/docker-compose/local-redis/) | Docker Compose with Redis, scalable to multiple replicas |
-| [docker-compose/auth-api-keys](examples/docker-compose/auth-api-keys/) | Auth enabled with static API keys and a local admin user |
-| [docker-compose/auth-oidc](examples/docker-compose/auth-oidc/) | Auth enabled with OIDC SSO (Authentik, Keycloak, etc.) |
-| [kubernetes/](examples/kubernetes/) | Full Kubernetes setup: Deployment, HPA, Redis StatefulSet, Services |
-
 ## Running tests
-
-Each package has its own test suite:
 
 ```bash
 # Core unit tests
@@ -145,6 +75,30 @@ cd python_modules/proxy-hopper && uv run pytest
 # Redis backend tests
 cd python_modules/proxy-hopper-redis && uv run pytest
 
+# Admin webserver tests
+cd python_modules/proxy-hopper-webserver && uv run pytest
+
 # Cross-backend contract tests (memory + Redis, parametrized)
 cd python_modules/tests && uv run pytest
+
+# Integration tests (fake proxy + fake upstream)
+cd python_modules/proxy-hopper-testserver && uv run pytest
 ```
+
+`ci.yml` runs this full matrix on every PR and every branch push.
+
+## Branches and releases — read this before assuming `main` is current
+
+- **`main`** only moves on deliberate release; it is not "the current state" of the project day-to-day. This project isn't in production yet, so `main` gets updated in bursts rather than continuously — expect that to change once it is.
+- **`next`** is the real integration branch. Feature branches merge into `next`; pushing to `next` publishes preview Docker images and a preview Helm chart to `ghcr.io`.
+- Pushing to `main` cuts a stable release: version bump, `CHANGELOG.md` update, `:latest` images, stable Helm chart.
+- Work on a `feat/*` branch off `next`, merge back to `next` when done. Don't expect to find the newest work by checking out `main`.
+
+## More docs
+
+- [python_modules/proxy-hopper/README.md](python_modules/proxy-hopper/README.md) — full config reference, auth, managed auth, metrics, architecture
+- [proxy-hopper-docs](../proxy-hopper-docs/) (sibling repo) — the public Mintlify docs site. Updated after each feature ships to `next`, so it can lag slightly behind the newest work on a feature branch.
+- [TODO.md](TODO.md) — known work still to do
+- [CLEANUP.md](CLEANUP.md) — things flagged for removal/simplification (stale docs, dead code, superseded examples)
+- [CONTRIBUTING.md](CONTRIBUTING.md) — commit conventions and branch model
+- [PROJECT_REVIEW.md](../PROJECT_REVIEW.md) (workspace root) — a full architecture/history write-up with the project owner's own annotations; useful if you want more depth than this README

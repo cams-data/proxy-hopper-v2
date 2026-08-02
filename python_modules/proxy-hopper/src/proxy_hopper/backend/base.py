@@ -184,6 +184,40 @@ class Backend(ABC):
     async def kv_list(self, prefix: str) -> list[tuple[str, str]]:
         """Return all (key, value) pairs whose key starts with *prefix*."""
 
+    @abstractmethod
+    async def kv_set_with_ttl(self, key: str, value: str, ttl_seconds: int) -> None:
+        """Store *value* under *key* with an automatic expiry after *ttl_seconds*.
+
+        Memory: stores value normally (no expiry enforced — acceptable for tests).
+        Redis:  SET key value EX ttl_seconds.
+        """
+
+    @abstractmethod
+    async def lock_acquire(self, key: str, value: str, ttl_seconds: int) -> bool:
+        """Atomically acquire a mutex lock.
+
+        Sets *key* to *value* only if the key does not exist (SET NX), with an
+        automatic TTL that prevents deadlock if the holder crashes.
+
+        Returns True if the lock was acquired, False if already held by another caller.
+
+        Memory: atomic dict check-and-set (asyncio single-threaded).
+        Redis:  SET key value NX EX ttl_seconds (single atomic command).
+        """
+
+    @abstractmethod
+    async def lock_release(self, key: str, value: str) -> bool:
+        """Release the lock only if *key* currently holds *value*.
+
+        Prevents a slow lock holder from releasing a lock that has already been
+        re-acquired by another caller after TTL expiry.
+
+        Returns True if the lock was held by *value* and successfully released.
+
+        Memory: check-and-delete (asyncio single-threaded = atomic).
+        Redis:  Lua script — GET + DEL in one server-side call.
+        """
+
     # ------------------------------------------------------------------
     # Append-only rolling log — for event history
     # ------------------------------------------------------------------

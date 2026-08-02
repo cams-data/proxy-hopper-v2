@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy-hopper-token-server
+  namespace: proxy-hopper
+  labels:
+    app.kubernetes.io/name: proxy-hopper
+    app.kubernetes.io/component: token-server
+spec:
+  # ClusterIP only — the token server should never be exposed publicly.
+  # proxy-hopper reaches it in-cluster via server.authServer.url in the ConfigMap.
+  type: ClusterIP
+  ports:
+    - port: 9000
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: proxy-hopper
+    app.kubernetes.io/component: token-server

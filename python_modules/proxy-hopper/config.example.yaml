@@ -105,3 +105,50 @@ targets:
     ip_failures_until_quarantine: 3
     quarantine_time: 60s
     default_proxy_port: 8080
+
+  # ── Auth-managed target ──────────────────────────────────────────────────
+  # authManaged: true tells proxy-hopper to call the token server before each
+  # forwarded request and inject the returned headers automatically.
+  # Requires server.authServer to be configured below.
+  #
+  # - name: token-protected-api
+  #   regex: '.*protected\.example\.com.*'
+  #   ip_list:
+  #     - "200.200.200.201:8080"
+  #   authManaged: true           # <-- enable token injection for this target
+  #   min_request_interval: 5s
+  #   max_queue_wait: 30s
+  #   num_retries: 2
+  #   ip_failures_until_quarantine: 3
+  #   quarantine_time: 5m
+
+# =============================================================================
+# SERVER SETTINGS  (optional — all have defaults)
+# =============================================================================
+# server:
+#   host: 0.0.0.0
+#   port: 8080
+#   logLevel: INFO
+#   logFormat: text
+#   backend: memory          # memory or redis
+#   redisUrl: redis://localhost:6379/0
+#   metrics: false
+#   metricsPort: 9090
+#
+#   # ── Token server (managed auth) ─────────────────────────────────────────
+#   # When authServer is configured and one or more targets have authManaged: true,
+#   # proxy-hopper calls POST /token before forwarding each request and injects
+#   # the returned headers into the upstream call.
+#   #
+#   # Your token server must implement:
+#   #   POST /token  — returns { headers, expires_at, cursor }
+#   #   GET  /health — returns 2xx when ready
+#   #
+#   # See the full contract in the README: docs/managed-auth.md
+#   authServer:
+#     url: "http://token-server:9000"
+#     timeoutSeconds: 10
+#     refreshThresholdSeconds: 60   # refresh token 60s before expiry
+#     retryIntervalSeconds: 30      # wait 30s after a failure before retrying
+#     maxRetries: 5                 # AUTH_BROKEN after 5 consecutive failures
+#     exposeProxyUrl: false         # include proxy URL in /token request body

@@ -24,10 +24,11 @@ from .identity.identity import Identity
 from .logging_config import get_logger
 from .metrics import get_metrics
 from .models import HOP_BY_HOP_HEADERS, PendingRequest, ProxyResponse
-from .pool import IdentityQueue
+from .pool import IdentityQueue, PinnedAcquireError
 
 if TYPE_CHECKING:
     from .pool_store import IPPoolStore
+    from .token_manager import TokenManager
 
 logger = get_logger(__name__)
 
@@ -45,6 +46,7 @@ class TargetManager:
         debug_quarantine: bool = False,
         quarantine_sweep_interval: float | None = None,
         event_bus: EventBus | None = None,
+        token_manager: "TokenManager | None" = None,
     ) -> None:
         self._config = config
         self._regex = config.compiled_regex()
@@ -78,6 +80,7 @@ class TargetManager:
         self._running = False
         self._session: aiohttp.ClientSession | None = None
         self._proxy_read_timeout = proxy_read_timeout
+        self._token_manager = token_manager
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -224,31 +227,57 @@ class TargetManager:
                 continue
 
             queue_wait = time.monotonic() - request.arrival_time
-            result = await self._queue.acquire(request.time_remaining())
-            if result is None:
-                logger.warning(
-                    "TargetManager '%s': no identity available for %s %s within %.2fs — dropping",
-                    self._config.name, request.method, request.url, request.time_remaining(),
-                )
-                get_metrics().record_queue_expired(self._config.name)
-                if not request.future.done():
-                    request.future.set_result(
-                        self._error_response(503, "no_ip_available", request, "No proxy IP available within the allowed wait time")
+
+            if request.force_ip:
+                # Force-IP path: bypass pool selection, route through the pinned address.
+                try:
+                    uuid, identity = await self._queue.acquire_pinned(request.force_ip)
+                except PinnedAcquireError as exc:
+                    logger.warning(
+                        "TargetManager '%s': force-IP %r unavailable for %s %s: %s",
+                        self._config.name, request.force_ip, request.method, request.url, exc,
                     )
-                self._request_queue.task_done()
-                continue
+                    if not request.future.done():
+                        request.future.set_result(
+                            self._error_response(502, "pinned_ip_unavailable", request, str(exc))
+                        )
+                    self._request_queue.task_done()
+                    continue
+                get_metrics().record_queue_wait(self._config.name, queue_wait)
+                logger.debug(
+                    "TargetManager '%s': dispatching %s %s via pinned %s",
+                    self._config.name, request.method, request.url, identity.address,
+                )
+                task = asyncio.create_task(
+                    self._execute_pinned_request(uuid, identity, request),
+                    name=f"ph:execute-pinned:{self._config.name}",
+                )
+            else:
+                result = await self._queue.acquire(request.time_remaining())
+                if result is None:
+                    logger.warning(
+                        "TargetManager '%s': no identity available for %s %s within %.2fs — dropping",
+                        self._config.name, request.method, request.url, request.time_remaining(),
+                    )
+                    get_metrics().record_queue_expired(self._config.name)
+                    if not request.future.done():
+                        request.future.set_result(
+                            self._error_response(503, "no_ip_available", request, "No proxy IP available within the allowed wait time")
+                        )
+                    self._request_queue.task_done()
+                    continue
 
-            uuid, identity = result
-            get_metrics().record_queue_wait(self._config.name, queue_wait)
+                uuid, identity = result
+                get_metrics().record_queue_wait(self._config.name, queue_wait)
 
-            logger.debug(
-                "TargetManager '%s': dispatching %s %s via %s",
-                self._config.name, request.method, request.url, identity.address,
-            )
-            task = asyncio.create_task(
-                self._execute_request(uuid, identity, request),
-                name=f"ph:execute:{self._config.name}",
-            )
+                logger.debug(
+                    "TargetManager '%s': dispatching %s %s via %s",
+                    self._config.name, request.method, request.url, identity.address,
+                )
+                task = asyncio.create_task(
+                    self._execute_request(uuid, identity, request),
+                    name=f"ph:execute:{self._config.name}",
+                )
             self._inflight.add(task)
             task.add_done_callback(self._inflight.discard)
             self._request_queue.task_done()
@@ -276,7 +305,34 @@ class TargetManager:
     async def _execute_request(
         self, uuid: str, identity: Identity, request: PendingRequest
     ) -> None:
+        # Inject auth headers for auth-managed targets before forwarding.
+        if self._token_manager is not None and self._config.auth_managed:
+            from .token_manager import TokenBrokenError, TokenPendingError
+            try:
+                auth_headers = await self._token_manager.ensure_token(
+                    self._config.name, identity
+                )
+            except (TokenBrokenError, TokenPendingError) as exc:
+                logger.warning(
+                    "TargetManager '%s': auth unavailable for %s — returning 502: %s",
+                    self._config.name, identity.address, exc,
+                )
+                # Return the UUID to the pool without recording a proxy failure.
+                asyncio.create_task(
+                    self._queue._return_after_cooldown(uuid, 0.0),
+                    name=f"ph:pool:auth-skip:{self._config.name}",
+                )
+                if not request.future.done():
+                    request.future.set_result(
+                        self._error_response(502, "auth_unavailable", request, str(exc))
+                    )
+                return
+        else:
+            auth_headers = {}
+
         forward_headers = self._build_request_headers(request, identity)
+        if auth_headers:
+            forward_headers.update(auth_headers)
         proxy_url = f"http://{identity.address}"
         proxy_auth = self._auth_map.get(identity.address)
         start = time.monotonic()
@@ -342,6 +398,109 @@ class TargetManager:
                 uuid, identity, request, exc,
                 status=502, reason="proxy_error",
             )
+
+        finally:
+            total_elapsed = time.monotonic() - start
+            get_metrics().record_request(self._config.name, outcome, total_elapsed, tag=request.tag)
+            if self._event_bus is not None:
+                asyncio.create_task(
+                    self._event_bus.publish(RequestEvent.create(
+                        target=self._config.name,
+                        method=request.method,
+                        url=request.url,
+                        proxy_ip=identity.address,
+                        provider=self._addr_to_provider.get(identity.address),
+                        status_code=_evt_status,
+                        success=outcome == "success",
+                        attempt=request.failure_count,
+                        elapsed_ms=total_elapsed * 1000,
+                        error=_evt_error,
+                        request_headers=forward_headers,
+                        response_headers=_evt_resp_headers,
+                    )),
+                    name=f"ph:event:{self._config.name}",
+                )
+
+    async def _execute_pinned_request(
+        self, uuid: str, identity: Identity, request: PendingRequest
+    ) -> None:
+        """Execute a force-IP request using *identity* as proxy without touching the pool queue.
+
+        Unlike ``_execute_request``, this method never pops or returns UUIDs.
+        Failure accounting (quarantine) is handled via ``record_pinned_failure``
+        and success updates cookies via ``record_pinned_success``.
+        Retries are NOT supported for pinned requests — the caller specified an
+        exact IP, so retrying through a different IP would violate the intent.
+        """
+        forward_headers = self._build_request_headers(request, identity)
+        proxy_url = f"http://{identity.address}"
+        proxy_auth = self._auth_map.get(identity.address)
+        start = time.monotonic()
+        outcome = "unknown"
+        _evt_status: int | None = None
+        _evt_resp_headers: dict[str, str] = {}
+        _evt_error: str | None = None
+
+        try:
+            async with self._session.request(  # type: ignore[union-attr]
+                method=request.method,
+                url=request.url,
+                headers=forward_headers,
+                data=request.body,
+                proxy=proxy_url,
+                proxy_auth=proxy_auth,
+                allow_redirects=False,
+                timeout=aiohttp.ClientTimeout(
+                    total=max(30.0, request.time_remaining()),
+                    sock_read=self._proxy_read_timeout,
+                ),
+            ) as resp:
+                body = await resp.read()
+                elapsed = time.monotonic() - start
+                _evt_status = resp.status
+                _evt_resp_headers = dict(resp.headers)
+
+                if resp.status in _RETRIABLE_STATUSES:
+                    outcome = "rate_limited" if resp.status == 429 else "server_error"
+                    await self._queue.record_pinned_failure(uuid, identity)
+                    if not request.future.done():
+                        request.future.set_result(
+                            self._error_response(resp.status, "upstream_error", request,
+                                                 f"Upstream returned {resp.status} (force-IP, no retry)")
+                        )
+                else:
+                    outcome = "success"
+                    identity.update_from_response(list(resp.raw_headers))
+                    identity.record_request()
+                    await self._queue.record_pinned_success(uuid, identity)
+                    if not request.future.done():
+                        request.future.set_result(ProxyResponse(resp.status, dict(resp.headers), body))
+
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
+            outcome = "connection_error"
+            _evt_error = f"{type(exc).__name__}: {exc}"
+            elapsed = time.monotonic() - start
+            logger.warning(
+                "TargetManager '%s': pinned connection error via %s for %s %s: %s",
+                self._config.name, identity.address, request.method, request.url, exc,
+            )
+            await self._queue.record_pinned_failure(uuid, identity)
+            if not request.future.done():
+                request.future.set_result(
+                    self._error_response(502, "connection_error", request, f"{type(exc).__name__}: {exc}")
+                )
+
+        except Exception as exc:  # pragma: no cover
+            outcome = "error"
+            _evt_error = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "TargetManager '%s': unexpected error in pinned request via %s for %s %s",
+                self._config.name, identity.address, request.method, request.url,
+            )
+            if not request.future.done():
+                request.future.set_result(
+                    self._error_response(502, "proxy_error", request, f"{type(exc).__name__}: {exc}")
+                )
 
         finally:
             total_elapsed = time.monotonic() - start

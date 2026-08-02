@@ -33,6 +33,12 @@ Probes
   proxy_hopper_probe_failure_total{address, provider, region, reason}    Counter
   proxy_hopper_probe_duration_seconds{address, provider, region}         Histogram
   proxy_hopper_ip_reachable{address, provider, region}                   Gauge  (1=up, 0=down)
+
+Auth / token manager
+  proxy_hopper_auth_token_refreshes_total{target, ip, status}            Counter
+  proxy_hopper_auth_token_refresh_duration_seconds{target, ip}           Histogram
+  proxy_hopper_auth_broken_ips_current{target}                           Gauge
+  proxy_hopper_auth_server_request_duration_seconds                      Histogram
 """
 
 from __future__ import annotations
@@ -89,6 +95,12 @@ class _NoopMetrics:
     def record_probe_success(self, address: str, duration: float, *, provider: str = "", region: str = "") -> None:
         pass
     def record_probe_failure(self, address: str, reason: str, duration: float, *, provider: str = "", region: str = "") -> None:
+        pass
+    def record_auth_token_refresh(self, target: str, ip: str, status: str, duration: float) -> None:
+        pass
+    def set_auth_broken_ips(self, target: str, count: int) -> None:
+        pass
+    def record_auth_server_request(self, duration: float) -> None:
         pass
 
 
@@ -193,6 +205,29 @@ class PrometheusMetrics:
             ["address", "provider", "region"],
         )
 
+        # --- Auth / token manager ---
+        self._auth_token_refreshes = Counter(
+            "proxy_hopper_auth_token_refreshes_total",
+            "Total token refresh attempts by target, IP, and outcome",
+            ["target", "ip", "status"],
+        )
+        self._auth_token_refresh_duration = Histogram(
+            "proxy_hopper_auth_token_refresh_duration_seconds",
+            "End-to-end duration of a token refresh (including token server round-trip)",
+            ["target", "ip"],
+            buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+        )
+        self._auth_broken_ips = Gauge(
+            "proxy_hopper_auth_broken_ips_current",
+            "Number of IPs currently in AUTH_BROKEN state per target",
+            ["target"],
+        )
+        self._auth_server_request_duration = Histogram(
+            "proxy_hopper_auth_server_request_duration_seconds",
+            "Duration of HTTP requests to the external token server",
+            buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+        )
+
     def record_request(self, target: str, outcome: str, duration: float, *, tag: str = "") -> None:
         self._requests.labels(target=target, outcome=outcome, tag=_sanitize_tag(tag)).inc()
         self._duration.labels(target=target).observe(duration)
@@ -242,6 +277,16 @@ class PrometheusMetrics:
         self._probe_failure.labels(address=address, provider=provider, region=region, reason=reason).inc()
         self._probe_duration.labels(address=address, provider=provider, region=region).observe(duration)
         self._ip_reachable.labels(address=address, provider=provider, region=region).set(0)
+
+    def record_auth_token_refresh(self, target: str, ip: str, status: str, duration: float) -> None:
+        self._auth_token_refreshes.labels(target=target, ip=ip, status=status).inc()
+        self._auth_token_refresh_duration.labels(target=target, ip=ip).observe(duration)
+
+    def set_auth_broken_ips(self, target: str, count: int) -> None:
+        self._auth_broken_ips.labels(target=target).set(count)
+
+    def record_auth_server_request(self, duration: float) -> None:
+        self._auth_server_request_duration.observe(duration)
 
 
 # Maximum length of a user-supplied tag value used as a Prometheus label.

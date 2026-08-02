@@ -6,13 +6,15 @@ Kubernetes manifests for deploying Proxy Hopper with the Redis backend. These ma
 
 ```
 kubernetes/
-├── namespace.yaml          # Isolated namespace for all resources
-├── configmap.yaml          # targets config.yaml
-├── secret.yaml             # Redis URL (base64-encoded)
-├── redis.yaml              # Redis StatefulSet + Service
-├── deployment.yaml         # Proxy Hopper Deployment
-├── service.yaml            # ClusterIP + optional LoadBalancer
-├── hpa.yaml                # HorizontalPodAutoscaler (CPU-based)
+├── namespace.yaml                  # Isolated namespace for all resources
+├── configmap.yaml                  # targets config.yaml
+├── secret.yaml                     # Redis URL (base64-encoded)
+├── redis.yaml                      # Redis StatefulSet + Service
+├── deployment.yaml                 # Proxy Hopper Deployment
+├── service.yaml                    # ClusterIP + optional LoadBalancer
+├── hpa.yaml                        # HorizontalPodAutoscaler (CPU-based)
+├── token-server-deployment.yaml    # Optional: custom token server Deployment
+├── token-server-service.yaml       # Optional: token server ClusterIP Service
 └── README.md
 ```
 
@@ -158,6 +160,90 @@ annotations:
   prometheus.io/port: "9090"
   prometheus.io/path: "/metrics"
 ```
+
+## Token server (managed auth)
+
+For targets that require per-request Authorization headers (OAuth tokens, rotating API keys), deploy a custom token server alongside proxy-hopper.
+
+### Deploy
+
+1. **Update `token-server-deployment.yaml`** with your image:
+
+   ```yaml
+   image: your-registry/your-token-server:latest
+   ```
+
+   Add any environment variables your token server needs under `env:`.
+
+2. **Apply the token server manifests:**
+
+   ```bash
+   kubectl apply -f examples/kubernetes/token-server-deployment.yaml
+   kubectl apply -f examples/kubernetes/token-server-service.yaml
+   ```
+
+3. **Update `configmap.yaml`** — uncomment the `authServer` block and add `authManaged: true` to relevant targets:
+
+   ```yaml
+   server:
+     authServer:
+       url: "http://proxy-hopper-token-server:9000"
+       timeoutSeconds: 10
+       refreshThresholdSeconds: 60
+       retryIntervalSeconds: 30
+       maxRetries: 5
+       exposeProxyUrl: false
+
+   targets:
+     - name: my-api
+       regex: 'api\.example\.com'
+       authManaged: true
+       ipPool: general-pool
+       ...
+   ```
+
+4. **Apply the updated ConfigMap and restart proxy-hopper:**
+
+   ```bash
+   kubectl apply -f examples/kubernetes/configmap.yaml
+   kubectl rollout restart deployment/proxy-hopper -n proxy-hopper
+   ```
+
+The token server Service is `ClusterIP`-only (`proxy-hopper-token-server:9000`). It is reachable by proxy-hopper in-cluster but not exposed externally.
+
+Your token server must implement:
+- `POST /token` — returns `{ headers, expires_at, cursor }`
+- `GET /health` — returns `2xx` when ready
+
+See the [managed auth documentation](../../python_modules/proxy-hopper/README.md#managed-auth--token-server) for the full API contract and a minimal Python implementation example.
+
+### Using Helm instead
+
+The Helm chart handles all of this automatically. Set `tokenServer.enabled=true` and provide your image:
+
+```yaml
+tokenServer:
+  enabled: true
+  image:
+    repository: your-registry/your-token-server
+    tag: "1.0.0"
+  port: 9000
+
+config:
+  inline: |
+    server:
+      authServer:
+        url: '{{ include "proxy-hopper.tokenServerUrl" . }}'
+        ...
+    targets:
+      - name: my-api
+        authManaged: true
+        ...
+```
+
+See the [Helm chart README](../../charts/proxy-hopper/) for details.
+
+---
 
 ## Production hardening checklist
 

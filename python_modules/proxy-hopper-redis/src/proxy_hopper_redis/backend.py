@@ -250,6 +250,35 @@ class RedisBackend(Backend):
         values = await self._redis.mget(*keys)
         return [(k, v) for k, v in zip(keys, values) if v is not None]
 
+    async def kv_set_with_ttl(self, key: str, value: str, ttl_seconds: int) -> None:
+        await self._redis.set(key, value, ex=ttl_seconds)
+        logger.trace(  # type: ignore[attr-defined]
+            "RedisBackend: SET '%s' EX %d", key, ttl_seconds
+        )
+
+    async def lock_acquire(self, key: str, value: str, ttl_seconds: int) -> bool:
+        result = await self._redis.set(key, value, nx=True, ex=ttl_seconds)
+        acquired = result is not None
+        logger.trace(  # type: ignore[attr-defined]
+            "RedisBackend: lock_acquire '%s' → %s", key, "acquired" if acquired else "already held"
+        )
+        return acquired
+
+    async def lock_release(self, key: str, value: str) -> bool:
+        _LUA_RELEASE = """
+        if redis.call('get', KEYS[1]) == ARGV[1] then
+            return redis.call('del', KEYS[1])
+        else
+            return 0
+        end
+        """
+        result = await self._redis.eval(_LUA_RELEASE, 1, key, value)
+        released = bool(result)
+        logger.trace(  # type: ignore[attr-defined]
+            "RedisBackend: lock_release '%s' → %s", key, "released" if released else "not held by this caller"
+        )
+        return released
+
     # ------------------------------------------------------------------
     # Pub/sub (dedicated connection per subscribe context)
     # ------------------------------------------------------------------

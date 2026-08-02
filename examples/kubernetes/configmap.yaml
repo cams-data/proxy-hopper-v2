@@ -61,11 +61,14 @@ data:
     targets:
 
       # -----------------------------------------------------------------------
-      # Example: strict target for a rate-limited API (uncomment to enable)
+      # Example: auth-managed target — proxy-hopper calls the token server
+      # before every request and injects the returned headers automatically.
+      # Requires authServer to be configured in the server: block above.
       # -----------------------------------------------------------------------
       # - name: strict-api
       #   regex: 'api\.example\.com'
       #   ipPool: general-pool
+      #   authManaged: true          # <-- enable token injection
       #   minRequestInterval: 10s
       #   maxQueueWait: 60s
       #   numRetries: 1
@@ -137,3 +140,16 @@ data:
     #   #   POST|GET /graphql         — GraphQL API (playground at GET /graphql)
     #   # admin: false               # PROXY_HOPPER_ADMIN
     #   # adminPort: 8081            # PROXY_HOPPER_ADMIN_PORT
+    #
+    #   # Token server — optional external service that provides Authorization
+    #   # headers for targets with authManaged: true.
+    #   # Deploy token-server-deployment.yaml + token-server-service.yaml first,
+    #   # then uncomment this block and add authManaged: true to relevant targets.
+    #   #
+    #   # authServer:
+    #   #   url: "http://proxy-hopper-token-server:9000"
+    #   #   timeoutSeconds: 10
+    #   #   refreshThresholdSeconds: 60
+    #   #   retryIntervalSeconds: 30
+    #   #   maxRetries: 5
+    #   #   exposeProxyUrl: false

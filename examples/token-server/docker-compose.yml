@@ -1,0 +1,64 @@
+services:
+
+  # ---------------------------------------------------------------------------
+  # Token server — generates Authorization headers on behalf of proxy-hopper.
+  #
+  # Built from the local Dockerfile using the uv-managed Python package in
+  # this directory.  Swap TOKEN_SECRET and adjust TOKEN_TTL_MINUTES for your
+  # use case.  In production, replace _issue_token() in token_server/main.py
+  # with your real auth mechanism (OAuth2, cookie auth, rotating API keys, …).
+  # ---------------------------------------------------------------------------
+  token-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # IMPORTANT: change TOKEN_SECRET in production.
+      TOKEN_SECRET: "${TOKEN_SECRET:-dev-secret-change-me-in-production}"
+      # Tokens are valid for this many minutes.  Must be longer than
+      # server.authServer.refreshThresholdSeconds in config.yaml (currently 2m).
+      TOKEN_TTL_MINUTES: "${TOKEN_TTL_MINUTES:-60}"
+      LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+    ports:
+      # Exposed for direct testing (e.g. curl http://localhost:9000/health).
+      # Not required for proxy-hopper — it reaches token-server in-network.
+      - "${TOKEN_SERVER_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:9000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Proxy runner — handles actual proxy traffic.
+  #
+  # Uses the official proxy-hopper image from GitHub Container Registry.
+  # Point your HTTP clients at http://localhost:8080 and set the
+  # X-Proxy-Hopper-Target header to route requests.
+  # ---------------------------------------------------------------------------
+  proxy-hopper:
+    image: "ghcr.io/cams-data/proxy-hopper:${PROXY_HOPPER_VERSION:-latest}"
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-8080}:8080"
+    volumes:
+      - ./config.yaml:/etc/proxy-hopper/config.yaml:ro
+    environment:
+      PROXY_HOPPER_HOST: "0.0.0.0"
+      PROXY_HOPPER_PORT: "8080"
+      PROXY_HOPPER_BACKEND: "memory"
+      PROXY_HOPPER_LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+      PROXY_HOPPER_LOG_FORMAT: "json"
+    depends_on:
+      token-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import socket; s=socket.create_connection(('localhost',8080),2); s.close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

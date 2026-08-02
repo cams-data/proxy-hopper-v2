@@ -332,6 +332,7 @@ class TargetConfig(BaseModel):
     default_proxy_port: int = Field(default=8080)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     spoof_user_agent: bool = Field(default=True)
+    auth_managed: bool = Field(default=False)
     mutable: bool = Field(default=True)
     static: bool = Field(default=False)
 
@@ -354,6 +355,40 @@ class TargetConfig(BaseModel):
     def ip_list(self) -> list[str]:
         """Return flat list of 'host:port' strings."""
         return [ip.address for ip in self.resolved_ips]
+
+
+# ---------------------------------------------------------------------------
+# Auth server config — token server integration
+# ---------------------------------------------------------------------------
+
+class AuthServerConfig(BaseModel):
+    """Configuration for the external token server (see token-server-spec.md).
+
+    YAML key: ``server.authServer``
+
+    Fields
+    ------
+    url
+        Base URL of the token server, e.g. ``"http://localhost:9000"``.
+    timeout_seconds (timeoutSeconds)
+        Hard timeout for each ``POST /token`` call.  Default: 15.0.
+    refresh_threshold_seconds (refreshThresholdSeconds)
+        Proactively refresh a token this many seconds before it expires.
+        Default: 120.0.
+    retry_interval_seconds (retryIntervalSeconds)
+        Seconds to wait before retrying a broken IP.  Default: 60.0.
+    max_retries (maxRetries)
+        After this many consecutive failures, quarantine the IP.  Default: 10.
+    expose_proxy_url (exposeProxyUrl)
+        Include the proxy URL in the ``TokenRequest`` so the token server can
+        route its own auth requests through the same IP.  Default: True.
+    """
+    url: str
+    timeout_seconds: float = Field(default=15.0, gt=0)
+    refresh_threshold_seconds: float = Field(default=120.0, ge=0)
+    retry_interval_seconds: float = Field(default=60.0, gt=0)
+    max_retries: int = Field(default=10, ge=1)
+    expose_proxy_url: bool = Field(default=True)
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +486,7 @@ class ServerConfig(BaseSettings):
     admin: bool = False
     admin_port: int = 8081
     admin_host: str = "0.0.0.0"
+    auth_server: Optional[AuthServerConfig] = None
 
     @classmethod
     def settings_customise_sources(

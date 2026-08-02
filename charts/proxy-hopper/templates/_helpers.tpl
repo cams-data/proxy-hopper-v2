@@ -107,3 +107,12 @@ Whether the config volume comes from a Secret.
 {{- define "proxy-hopper.configIsSecret" -}}
 {{- if .Values.config.existingSecret }}true{{- else }}false{{- end }}
 {{- end }}
+
+{{/*
+Token server in-cluster URL — use this in config.inline to keep the URL
+correct regardless of release name:
+  url: '{{ include "proxy-hopper.tokenServerUrl" . }}'
+*/}}
+{{- define "proxy-hopper.tokenServerUrl" -}}
+{{- printf "http://%s-token-server:%d" (include "proxy-hopper.fullname" .) (.Values.tokenServer.port | int) }}
+{{- end }}
