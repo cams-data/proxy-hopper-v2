@@ -312,7 +312,34 @@ proxy-hopper run --config config.yaml [OPTIONS]
   --probe-interval FLOAT   Seconds between probe rounds
   --probe-timeout FLOAT    Per-probe HTTP timeout
   --probe-urls TEXT        Comma-separated probe endpoints
+  --admin / --no-admin     Run the admin server embedded in this process
+  --admin-host TEXT        Interface to bind the embedded admin server
+  --admin-port INT         Port for the embedded admin server
 ```
+
+---
+
+## Admin API
+
+`proxy-hopper-webserver` (`pip install proxy-hopper-webserver`) adds a GraphQL CRUD API, an SSE live-request stream, and the admin UI, on its own port (default `8081`). There are two ways to run it — **the right one depends entirely on which backend you're using**:
+
+| Backend | How to run admin | Why |
+|---|---|---|
+| `redis` | `proxy-hopper admin --config config.yaml` (separate process/pod) | Both processes connect to the same Redis instance, so the admin API sees real, live pool/quarantine/target state. This is the recommended production shape — scale the proxy independently, run a single admin replica. |
+| `memory` | `proxy-hopper run --config config.yaml --admin` (embedded, same process) | The memory backend is plain in-process asyncio queues and dicts — it **cannot be shared across OS processes**. A separately-run `proxy-hopper admin` process with `backend: memory` gets its own private, disconnected backend: it'll show only what was seeded from YAML at its own startup, never any live runtime state (pool rotation, quarantine, admin-made edits). `--admin` avoids this entirely by running both the proxy listener and the admin FastAPI app in one process, sharing one repository/backend object directly — no cross-process boundary to fail to cross. |
+
+Since `backend: memory` only ever supports a single proxy instance anyway (there's no way to share its state across replicas without Redis), embedding admin doesn't cost you anything you didn't already have: there was never going to be more than one node.
+
+```bash
+# Single-container / homelab / Docker Compose: proxy + admin together
+proxy-hopper run --config config.yaml --admin
+
+# Redis-backed HA: proxy replicas scale independently, one admin replica
+proxy-hopper run --config config.yaml --backend redis --redis-url redis://redis:6379/0
+proxy-hopper admin --config config.yaml --backend redis --redis-url redis://redis:6379/0
+```
+
+If `proxy-hopper-webserver` isn't installed, `--admin` fails startup immediately with a clear error rather than silently running without it — same fail-fast behavior as requesting `--backend redis` without `proxy-hopper-redis` installed.
 
 ---
 

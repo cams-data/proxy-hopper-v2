@@ -659,6 +659,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "prometheus-client", specifier = ">=0.20" },
+    { name = "proxy-hopper-webserver", marker = "extra == 'dev'", editable = "." },
     { name = "pydantic", specifier = ">=2.6" },
     { name = "pydantic-settings", specifier = ">=2.2" },
     { name = "pyjwt", specifier = ">=2.8" },

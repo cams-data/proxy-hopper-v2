@@ -49,8 +49,13 @@ def admin(
 ) -> None:
     """Start the admin server (GraphQL API + web UI).
 
-    Connects to the same backend as the proxy runners but runs no proxy
-    listener.  Deploy as a separate pod with a single replica.
+    With ``backend: redis``, connects to the same Redis instance as the proxy
+    runners and sees live state — deploy as a separate pod with a single
+    replica. With ``backend: memory``, this process gets its own private
+    in-process backend that the proxy process cannot write to, so it will
+    only ever show YAML-seeded state, never live runtime state — use
+    ``proxy-hopper run --admin`` instead for a memory-backend deployment,
+    which runs both in one process sharing one backend directly.
     """
     if config is None:
         click.echo("Error: --config / PROXY_HOPPER_CONFIG is required.", err=True)
