@@ -20,7 +20,7 @@ The docs site (sibling repo `../proxy-hopper-docs/`) is meant to be updated afte
 
 - **Auth** (`python_modules/proxy-hopper/src/proxy_hopper/auth/`) — who's allowed to send traffic *to* Proxy Hopper (API keys / local JWT / OIDC). Gates the proxy port and the admin API.
 - **Identity** (`.../identity/`) — a browser fingerprint + cookie jar Proxy Hopper presents *to the target site*, bound to one (proxy IP, target) pair. Nothing to do with who's allowed to use Proxy Hopper.
-- **Token server** (`python_modules/proxy-hopper-token-server/`) — a separate optional package that fetches/refreshes auth tokens *for the target API itself* (e.g. the upstream requires OAuth). Pairs with the `X-Proxy-Hopper-Force-IP` header so token acquisition and token use share an egress IP.
+- **Token server** (`python_modules/proxy-hopper-token-server/`) — a separate optional package that fetches/refreshes auth tokens *for the target API itself* (e.g. the upstream requires OAuth). Pairs with the `X-Proxy-Hopper-Force-IP` header so token acquisition and token use share an egress IP. Documented on the docs site: `concepts/managed-auth.mdx`, `admin/token-server/overview.mdx`, `developers/token-server.mdx`.
 
 If a task mentions "auth," ask which of these three it actually means before touching code.
 

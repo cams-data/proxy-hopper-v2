@@ -293,7 +293,7 @@ All server fields can also be set as `PROXY_HOPPER_*` env vars (e.g. `PROXY_HOPP
 | `refreshThresholdSeconds` | `60` | Start refreshing a token this many seconds before it expires |
 | `retryIntervalSeconds` | `30` | Cooldown between retry attempts after a token server failure |
 | `maxRetries` | `5` | Consecutive failures before an IP is marked `AUTH_BROKEN` |
-| `exposeProxyUrl` | `false` | Include the proxy-hopper public URL in the `/token` request body |
+| `exposeProxyUrl` | `true` | Include the proxy-hopper public URL in the `/token` request body |
 
 ### CLI flags
 
@@ -579,7 +579,7 @@ server:
     refreshThresholdSeconds: 60    # refresh 60s before expiry
     retryIntervalSeconds: 30       # retry after failure
     maxRetries: 5                  # broken-state threshold
-    exposeProxyUrl: false
+    exposeProxyUrl: false          # default: true — disable if your token server doesn't need proxy_url
 ```
 
 **2. Mark the relevant targets:**
