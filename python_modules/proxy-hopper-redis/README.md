@@ -82,52 +82,39 @@ services:
 
 ## Architecture
 
-`RedisIPPoolBackend` implements the same `IPPoolBackend` interface as the in-memory backend — it is a pure storage layer with no business logic. All quarantine policy, cooldown scheduling, and failure thresholds live in `IPPool` (in `proxy-hopper`).
+`RedisBackend` implements the same abstract `Backend` interface as the in-memory backend — it is a pure storage layer (queue, counter, sorted set, KV, lock, pub/sub) with no business logic. All quarantine policy, cooldown scheduling, and failure thresholds live above it, in `IdentityQueue`/`IPPoolStore` (in `proxy-hopper`).
 
 ```
-proxy-hopper (IPPool)                proxy-hopper-redis (RedisIPPoolBackend)
-─────────────────────                ───────────────────────────────────────
-record_failure(address)    ──────►   increment_failures(target, address) → INCR
-  if failures >= threshold ──────►   quarantine_add(target, address, release_at) → ZADD
-acquire(timeout)           ──────►   pop_ip(target, timeout) → BLPOP
-_sweep_quarantine()        ──────►   quarantine_pop_expired(target, now) → ZRANGEBYSCORE+ZREM
-record_success(address)    ──────►   reset_failures(target, address) → SET 0
-                                     push_ip(target, address) → RPUSH
+proxy-hopper (IdentityQueue / IPPoolStore)    proxy-hopper-redis (RedisBackend)
+────────────────────────────────────────      ─────────────────────────────────
+counter_increment(failures_key)      ──────►   INCR
+sorted_set_add(quarantine_key, ...)  ──────►   ZADD
+queue_pop_blocking(pool_key, ...)    ──────►   BLPOP
+sorted_set_pop_by_max_score(...)     ──────►   ZRANGEBYSCORE+ZREM
+counter_set(failures_key, 0)         ──────►   SET
+queue_push(pool_key, ...)            ──────►   RPUSH
 ```
 
 ## Programmatic use
 
-If you're integrating directly rather than using the CLI:
+If you're integrating directly rather than using the CLI, `RedisBackend` implements the primitives above — queue, counter, sorted set, KV, lock, pub/sub — with no knowledge of targets, pools, or rotation policy:
 
 ```python
-from proxy_hopper_redis import RedisIPPoolBackend
+from proxy_hopper_redis import RedisBackend
 
-backend = RedisIPPoolBackend("redis://localhost:6379/0")
+backend = RedisBackend("redis://localhost:6379/0")
 await backend.start()   # connects and pings Redis
 
-# Use via IPPool (recommended)
-from proxy_hopper.pool import IPPool
-from proxy_hopper.config import TargetConfig
+await backend.queue_push("my-target:pool", "10.0.0.1:3128")
+await backend.queue_push("my-target:pool", "10.0.0.2:3128")
 
-config = TargetConfig(
-    name="my-target",
-    regex=r".*example\.com.*",
-    ip_list=["10.0.0.1:3128", "10.0.0.2:3128"],
-    min_request_interval=1.0,
-    max_queue_wait=30.0,
-    num_retries=3,
-    ip_failures_until_quarantine=5,
-    quarantine_time=120.0,
-)
-pool = IPPool(config, backend)
-await pool.start()
+address = await backend.queue_pop_blocking("my-target:pool", timeout=10.0)
+await backend.counter_increment(f"my-target:failures:{address}")
 
-address = await pool.acquire(timeout=10.0)   # "10.0.0.1:3128"
-await pool.record_success(address)
-
-await pool.stop()
 await backend.stop()
 ```
+
+For the full rotation/quarantine/identity policy built on top of these primitives, construct a `proxy_hopper.repository.ProxyRepository` and `proxy_hopper.pool_store.IPPoolStore` with this backend instead of calling the primitives directly — see [`python_modules/proxy-hopper/README.md`](../proxy-hopper/README.md).
 
 ## Testing with fakeredis
 
@@ -135,9 +122,9 @@ The test suite uses [fakeredis](https://github.com/cunla/fakeredis-py) to run wi
 
 ```python
 import fakeredis.aioredis as fakeredis
-from proxy_hopper_redis import RedisIPPoolBackend
+from proxy_hopper_redis import RedisBackend
 
-backend = RedisIPPoolBackend()
+backend = RedisBackend()
 backend._redis = fakeredis.FakeRedis(decode_responses=True)
 await backend.start()   # pings the fake server — no real Redis needed
 ```

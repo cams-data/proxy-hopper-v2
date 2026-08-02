@@ -332,11 +332,3 @@ class RedisBackend(Backend):
             logger.trace(  # type: ignore[attr-defined]
                 "RedisBackend: unsubscribe '%s'", channel
             )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible alias
-# ---------------------------------------------------------------------------
-
-#: Deprecated alias — use RedisBackend directly.
-RedisIPPoolBackend = RedisBackend

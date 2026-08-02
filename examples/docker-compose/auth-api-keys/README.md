@@ -78,15 +78,9 @@ docker compose up --build
 Pass the key as a Bearer token in the `X-Proxy-Hopper-Auth` header:
 
 ```bash
-# Forwarding mode
 curl -H "X-Proxy-Hopper-Auth: Bearer ph_scraper_CHANGEME_use_a_long_random_value" \
      -H "X-Proxy-Hopper-Target: https://example.com" \
      http://localhost:8080/
-
-# HTTP proxy mode
-curl --proxy http://localhost:8080 \
-     -H "X-Proxy-Hopper-Auth: Bearer ph_scraper_CHANGEME_use_a_long_random_value" \
-     https://example.com
 ```
 
 ```python
@@ -94,20 +88,12 @@ import httpx
 
 KEY = "ph_scraper_CHANGEME_use_a_long_random_value"
 
-# Forwarding mode
 resp = httpx.get(
     "http://localhost:8080/",
     headers={
         "X-Proxy-Hopper-Auth": f"Bearer {KEY}",
         "X-Proxy-Hopper-Target": "https://example.com",
     },
-)
-
-# HTTP proxy mode
-resp = httpx.get(
-    "https://example.com",
-    proxy="http://localhost:8080",
-    headers={"X-Proxy-Hopper-Auth": f"Bearer {KEY}"},
 )
 ```
 

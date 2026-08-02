@@ -14,7 +14,7 @@ docker pull ghcr.io/cams-data/proxy-hopper:latest
 pip install proxy-hopper
 ```
 
-Requires Python 3.11+.
+Requires Python 3.12+.
 
 ## Usage
 

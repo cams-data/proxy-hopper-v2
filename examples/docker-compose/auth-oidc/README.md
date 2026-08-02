@@ -183,15 +183,9 @@ TOKEN=$(curl -s -X POST \
 ### Using the token
 
 ```bash
-# Forwarding mode
 curl -H "X-Proxy-Hopper-Auth: Bearer $TOKEN" \
      -H "X-Proxy-Hopper-Target: https://example.com" \
      http://localhost:8080/
-
-# HTTP proxy mode
-curl --proxy http://localhost:8080 \
-     -H "X-Proxy-Hopper-Auth: Bearer $TOKEN" \
-     https://example.com
 ```
 
 ```python

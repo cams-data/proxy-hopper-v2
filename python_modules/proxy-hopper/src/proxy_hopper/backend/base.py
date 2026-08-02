@@ -281,11 +281,3 @@ class Backend(ABC):
 
 class AsyncIteratorContextManager:
     """Type alias hint — an object usable as both async context manager and iterator."""
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible aliases
-# ---------------------------------------------------------------------------
-
-#: Deprecated alias — use Backend directly.
-IPPoolBackend = Backend

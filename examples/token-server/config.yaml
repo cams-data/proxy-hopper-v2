@@ -20,6 +20,29 @@
 # =============================================================================
 
 # =============================================================================
+# PROXY PROVIDERS
+# =============================================================================
+
+proxyProviders:
+  - name: general-provider
+    ipList:
+      # Replace these with your real external proxy IPs.
+      # Format: "host:port" or bare "host" (uses defaultProxyPort below).
+      - "203.0.113.10:3128"   # placeholder — replace with a real proxy IP
+      - "203.0.113.11:3128"   # placeholder — replace with a real proxy IP
+
+# =============================================================================
+# IP POOLS
+# =============================================================================
+# Both targets below share the same pool of proxy IPs.
+
+ipPools:
+  - name: general-pool
+    ipRequests:
+      - provider: general-provider
+        count: 2
+
+# =============================================================================
 # TARGETS
 # =============================================================================
 
@@ -32,11 +55,7 @@ targets:
   - name: httpbin
     regex: '.*httpbin\.org.*'
     authManaged: true         # <-- proxy-hopper injects the token automatically
-    ipList:
-      # Replace these with your real external proxy IPs.
-      # Format: "host:port" or bare "host" (uses defaultProxyPort below).
-      - "203.0.113.10:3128"   # placeholder — replace with a real proxy IP
-      - "203.0.113.11:3128"   # placeholder — replace with a real proxy IP
+    ipPool: general-pool
     defaultProxyPort: 3128
     minRequestInterval: 2s
     maxQueueWait: 30s
@@ -49,9 +68,7 @@ targets:
   # ---------------------------------------------------------------------------
   - name: general
     regex: '.*'
-    ipList:
-      - "203.0.113.10:3128"   # same proxies — replace with real IPs
-      - "203.0.113.11:3128"
+    ipPool: general-pool
     defaultProxyPort: 3128
     minRequestInterval: 1s
     maxQueueWait: 30s

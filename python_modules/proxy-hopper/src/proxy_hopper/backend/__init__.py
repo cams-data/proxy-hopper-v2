@@ -1,12 +1,9 @@
 """Backend package — storage primitive implementations."""
 
-from .base import Backend, IPPoolBackend
-from .memory import MemoryBackend, MemoryIPPoolBackend
+from .base import Backend
+from .memory import MemoryBackend
 
 __all__ = [
     "Backend",
     "MemoryBackend",
-    # Deprecated aliases
-    "IPPoolBackend",
-    "MemoryIPPoolBackend",
 ]

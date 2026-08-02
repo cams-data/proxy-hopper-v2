@@ -11,34 +11,35 @@
 #   3. PROXY_HOPPER_* environment variables
 #
 # =============================================================================
-# PROXY PROVIDERS  (optional)
+# PROXY PROVIDERS  (required)
 # =============================================================================
 # Named proxy suppliers — each with their own credentials and a region tag for
 # observability.  Reference them from ipPools via ipRequests.
-#
-# proxyProviders:
-#   - name: my-provider
-#     # auth is optional — omit for open or IP-whitelisted proxies
-#     auth:
-#       type: basic
-#       username: myuser
-#       password: mypassword
-#     ipList:
-#       - "proxy-1.example.com:3128"
-#       - "proxy-2.example.com:3128"
-#     regionTag: Australia
+
+proxyProviders:
+  - name: my-provider
+    # auth is optional — omit for open or IP-whitelisted proxies
+    # auth:
+    #   type: basic
+    #   username: myuser
+    #   password: mypassword
+    ipList:
+      - "203.0.113.10:3128"         # replace with your real proxy IPs
+      - "203.0.113.11:3128"
+      - "203.0.113.12:3128"
+    regionTag: Australia
 
 # =============================================================================
-# IP POOLS  (optional)
+# IP POOLS  (required)
 # =============================================================================
-# Define a named IP list once and reference it from multiple targets.
-# Draw IPs from providers via ipRequests, or list them inline.
-#
-# ipPools:
-#   - name: shared-pool
-#     ipRequests:
-#       - provider: my-provider
-#         count: 3      # randomly sample 3 IPs from the provider's list
+# Define a named pool once and reference it from multiple targets.
+# Draw IPs from providers via ipRequests.
+
+ipPools:
+  - name: shared-pool
+    ipRequests:
+      - provider: my-provider
+        count: 3      # use up to 3 IPs from the provider's list
 
 # =============================================================================
 # AUTHENTICATION  (optional — disabled by default)
@@ -92,10 +93,7 @@ targets:
   # ---------------------------------------------------------------------------
   - name: general
     regex: '.*'
-    ipList:
-      - "203.0.113.10:3128"         # replace with your real proxy IPs
-      - "203.0.113.11:3128"
-      - "203.0.113.12:3128"
+    ipPool: shared-pool             # reference the pool defined above
 
     # --- Rate limiting -------------------------------------------------------
     # minRequestInterval: how long an IP is held off the pool after any request
