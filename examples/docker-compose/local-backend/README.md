@@ -19,12 +19,22 @@ local-backend/
 Replace the placeholder IP addresses with your real external proxy IPs and tune the rate-limiting settings for your use case:
 
 ```yaml
-targets:
-  - name: general
-    regex: '.*'
+proxyProviders:
+  - name: my-provider
     ipList:
       - "your-proxy-1.example.com:3128"
       - "your-proxy-2.example.com:3128"
+
+ipPools:
+  - name: shared-pool
+    ipRequests:
+      - provider: my-provider
+        count: 2
+
+targets:
+  - name: general
+    regex: '.*'
+    ipPool: shared-pool
     minRequestInterval: 1s   # one request per IP per second
     maxQueueWait: 30s
     numRetries: 3
@@ -48,10 +58,6 @@ PROXY_HOPPER_VERSION=0.2.0 docker compose up --build
 **3. Send a request through the proxy**
 
 ```bash
-# HTTP proxy mode
-curl --proxy http://localhost:8080 https://example.com
-
-# Forwarding mode (full retry support for HTTPS APIs)
 curl -H "X-Proxy-Hopper-Target: https://example.com" \
      http://localhost:8080/api/endpoint
 ```
@@ -59,10 +65,6 @@ curl -H "X-Proxy-Hopper-Target: https://example.com" \
 ```python
 import requests
 
-# HTTP proxy mode
-resp = requests.get("https://example.com", proxies={"https": "http://localhost:8080"})
-
-# Forwarding mode — set a session header, use normal paths
 session = requests.Session()
 session.headers["X-Proxy-Hopper-Target"] = "https://example.com"
 resp = session.get("http://localhost:8080/api/endpoint")
@@ -97,16 +99,25 @@ Settings are resolved in this order (highest wins):
 | 3 | `PROXY_HOPPER_*` env vars set in `docker-compose.yml` |
 | 4 | Built-in defaults |
 
+### config.yaml — proxy providers and IP pools
+
+Targets don't list proxy IPs directly — IPs are declared once in `proxyProviders`, drawn into a named `ipPools` entry, and referenced from `targets[].ipPool`:
+
+| Field | Default | Description |
+|---|---|---|
+| `proxyProviders[].name` | required | Unique identifier referenced from `ipPools[].ipRequests` |
+| `proxyProviders[].ipList` | required | Proxy addresses — `host:port` or bare host |
+| `proxyProviders[].auth` | — | Optional `{type: basic, username, password}` sent to the external proxy |
+| `ipPools[].name` | required | Unique identifier referenced from `targets[].ipPool` |
+| `ipPools[].ipRequests` | required | List of `{provider, count}` draws from `proxyProviders` |
+
 ### config.yaml — target fields
 
 | Field | Default | Description |
 |---|---|---|
 | `name` | required | Label used in logs and metrics |
 | `regex` | required | Python regex matched against the full request URL |
-| `ipList` | required* | Proxy addresses — `host:port` or bare host |
-| `ipPool` | required* | Name of a shared `ipPools` entry |
-| `proxyUsername` | — | Username for HTTP Basic auth sent to the external proxy |
-| `proxyPassword` | — | Password for HTTP Basic auth sent to the external proxy |
+| `ipPool` | required | Name of a shared `ipPools` entry |
 | `defaultProxyPort` | `8080` | Port applied to bare IPs without an explicit port |
 | `minRequestInterval` | `1s` | **Primary rate-limit knob.** How long an IP is unavailable after any request. |
 | `maxQueueWait` | `30s` | How long a request waits for a free IP before failing |
@@ -114,7 +125,7 @@ Settings are resolved in this order (highest wins):
 | `ipFailuresUntilQuarantine` | `5` | Consecutive failures before an IP is quarantined |
 | `quarantineTime` | `120s` | How long a quarantined IP sits out |
 
-\* Exactly one of `ipList` or `ipPool` per target. Duration values accept `s`, `m`, `h` suffixes or bare seconds.
+Duration values accept `s`, `m`, `h` suffixes or bare seconds.
 
 ### config.yaml — server settings
 
@@ -136,10 +147,6 @@ server:
   probeUrls:
     - https://1.1.1.1
     - https://www.google.com
-  modes:                # interaction modes to enable (default: all three)
-    - connect_tunnel    # HTTPS CONNECT tunnel
-    - http_proxy        # traditional HTTP proxy
-    - forwarding        # URL-rewriting: /https/host/path
 ```
 
 ### Environment variables

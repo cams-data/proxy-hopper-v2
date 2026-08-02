@@ -2,34 +2,34 @@
 
 Things that exist in this repo (and the workspace around it) purely as leftover confusion — dead code, stale docs, superseded examples, orphaned config fields. Nothing here has been deleted automatically; this is a documented list for a deliberate pass. Cross-reference [TODO.md](TODO.md) for the fixes that aren't pure deletions.
 
-## A. Stale references to the two dropped integration modes
+## A. Stale references to the two dropped integration modes — done (2026-08-02)
 
-Proxy Hopper originally supported three ways to send it traffic: HTTP proxy mode, CONNECT tunnel mode, and forwarding mode. Commit `2f62d55` (`feat!: drop HTTP proxy and CONNECT tunnel modes, add X-Proxy-Hopper-Tag/Retries headers`) removed the first two — forwarding mode (`X-Proxy-Hopper-Target` header) is the only one the code implements today. The following still describe or configure the removed modes:
+Proxy Hopper originally supported three ways to send it traffic: HTTP proxy mode, CONNECT tunnel mode, and forwarding mode. Commit `2f62d55` (`feat!: drop HTTP proxy and CONNECT tunnel modes, add X-Proxy-Hopper-Tag/Retries headers`) removed the first two — forwarding mode (`X-Proxy-Hopper-Target` header) is the only one the code implements today.
 
-- **`examples/docker-compose/local-backend/README.md`** — lines ~48-51 and ~61-62 show `curl --proxy http://localhost:8080 ...` / `requests.get(..., proxies=...)` snippets labeled "HTTP proxy mode," which no longer works. Lines ~139-141 show a `modes:` config block listing `connect_tunnel` / `http_proxy` / `forwarding` — **this field doesn't exist in `config/models.py` at all anymore**; the whole block is dead.
-- **`examples/docker-compose/local-redis/README.md`** — same two problems, same shape (HTTP-proxy-mode snippets + a `modes:`/`connect_tunnel` block).
-- **`examples/docker-compose/auth-api-keys/README.md`** — "HTTP proxy mode" curl snippets (two occurrences).
-- **`examples/docker-compose/auth-oidc/README.md`** — same.
-- **(Root, rewritten 2026-08-02)** The old top-level `README.md` had a full three-mode comparison table and code samples for all three. That's been replaced — flagging here only so a stray `git stash`/old-branch merge doesn't silently reintroduce it.
+Removed the "HTTP proxy mode" snippets and the dead `modes:`/`connect_tunnel` config block from `local-backend/README.md`, `local-redis/README.md`, `auth-api-keys/README.md`, and `auth-oidc/README.md`. `examples/token-server/README.md` had one more instance not originally listed here, also fixed.
 
-**Recommended fix**: in each example README, delete the "HTTP proxy mode" snippet and keep only the forwarding-mode one; delete the `modes:`/`connect_tunnel` lines from the example `docker-compose.yml`/config snippets entirely.
+This turned into a bigger fix than expected: `local-backend`'s and `local-redis`'s inline config snippets (and by extension, checking further, their actual `config.yaml` files, plus `auth-api-keys/config.yaml`, `auth-oidc/config.yaml`, and `examples/token-server/config.yaml`) put `ipList` directly on a target — a shape `loader.py` now hard-rejects (`"Inline ipList is no longer supported — declare IPs in a proxyProvider."`). Verified with `proxy-hopper validate --config` against every example `config.yaml` in the repo: 4 of 6 crashed on load. Fixed all 4 broken config files (added `proxyProviders`/`ipPools`, targets now reference `ipPool:`) and the READMEs' matching inline snippets/field tables, then re-validated all six clean. See TODO.md item 6.
 
-**Not code, but worth a decision**: the workspace-root file `Proxy Hopper - Proxy Hopper.html` (a saved browser snapshot of an old docs-site landing page) still describes the three-mode story. It's inert — not part of any build — but someone opening it cold could mistake it for current. Recommend deleting it, or moving it into `archive/` alongside the retired `ROADMAP.md`. Left as-is for now since it's outside git and irreversible to remove without a backup; ask before deleting.
+**(Root)** The old top-level `README.md`'s three-mode comparison table was already replaced before this pass — no action needed, still flagging so a stray `git stash`/old-branch merge doesn't silently reintroduce it.
 
-## B. Dead code
+**Not code, still a decision**: the workspace-root file `Proxy Hopper - Proxy Hopper.html` (a saved browser snapshot of an old docs-site landing page) still describes the three-mode story. It's inert — not part of any build — but someone opening it cold could mistake it for current. Recommend deleting it, or moving it into `archive/` alongside the retired `ROADMAP.md`. Left as-is since it's outside git and irreversible to remove without a backup; ask before deleting.
 
-- **`python_modules/proxy-hopper/src/proxy_hopper/graphql/`** — `queries.py`, `mutations.py`, `types.py`, `inputs.py`, `context.py` are stale, unused duplicates of the real GraphQL implementation, which now lives in `proxy-hopper-webserver/src/proxy_hopper_webserver/graphql/`. The sibling `__init__.py` in the same core directory already raises `ImportError` telling callers to use the webserver package instead — so these five files are unreachable through the package's own public API. Confirmed nothing outside this directory imports them directly (only the redirect `__init__.py` is imported). **Recommendation: delete the five files**, keep the `__init__.py` redirect stub.
-- **`python_modules/proxy-hopper/src/proxy_hopper/identity/store.py`** — entire file content is a comment stating `IdentityStore` was removed and replaced by `IdentityQueue`/`IPPoolStore`. Not imported anywhere. **Recommendation: delete the file.**
-- **`python_modules/proxy-hopper/src/proxy_hopper/backend/base.py`** — `IPPoolBackend = Backend` (line 271) is a deprecated alias for the `Backend` ABC. Grep for `IPPoolBackend` usage outside this file before deleting; if nothing external imports it, remove it.
-- **`python_modules/proxy-hopper-redis/src/proxy_hopper_redis/backend.py`** — `RedisIPPoolBackend` (line ~331) is the Redis-side counterpart of the same deprecated alias. Same treatment: confirm no external imports, then delete.
-- **`python_modules/proxy-hopper/src/proxy_hopper/models.py`** — `IPState` and `ReturnReason` dataclasses look like leftovers from a design predating `Identity`/`IdentityQueue`. Grep for constructors of either before deleting — if nothing builds an `IPState` in the current pipeline, they're dead.
+## B. Dead code — done (2026-08-02)
+
+- **`python_modules/proxy-hopper/src/proxy_hopper/graphql/`** — deleted `queries.py`, `mutations.py`, `types.py`, `inputs.py`, `context.py`, and `_auth.py` (a 6th file this list originally missed — a helper only imported by `queries.py`/`mutations.py`, part of the same dead cluster). Kept the `__init__.py` `ImportError` redirect stub. Confirmed via `grep` that nothing outside the directory imported any of the six.
+- **`python_modules/proxy-hopper/src/proxy_hopper/identity/store.py`** — deleted. Confirmed unimported.
+- **`python_modules/proxy-hopper/src/proxy_hopper/backend/base.py`**'s `IPPoolBackend = Backend` and **`backend/memory.py`**'s `MemoryIPPoolBackend = MemoryBackend` — deleted, plus their `backend/__init__.py` exports. Confirmed zero `.py` usage outside their own definitions.
+- **`python_modules/proxy-hopper-redis/src/proxy_hopper_redis/backend.py`**'s `RedisIPPoolBackend = RedisBackend` — deleted, plus its `__init__.py` export. Same confirmation.
+- **`python_modules/proxy-hopper/src/proxy_hopper/models.py`**'s `IPState` and `ReturnReason` — deleted, along with the now-unused `Enum`/`auto` import. Confirmed zero constructors anywhere.
+
+None of the four aliases had `.py` usage outside their own definitions, but 3 READMEs (`proxy-hopper-redis/README.md`, `proxy-hopper-testserver/README.md`, `python_modules/tests/README.md`) documented them as the primary API with runnable-looking examples — fixed all three to use the real names. `proxy-hopper-redis/README.md`'s "Programmatic use" example was separately stale (constructed `TargetConfig(ip_list=...)`, imported a since-removed `IPPool` class) — rewrote it around the `Backend` primitives instead. `python_modules/tests/README.md` had the same vintage of staleness throughout — rewrote to match current fixture/class names (`IPPoolStore`, `IdentityQueue`) and added the previously-undocumented `test_app_metrics_contract.py`.
 
 ## C. Stale docs / config
 
 - **`ROADMAP.md`** (workspace root) — retired 2026-08-02 per project owner decision (all three items — auth, GraphQL, front-end — have shipped). Moved to `../archive/ROADMAP.md` with a header note; not deleted outright since the workspace root isn't under version control and an outright delete would be unrecoverable.
-- **`CONTRIBUTING.md`** — its release-flow section describes a `release-please` Release-PR workflow that the actual CI (`next.yml`, `release.yml`) no longer uses (they use `git-cliff` + `github-tag-action`, tagging directly on push). Needs a rewrite to match reality. See TODO.md item 8.
-- **Remote branch `origin/release-please--branches--next`** — leftover from the old release-please setup. Dangling, safe to delete once someone with push access confirms. Not deleted here (remote branch deletion is a shared/irreversible action outside this review's scope).
-- **`python_modules/proxy-hopper/README.md` line 17** — "Requires Python 3.11+" is stale; `pyproject.toml` requires `>=3.12` since commit `68d1038`. One-line fix, see TODO.md item 7.
+- **`CONTRIBUTING.md`** — **done (2026-08-02).** Rewritten to describe the actual `git-cliff` + `github-tag-action` pipeline. See TODO.md item 8.
+- **Remote branch `origin/release-please--branches--next`** — leftover from the old release-please setup. Still dangling, still needs someone with push access to confirm before deletion — not done here, that's a shared/irreversible action outside this review's scope.
+- **`python_modules/proxy-hopper/README.md` line 17** — **done (2026-08-02).** Now says "Requires Python 3.12+". See TODO.md item 7.
 
 ## D. Branch hygiene (not executed — listed for your call)
 

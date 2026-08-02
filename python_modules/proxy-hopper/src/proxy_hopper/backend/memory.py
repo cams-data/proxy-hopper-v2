@@ -273,11 +273,3 @@ class MemoryBackend(Backend):
                 "MemoryBackend: unsubscribe '%s' (now %d subscriber(s))",
                 channel, len(self._pubsub[channel]),
             )
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible alias
-# ---------------------------------------------------------------------------
-
-#: Deprecated alias — use MemoryBackend directly.
-MemoryIPPoolBackend = MemoryBackend

@@ -2,7 +2,7 @@
 
 Cross-backend contract tests for proxy-hopper. Every test in this package runs automatically against **all registered backend implementations** — currently the in-memory backend and the Redis backend (via fakeredis).
 
-This package contains no library code. It exists solely to house tests that verify the `IPPoolBackend` interface contract and the `IPPool` business-logic layer independent of any specific storage implementation.
+This package contains no library code. It exists solely to house tests that verify the `IPPoolStore` interface contract and the `IdentityQueue` business-logic layer independent of any specific storage implementation.
 
 ## Purpose
 
@@ -28,32 +28,36 @@ That's it. Both backends are tested in a single command, with no external servic
 
 ### `test_backend_contract.py`
 
-Tests the raw `IPPoolBackend` storage interface. Verifies that each backend correctly implements:
+Tests the `IPPoolStore` interface (`pool_store.py`) — a thin wrapper around the raw `Backend` primitives (queue/counter/sorted-set/KV) that gives them pool-domain meaning. Verifies that each backend correctly implements:
 
-- **`init_target`** — first caller returns `True`, subsequent callers return `False`; independent targets don't interfere
-- **IP pool queue** — FIFO ordering, `push_ip` / `pop_ip`, timeout behaviour, `pool_size`
-- **Failure counter** — `increment_failures` returns the new count, `reset_failures` zeroes it, independent per IP, concurrent increments are consistent
-- **Quarantine** — `quarantine_add` / `quarantine_list` / `quarantine_pop_expired`; expired entries are returned and removed; future entries are not returned; concurrent `pop_expired` calls cannot double-claim the same entry
+- **`claim_init`** — first caller returns `True`, subsequent callers return `False`; independent targets don't interfere
+- **Pool queue** — FIFO ordering, `push_identity_uuid` / `pop_identity_uuid`, timeout behaviour, `pool_size`
+- **Failure counter, quarantine, identity KV, IP→UUID lookups, retired-address set** — see `IPPoolStore`'s own docstrings in `pool_store.py` for the full method list this suite exercises
 
 ### `test_pool_contract.py`
 
-Tests the `IPPool` business-logic layer, which sits above the backend. Uses the same parametrized backend fixture so every pool behaviour is verified on each backend. Verifies:
+Tests the `IdentityQueue` business-logic layer (`pool.py`), which sits above `IPPoolStore`. Uses the same parametrized backend fixture so every pool behaviour is verified on each backend. Verifies:
 
-- **`acquire`** — returns an address string, drains the pool in order, returns `None` on timeout
-- **`record_success`** — resets failure count, returns IP to pool after `min_request_interval` cooldown
-- **`record_failure`** — increments failure count; below threshold returns IP to pool; at threshold quarantines IP and keeps it out of pool
-- **`_sweep_quarantine`** — releases expired entries back to pool with failures reset; leaves unexpired entries alone; safe on empty quarantine
-- **`get_status`** — reports correct available IP count and quarantined IP list
+- **`acquire`** — returns a UUID and identity, drains the pool in order, returns `None` on timeout
+- **`record_success`** — resets failure count, returns the identity to the pool after `min_request_interval` cooldown
+- **`record_failure`** — increments failure count; below threshold returns the identity to pool; at threshold quarantines the IP and keeps it out of pool
+- **Quarantine sweep** — releases expired entries back to the pool with failures reset; leaves unexpired entries alone; safe when quarantine is empty
+- **`get_status`** — reports correct available-IP count and quarantined-IP list
+
+### `test_app_metrics_contract.py`
+
+Tests `AppMetricsStore` (`app_metrics.py`) — the in-process per-target request metrics store used when Prometheus isn't configured — and the `Backend.counter_increment_by` primitive it depends on, both against every registered backend.
 
 ## Adding a new backend
 
-Register it in `conftest.py`:
+Register a factory in `conftest.py` that wraps your raw `Backend` implementation in `IPPoolStore` and returns `(pool_store, is_real_redis)`:
 
 ```python
 from my_package import MyNewBackend
+from proxy_hopper.pool_store import IPPoolStore
 
-def _make_my_backend() -> MyNewBackend:
-    return MyNewBackend(...)   # any test-safe configuration
+def _make_my_backend() -> tuple[IPPoolStore, bool]:
+    return IPPoolStore(MyNewBackend(...)), False   # any test-safe configuration
 
 _BACKEND_FACTORIES = {
     "memory": _make_memory_backend,
@@ -72,16 +76,18 @@ pytest collects conftest files using Python module names. If both `proxy-hopper/
 
 **Why fakeredis?**
 
-The Redis contract tests need to verify Redis-specific atomicity behaviour (BLPOP, SETNX, ZRANGEBYSCORE+ZREM) without requiring a running Redis server in CI or local development. fakeredis provides a fully in-process Redis implementation that is compatible with the `redis-py` async client.
+The Redis contract tests need to verify Redis-specific atomicity behaviour (BLPOP, SETNX, ZRANGEBYSCORE+ZREM) without requiring a running Redis server in CI or local development. fakeredis provides a fully in-process Redis implementation that is compatible with the `redis-py` async client. If `REDIS_URL` is set in the environment (e.g. a CI service container), real Redis is used instead, and tests marked `real_redis` (which exercise features fakeredis doesn't support, like Lua scripting) run too.
 
 **Backend fixture injection**
 
-The `_make_redis_backend()` factory injects a fakeredis client before `start()` is called. The `RedisIPPoolBackend.start()` method only creates a real connection if `self._redis is None`, so the injected fake takes precedence:
+The `_make_redis_backend()` factory injects a fakeredis client into the raw `RedisBackend` before wrapping it in `IPPoolStore` and starting it. `RedisBackend.start()` only creates a real connection if `self._redis is None`, so the injected fake takes precedence:
 
 ```python
-def _make_redis_backend() -> RedisIPPoolBackend:
-    fake_server = fakeredis.FakeServer()
-    backend = RedisIPPoolBackend()
-    backend._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
-    return backend
+def _make_redis_backend() -> tuple[IPPoolStore, bool]:
+    raw = RedisBackend(_REDIS_URL if _REDIS_URL else "redis://localhost:6379/0")
+    if not _REDIS_URL:
+        fake_server = fakeredis.FakeServer()
+        raw._redis = fakeredis.FakeRedis(server=fake_server, decode_responses=True)
+        return IPPoolStore(raw), False
+    return IPPoolStore(raw), True
 ```

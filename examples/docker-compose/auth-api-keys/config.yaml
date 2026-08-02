@@ -23,6 +23,31 @@
 # =============================================================================
 
 # =============================================================================
+# PROXY PROVIDERS
+# =============================================================================
+# Named proxy suppliers — each with their own credentials and a region tag.
+# Reference them from ipPools via ipRequests.
+
+proxyProviders:
+  - name: general-provider
+    # auth is optional — omit entirely for open or IP-whitelisted proxies
+    ipList:
+      - "203.0.113.10:3128"         # replace with your real proxy IPs
+      - "203.0.113.11:3128"
+      - "203.0.113.12:3128"
+
+# =============================================================================
+# IP POOLS
+# =============================================================================
+# Define a named pool once and reference it from the targets below.
+
+ipPools:
+  - name: general-pool
+    ipRequests:
+      - provider: general-provider
+        count: 3                    # use all 3 IPs from the provider
+
+# =============================================================================
 # AUTHENTICATION
 # =============================================================================
 
@@ -62,10 +87,7 @@ auth:
 targets:
   - name: general
     regex: '.*'
-    ipList:
-      - "203.0.113.10:3128"         # replace with your real proxy IPs
-      - "203.0.113.11:3128"
-      - "203.0.113.12:3128"
+    ipPool: general-pool             # reference the pool defined above
     minRequestInterval: 1s
     maxQueueWait: 30s
     numRetries: 3

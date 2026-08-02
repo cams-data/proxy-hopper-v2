@@ -1,9 +1,7 @@
 """Redis-backed storage backend for Proxy Hopper."""
 
-from .backend import RedisBackend, RedisIPPoolBackend
+from .backend import RedisBackend
 
 __all__ = [
     "RedisBackend",
-    # Deprecated alias
-    "RedisIPPoolBackend",
 ]

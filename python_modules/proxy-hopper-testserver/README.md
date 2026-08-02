@@ -81,7 +81,7 @@ uv sync
 ### Basic setup
 
 ```python
-from proxy_hopper.backend.memory import MemoryIPPoolBackend
+from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import TargetConfig, ResolvedIP
 from proxy_hopper.target_manager import TargetManager
 from proxy_hopper_testserver import MockProxyPool, UpstreamServer
@@ -137,7 +137,7 @@ from proxy_hopper.server import ProxyServer
 
 async def _start_proxy(proxies, auth_config=None, runtime_secret=""):
     cfg = make_target_config(ip_list=proxies.ip_list)
-    backend = MemoryIPPoolBackend()
+    backend = MemoryBackend()
     mgr = TargetManager(cfg, backend)
     server = ProxyServer(
         [mgr], host="127.0.0.1", port=0,
@@ -186,7 +186,7 @@ CONNECT tunnelling (HTTPS) is deliberately not implemented — integration tests
 
 ### `tests/test_integration.py`
 
-End-to-end tests for the `TargetManager` layer. Each test runs twice — once against `MemoryIPPoolBackend` and once against `RedisIPPoolBackend` (using fakeredis).
+End-to-end tests for the `TargetManager` layer. Each test runs twice — once against `MemoryBackend` and once against `RedisBackend` (using fakeredis).
 
 | Class | What it tests |
 |---|---|

@@ -5,35 +5,6 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from enum import Enum, auto
-
-
-# ---------------------------------------------------------------------------
-# IP state — mutated only by the backend to avoid races
-# ---------------------------------------------------------------------------
-
-@dataclass
-class IPState:
-    """State for a single external proxy IP address."""
-    host: str
-    port: int
-    consecutive_failures: int = 0
-    last_used_at: float = field(default_factory=lambda: 0.0)
-    quarantined_until: float = field(default_factory=lambda: 0.0)
-
-    @property
-    def address(self) -> str:
-        return f"{self.host}:{self.port}"
-
-    def reset_failures(self) -> None:
-        self.consecutive_failures = 0
-
-    def record_failure(self) -> None:
-        self.consecutive_failures += 1
-
-    def record_success(self) -> None:
-        self.consecutive_failures = 0
-        self.last_used_at = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -95,18 +66,6 @@ class ProxyResponse:
     status: int
     headers: dict[str, str]
     body: bytes
-
-
-# ---------------------------------------------------------------------------
-# Return reasons — communicated from TargetManager to the backend
-# ---------------------------------------------------------------------------
-
-class ReturnReason(Enum):
-    SUCCESS = auto()
-    RATE_LIMITED = auto()        # 429 — request should be retried
-    SERVER_ERROR = auto()        # 5xx
-    CONNECTION_ERROR = auto()    # network failure
-    FROM_QUARANTINE = auto()     # internal use by backends
 
 
 # ---------------------------------------------------------------------------

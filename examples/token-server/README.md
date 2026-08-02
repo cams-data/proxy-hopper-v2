@@ -49,11 +49,11 @@ The token server generates signed JWTs. In production you replace the JWT genera
 
 ### 2. Add your proxy IPs
 
-Edit `config.yaml` and replace the placeholder IPs with real external proxy addresses:
+Edit `config.yaml` and replace the placeholder IPs in `proxyProviders` with real external proxy addresses — both targets (`httpbin` and `general`) draw from the same pool:
 
 ```yaml
-targets:
-  - name: httpbin
+proxyProviders:
+  - name: general-provider
     ipList:
       - "your-proxy-1.example.com:3128"   # replace with a real proxy IP
       - "your-proxy-2.example.com:3128"
