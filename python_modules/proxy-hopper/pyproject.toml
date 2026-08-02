@@ -28,6 +28,9 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-mock>=3.12",
     "aioresponses>=0.7",
+    # Only needed to test the embedded --admin run mode (cli.py's optional
+    # dynamic import of proxy_hopper_webserver). Not a runtime dependency.
+    "proxy-hopper-webserver",
 ]
 
 [project.scripts]
@@ -50,6 +53,9 @@ fallback_version = "0.0.0.dev0"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/proxy_hopper"]
+
+[tool.uv.sources]
+proxy-hopper-webserver = { path = "../proxy-hopper-webserver", editable = true }
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

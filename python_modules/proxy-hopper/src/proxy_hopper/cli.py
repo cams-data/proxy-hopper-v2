@@ -14,8 +14,16 @@ Usage examples
 # Start the proxy server
 proxy-hopper run --config config.yaml
 
-# Start the admin server (GraphQL API + web UI) — separate deployment
+# Start the admin server (GraphQL API + web UI) as a separate process/deployment.
+# Only sees live state when backend=redis — a separate process gets its own
+# private in-memory backend when backend=memory, so this is a no-op for
+# runtime CRUD/live IP state in that case (requires proxy-hopper-webserver).
 proxy-hopper admin --config config.yaml
+
+# Single-process mode: proxy + admin server together, sharing one backend
+# directly. This is the only way to get a *live* admin API with the memory
+# backend (requires proxy-hopper-webserver).
+proxy-hopper run --config config.yaml --admin
 
 # All proxy settings via environment variables (Docker / Kubernetes)
 PROXY_HOPPER_CONFIG=/etc/proxy-hopper/config.yaml \\
@@ -107,6 +115,18 @@ def hash_password_cmd(password: str) -> None:
               help="Per-probe HTTP timeout in seconds. [default: 10]")
 @click.option("--probe-urls", default=None, metavar="URL[,URL...]",
               help="Comma-separated probe endpoints.")
+@click.option("--admin/--no-admin", default=None,
+              help="Run the admin server (GraphQL API + web UI) embedded in this "
+                   "process, sharing its backend/repository directly instead of "
+                   "connecting to a separately-deployed admin server. Requires "
+                   "proxy-hopper-webserver. This is the only way to get a live "
+                   "admin API with the memory backend, since a separately-run "
+                   "'proxy-hopper admin' process cannot see another process's "
+                   "in-memory state.")
+@click.option("--admin-host", default=None,
+              help="Interface to bind the embedded admin server. [default: 0.0.0.0]")
+@click.option("--admin-port", default=None, type=int,
+              help="Port for the embedded admin server. [default: 8081]")
 def run(
     config: Optional[Path],
     host: Optional[str],
@@ -122,6 +142,9 @@ def run(
     probe_interval: Optional[float],
     probe_timeout: Optional[float],
     probe_urls: Optional[str],
+    admin: Optional[bool],
+    admin_host: Optional[str],
+    admin_port: Optional[int],
 ) -> None:
     """Start the proxy server."""
     # --- Load config (YAML > env vars) ---
@@ -161,6 +184,12 @@ def run(
         server.probe_timeout = probe_timeout
     if probe_urls is not None:
         server.probe_urls = [u.strip() for u in probe_urls.split(",") if u.strip()]
+    if admin is not None:
+        server.admin = admin
+    if admin_host is not None:
+        server.admin_host = admin_host
+    if admin_port is not None:
+        server.admin_port = admin_port
 
     # --- Start logging ---
     configure_logging(
@@ -327,6 +356,50 @@ async def _run(targets, providers, server, cfg=None) -> None:
         )
         await prober.start()
 
+    # --- Optionally build the embedded admin server ---
+    # Runs in this same process/event loop, sharing `repo`/`event_bus`/`backend`
+    # directly — the only way the admin API sees live state when backend=memory,
+    # since a separately-run `proxy-hopper admin` process gets its own private
+    # MemoryBackend that the proxy process can never write to.
+    admin_uvicorn_server = None
+    if server.admin:
+        try:
+            from proxy_hopper_webserver.app import create_admin_app
+        except ImportError:
+            log.error(
+                "server.admin is enabled but proxy-hopper-webserver is not "
+                "installed. Run: pip install proxy-hopper-webserver"
+            )
+            await backend.stop()
+            if prober:
+                await prober.stop()
+            return
+        import uvicorn
+        admin_app = create_admin_app(cfg, runtime_secret, repo=repo, event_bus=event_bus)
+        admin_uvicorn_server = uvicorn.Server(uvicorn.Config(
+            admin_app,
+            host=server.admin_host,
+            port=server.admin_port,
+            log_level="error",
+            access_log=False,
+        ))
+        admin_uvicorn_server.install_signal_handlers = lambda: None
+
+    admin_task = None
+    if admin_uvicorn_server is not None:
+        admin_task = asyncio.create_task(
+            admin_uvicorn_server.serve(), name="ph:cli:embedded-admin-server"
+        )
+
+        def _log_admin_task_failure(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                log.error("Embedded admin server failed: %s", exc, exc_info=exc)
+
+        admin_task.add_done_callback(_log_admin_task_failure)
+
     try:
         await proxy.start()
         log.info(
@@ -334,11 +407,20 @@ async def _run(targets, providers, server, cfg=None) -> None:
             server.host, server.port, server.backend,
             "enabled" if cfg.auth.enabled else "disabled",
         )
+        if admin_task is not None:
+            log.info(
+                "Admin server running on %s:%d (embedded — shares this process' backend)",
+                server.admin_host, server.admin_port,
+            )
         await proxy.serve_forever()
     except (KeyboardInterrupt, asyncio.CancelledError):
         log.info("Shutting down…")
     finally:
         await proxy.stop()
+        if admin_task is not None:
+            admin_uvicorn_server.should_exit = True
+            admin_task.cancel()
+            await asyncio.gather(admin_task, return_exceptions=True)
         if prober:
             await prober.stop()
         await backend.stop()
