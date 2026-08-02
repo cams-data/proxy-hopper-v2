@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 
-from ._handler import create_token_router
+from .handler import create_token_router
 
 if TYPE_CHECKING:
     from proxy_hopper_token_server.provider import TokenProvider

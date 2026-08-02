@@ -5,8 +5,18 @@ Demonstrates how to write a TokenProvider that:
   (IP-pinned acquisition via ProxyHopperClient).
 - Carries a session cookie across refreshes using the cursor.
 
-Run with:
-    ph-token-server start examples.token_server.auckland_council:provider
+This file is a standalone reference example — unlike the FastAPI demo in
+token_server/, it depends on the proxy_hopper_token_server library itself
+(see the `dev` extra in this directory's pyproject.toml, which installs it
+as a local editable path dependency).
+
+Run with (from this directory):
+    uv sync --extra dev
+    uv run ph-token-server start auckland_council:provider
+
+Requires a running Proxy Hopper instance with `server.authServer.exposeProxyUrl:
+true` set, since ProxyHopperClient needs `req.proxy_url` to route the token
+request through a specific pinned IP.
 """
 
 from __future__ import annotations
@@ -71,5 +81,5 @@ class AucklandCouncilTokens(TokenProvider):
 
 
 # Single instance — passed to ph-token-server via:
-#   ph-token-server start examples.token_server.auckland_council:provider
+#   uv run ph-token-server start auckland_council:provider
 provider = AucklandCouncilTokens()

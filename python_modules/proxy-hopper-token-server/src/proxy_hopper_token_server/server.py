@@ -32,7 +32,19 @@ class TokenServer:
         self.port = port
         self.timeout = timeout
 
-    def _build_app(self):
+    def build_app(self):
+        """Build and return the underlying FastAPI/ASGI application.
+
+        Use this to host the token server behind your own ASGI server
+        instead of ``run()``/``start()`` — e.g. for ``uvicorn --reload``
+        during development::
+
+            # main.py
+            server = TokenServer(provider=my_provider)
+            app = server.build_app()
+
+            # then: uvicorn main:app --reload --port 9000
+        """
         from ._internal.app import create_app
         return create_app(self._provider, timeout=self.timeout)
 
@@ -40,7 +52,7 @@ class TokenServer:
         """Start the server synchronously (blocks). Suitable for ``__main__`` scripts."""
         import uvicorn
         uvicorn.run(
-            self._build_app(),
+            self.build_app(),
             host=self.host,
             port=self.port,
             workers=workers,
@@ -54,7 +66,7 @@ class TokenServer:
         """
         import uvicorn
         config = uvicorn.Config(
-            self._build_app(),
+            self.build_app(),
             host=self.host,
             port=self.port,
             log_level=log_level,

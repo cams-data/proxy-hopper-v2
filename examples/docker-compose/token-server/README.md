@@ -2,6 +2,8 @@
 
 Proxy Hopper deployment with a custom token server for managed auth. Use this when your upstream APIs require per-request Authorization headers (OAuth access tokens, rotating session cookies, custom API keys) that must be periodically refreshed.
 
+> **This is a deployment topology template, not a runnable token server.** It wires proxy-hopper + Redis + a token-server *image you provide* (`TOKEN_SERVER_IMAGE`, no default). For an actual, runnable, buildable token server, see [`examples/token-server/`](../../token-server/) — a complete Docker Compose stack with a real implementation, plus the [`proxy-hopper-token-server`](../../../python_modules/proxy-hopper-token-server/) library if you'd rather implement `TokenProvider.get_token()` than hand-roll the `/token` + `/health` contract yourself.
+
 Proxy-hopper calls your token server before forwarding each request through an `authManaged` target, caches the returned token per proxy IP, and refreshes it automatically before it expires.
 
 ## Files

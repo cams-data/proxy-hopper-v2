@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -27,6 +28,15 @@ class _FixedProvider(TokenProvider):
 class _FailingProvider(TokenProvider):
     async def get_token(self, request: TokenRequest) -> TokenResponse:
         raise RuntimeError("upstream auth failed")
+
+
+class _SlowProvider(TokenProvider):
+    def __init__(self, delay: float):
+        self._delay = delay
+
+    async def get_token(self, request: TokenRequest) -> TokenResponse:
+        await asyncio.sleep(self._delay)
+        return TokenResponse(headers={}, expires_at=datetime.now(UTC), cursor={})
 
 
 _VALID_BODY = {
@@ -92,3 +102,33 @@ def test_cursor_passthrough():
         resp = client.post("/token", json={**_VALID_BODY, "cursor": {"state": 42}})
     assert resp.json()["cursor"]["state"] == 42
     assert resp.json()["cursor"]["called"] is True
+
+
+def test_token_provider_timeout_returns_504():
+    app = create_app(_SlowProvider(delay=1.0), timeout=0.05)
+    with TestClient(app) as client:
+        resp = client.post("/token", json=_VALID_BODY)
+    assert resp.status_code == 504
+    assert resp.json()["detail"]["error"] == "timeout"
+
+
+def test_missing_required_field_returns_422():
+    app = create_app(_FixedProvider({}))
+    bad_body = {k: v for k, v in _VALID_BODY.items() if k != "profile"}
+    with TestClient(app) as client:
+        resp = client.post("/token", json=bad_body)
+    assert resp.status_code == 422
+
+
+def test_proxy_url_passed_through_to_provider():
+    captured: dict = {}
+
+    class _CapturingProvider(TokenProvider):
+        async def get_token(self, request: TokenRequest) -> TokenResponse:
+            captured["proxy_url"] = request.proxy_url
+            return TokenResponse(headers={}, expires_at=datetime.now(UTC), cursor={})
+
+    app = create_app(_CapturingProvider())
+    with TestClient(app) as client:
+        client.post("/token", json={**_VALID_BODY, "proxy_url": "http://proxy-hopper:8080"})
+    assert captured["proxy_url"] == "http://proxy-hopper:8080"
