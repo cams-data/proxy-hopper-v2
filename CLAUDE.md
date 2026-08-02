@@ -28,12 +28,10 @@ If a task mentions "auth," ask which of these three it actually means before tou
 
 Everything storage-related goes through an abstract `Backend` (queue/counter/zset/kv/lock/rolling-log/pub-sub), implemented by `MemoryBackend` (core, single-process) or `RedisBackend` (`proxy-hopper-redis`, HA). `IdentityQueue`/`IPPoolStore` (`pool.py`, `pool_store.py`) own rotation/quarantine/identity policy on top of the Backend; `ProxyRepository` (`repository.py`) owns provider/pool/target CRUD + hot-reload pub/sub. The core `proxy-hopper` package is a raw asyncio TCP listener with no HTTP framework — it only implements one `RequestHandler`, `ForwardingHandler`. The admin GraphQL API, SSE event stream, and admin-ui hosting live in a *separate* package and process, `proxy-hopper-webserver` (FastAPI) — core has an intentional `ImportError` stub where GraphQL code used to be, redirecting you there. `admin-ui` is a React/Vite/Tailwind SPA that talks to `proxy-hopper-webserver` over GraphQL + SSE.
 
-Config cascades `proxyProviders` → `ipPools` → `targets`. Every provider/pool/target has `static` (YAML-owned, API can't touch it) and `mutable` (can the API ever edit it — narrower, and currently only checked on *update*, not on `remove_*` — see the gotcha below).
+Config cascades `proxyProviders` → `ipPools` → `targets`. Every provider/pool/target has `static` (YAML-owned, API can't touch it) and `mutable` (can the API ever edit *or remove* it via the admin API).
 
 ## Known gotchas — check before you rely on these
 
-- **`proxy-hopper-token-server` currently fails to import.** `_internal/app.py` does `from ._handler import create_token_router` but the module is `handler.py`. Its own test suite fails at collection. This is almost certainly exactly where the last session stopped (last commit added an end-to-end example that works around it by not using the library at all). See [TODO.md](TODO.md) item 1.
-- **`static`/`mutable` asymmetry**: `update_target`/`update_provider`/`update_pool` in `repository.py` check both `static` and `mutable`, but `remove_target`/`remove_provider`/`remove_pool` only check `static`. A `static=False, mutable=False` entity currently *cannot be edited but can still be deleted* via the API. Confirm this is intentional before changing behavior around it — it wasn't when this was investigated.
 - **Don't trust the top-level `README.md` from before 2026-08-02** for describing integration modes — it used to (incorrectly) describe three modes. It's been rewritten; if you see a *new* copy claiming HTTP-proxy or CONNECT-tunnel modes exist, that's regressed, not a feature.
 - **`python_modules/proxy-hopper/src/proxy_hopper/graphql/`** (five files besides `__init__.py`) is dead code — stale duplicates from before the webserver package split. Don't edit these thinking they're live; the real GraphQL code is in `proxy-hopper-webserver/src/proxy_hopper_webserver/graphql/`.
 - Three different token-server examples exist under `examples/`; see [CLEANUP.md](CLEANUP.md) for which is canonical and why.
@@ -50,7 +48,7 @@ cd python_modules/proxy-hopper-redis && uv run pytest
 # Admin webserver tests
 cd python_modules/proxy-hopper-webserver && uv run pytest
 
-# Token-server package tests (currently fails at collection — see gotchas above)
+# Token-server package tests
 cd python_modules/proxy-hopper-token-server && uv run pytest
 
 # Cross-backend contract tests (memory + Redis, parametrized — add a new backend by adding one factory entry in conftest.py)
