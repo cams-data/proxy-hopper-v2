@@ -27,6 +27,7 @@ from .models import HOP_BY_HOP_HEADERS, PendingRequest, ProxyResponse
 from .pool import IdentityQueue, PinnedAcquireError
 
 if TYPE_CHECKING:
+    from .app_metrics import AppMetricsStore
     from .pool_store import IPPoolStore
     from .token_manager import TokenManager
 
@@ -47,10 +48,12 @@ class TargetManager:
         quarantine_sweep_interval: float | None = None,
         event_bus: EventBus | None = None,
         token_manager: "TokenManager | None" = None,
+        app_metrics: "AppMetricsStore | None" = None,
     ) -> None:
         self._config = config
         self._regex = config.compiled_regex()
         self._event_bus = event_bus
+        self._app_metrics = app_metrics
 
         # Build auth map: address → aiohttp.BasicAuth (from provider credentials)
         provider_map = {p.name: p for p in (providers or [])}
@@ -402,6 +405,13 @@ class TargetManager:
         finally:
             total_elapsed = time.monotonic() - start
             get_metrics().record_request(self._config.name, outcome, total_elapsed, tag=request.tag)
+            if self._app_metrics is not None:
+                asyncio.create_task(
+                    self._app_metrics.record(
+                        self._config.name, success=outcome == "success", elapsed_seconds=total_elapsed
+                    ),
+                    name=f"ph:appmetrics:{self._config.name}",
+                )
             if self._event_bus is not None:
                 asyncio.create_task(
                     self._event_bus.publish(RequestEvent.create(
@@ -505,6 +515,13 @@ class TargetManager:
         finally:
             total_elapsed = time.monotonic() - start
             get_metrics().record_request(self._config.name, outcome, total_elapsed, tag=request.tag)
+            if self._app_metrics is not None:
+                asyncio.create_task(
+                    self._app_metrics.record(
+                        self._config.name, success=outcome == "success", elapsed_seconds=total_elapsed
+                    ),
+                    name=f"ph:appmetrics:{self._config.name}",
+                )
             if self._event_bus is not None:
                 asyncio.create_task(
                     self._event_bus.publish(RequestEvent.create(

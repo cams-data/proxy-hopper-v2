@@ -23,6 +23,7 @@ import fakeredis.aioredis as fakeredis
 import pytest
 import pytest_asyncio
 
+from proxy_hopper.app_metrics import AppMetricsStore
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import ResolvedIP, TargetConfig
 from proxy_hopper.pool import IdentityQueue
@@ -117,6 +118,18 @@ async def pool(pool_store, target_config) -> AsyncIterator[IdentityQueue]:
     await q.start()
     yield q
     await q.stop()
+
+
+@pytest.fixture
+def app_metrics(pool_store) -> AppMetricsStore:
+    """An AppMetricsStore backed by each registered backend type.
+
+    Reaches into pool_store._backend rather than adding a raw `backend`
+    fixture of its own — AppMetricsStore is the one thing in this package
+    that talks to the raw Backend directly instead of through IPPoolStore,
+    since counter_increment_by has no IPPoolStore wrapper.
+    """
+    return AppMetricsStore(pool_store._backend)
 
 
 # ---------------------------------------------------------------------------

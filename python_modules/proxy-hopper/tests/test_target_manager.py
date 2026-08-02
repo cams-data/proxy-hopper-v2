@@ -210,6 +210,77 @@ class TestExecuteRequest:
             assert mgr._request_queue.qsize() == 1
 
 
+class TestAppMetricsRecording:
+    """_execute_request/_execute_pinned_request must record into
+    AppMetricsStore, when one is configured, at the same finally-block call
+    site as the existing Prometheus instrumentation — same outcome, same
+    elapsed time, one record per upstream attempt."""
+
+    @pytest.fixture
+    async def manager_with_app_metrics(self):
+        from proxy_hopper.app_metrics import AppMetricsStore
+
+        cfg = make_config()
+        raw_backend, pool_store = await make_pool_store()
+        app_metrics = AppMetricsStore(raw_backend)
+        mgr = TargetManager(cfg, pool_store, app_metrics=app_metrics)
+        await mgr.start()
+        yield mgr, app_metrics
+        await mgr.stop()
+        await raw_backend.stop()
+
+    async def test_success_is_recorded(self, manager_with_app_metrics):
+        mgr, app_metrics = manager_with_app_metrics
+        uuid, identity = await mgr._queue.acquire(timeout=1.0)
+
+        req = make_request()
+        from aioresponses import aioresponses
+        with aioresponses() as m:
+            m.get("http://example.com/", status=200, body=b"hello")
+            await mgr._execute_request(uuid, identity, req)
+
+        # The record() call is fired via asyncio.create_task (fire-and-forget,
+        # matching the event_bus.publish pattern) — give it one loop turn.
+        await asyncio.sleep(0)
+        snap = await app_metrics.get("test")
+        assert snap.total_requests == 1
+        assert snap.success_requests == 1
+        assert snap.failed_requests == 0
+
+    async def test_failure_is_recorded(self, manager_with_app_metrics):
+        mgr, app_metrics = manager_with_app_metrics
+        uuid, identity = await mgr._queue.acquire(timeout=1.0)
+
+        with patch.object(mgr._queue, "record_failure", AsyncMock(return_value=False)):
+            req = make_request(num_retries=0)
+            from aioresponses import aioresponses
+            with aioresponses() as m:
+                m.get("http://example.com/", status=503, body=b"unavailable")
+                await mgr._execute_request(uuid, identity, req)
+
+        await asyncio.sleep(0)
+        snap = await app_metrics.get("test")
+        assert snap.total_requests == 1
+        assert snap.success_requests == 0
+        assert snap.failed_requests == 1
+
+    async def test_no_app_metrics_configured_does_not_error(self, manager_and_backend):
+        """Default (app_metrics=None) TargetManager must behave exactly as
+        before — this is the regression guard for every other test in this
+        file that constructs a manager without app_metrics."""
+        mgr, _ = manager_and_backend
+        assert mgr._app_metrics is None
+        uuid, identity = await mgr._queue.acquire(timeout=1.0)
+
+        req = make_request()
+        from aioresponses import aioresponses
+        with aioresponses() as m:
+            m.get("http://example.com/", status=200, body=b"hello")
+            await mgr._execute_request(uuid, identity, req)  # must not raise
+
+        assert req.future.result().status == 200
+
+
 class TestShutdown:
     async def test_queued_requests_get_503_on_shutdown(self):
         cfg = make_config(max_queue_wait=30.0)

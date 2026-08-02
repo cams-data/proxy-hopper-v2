@@ -437,6 +437,18 @@ class ServerConfig(BaseSettings):
         Port the admin API listens on.  Default: ``8081``.
     admin_host (adminHost)
         Interface the admin API binds to.  Default: ``"0.0.0.0"``.
+    prometheus_url (prometheusUrl)
+        Base URL of an external Prometheus server the admin API can query
+        (e.g. ``"http://prometheus:9090"``), for the admin UI's per-target
+        metrics panel.  When set, lightweight in-process request counters
+        (an alternative source for that same panel, see ``app_metrics.py``)
+        are **not** recorded at all — avoids paying for both on the request
+        hot path.  When unset, those in-process counters are used instead
+        (only visible to the admin API when it shares a backend with the
+        proxy — see the "Admin API" section of the README).  Unrelated to
+        ``metrics``/``metrics_port`` below, which controls Proxy Hopper's
+        own scrape endpoint, not a client of someone else's Prometheus.
+        Default: ``None``.
     metrics
         Enable Prometheus ``/metrics`` endpoint.  Default: False.
     metrics_port (metricsPort)
@@ -486,6 +498,7 @@ class ServerConfig(BaseSettings):
     admin: bool = False
     admin_port: int = 8081
     admin_host: str = "0.0.0.0"
+    prometheus_url: Optional[str] = None
     auth_server: Optional[AuthServerConfig] = None
 
     @classmethod

@@ -201,6 +201,7 @@ Full config file reference
       admin: false               # PROXY_HOPPER_ADMIN           — enable the admin REST API
       adminPort: 8081            # PROXY_HOPPER_ADMIN_PORT
       adminHost: 0.0.0.0        # PROXY_HOPPER_ADMIN_HOST
+      prometheusUrl: null        # PROXY_HOPPER_PROMETHEUS_URL  — external Prometheus for admin UI metrics; disables in-process counters when set
 
     # ---------------------------------------------------------------------------
     # Auth env var overrides (PROXY_HOPPER_AUTH_*)

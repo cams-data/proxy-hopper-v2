@@ -278,6 +278,10 @@ All server fields can also be set as `PROXY_HOPPER_*` env vars (e.g. `PROXY_HOPP
 | `probeInterval` | `PROXY_HOPPER_PROBE_INTERVAL` | `60` | Seconds between probe rounds |
 | `probeTimeout` | `PROXY_HOPPER_PROBE_TIMEOUT` | `10` | Per-probe HTTP timeout (seconds) |
 | `probeUrls` | `PROXY_HOPPER_PROBE_URLS` | Cloudflare + Google | Endpoints to probe through each IP. Comma-separated as env var. |
+| `admin` | `PROXY_HOPPER_ADMIN` | `false` | Run the admin server embedded in this process. See [Admin API](#admin-api). |
+| `adminHost` | `PROXY_HOPPER_ADMIN_HOST` | `0.0.0.0` | Interface the embedded admin server binds to |
+| `adminPort` | `PROXY_HOPPER_ADMIN_PORT` | `8081` | Port the embedded admin server listens on |
+| `prometheusUrl` | `PROXY_HOPPER_PROMETHEUS_URL` | unset | External Prometheus the admin API queries for the metrics panel. See [Admin UI metrics panel](#admin-ui-metrics-panel). |
 | `authServer` | — | — | Token server config block. See [Managed auth](#managed-auth--token-server). |
 
 #### `server.authServer` fields
@@ -315,6 +319,7 @@ proxy-hopper run --config config.yaml [OPTIONS]
   --admin / --no-admin     Run the admin server embedded in this process
   --admin-host TEXT        Interface to bind the embedded admin server
   --admin-port INT         Port for the embedded admin server
+  --prometheus-url TEXT    External Prometheus for the admin UI metrics panel
 ```
 
 ---
@@ -340,6 +345,22 @@ proxy-hopper admin --config config.yaml --backend redis --redis-url redis://redi
 ```
 
 If `proxy-hopper-webserver` isn't installed, `--admin` fails startup immediately with a clear error rather than silently running without it — same fail-fast behavior as requesting `--backend redis` without `proxy-hopper-redis` installed.
+
+### Admin UI metrics panel
+
+The admin UI's per-target panel (total requests, success rate, avg latency) is backed by GraphQL's `targetMetrics(name: ...)`, which pulls from one of two sources — **never both at once**:
+
+| Source | When | Cost |
+|---|---|---|
+| In-process counters | Default — `server.prometheusUrl` unset | A handful of extra Backend writes per request (same Backend already used for pool state), fire-and-forget so they never add latency to the response path. Only visible to the admin API when it shares a backend with the proxy — see the table above; a `memory`-backend deployment with a *separate* admin process will show an all-zero panel, same as it shows stale everything-else. |
+| Prometheus (server-side query) | `server.prometheusUrl` set, e.g. `http://prometheus:9090` | Zero request-path cost — in-process counters are skipped entirely when this is set. The admin API queries Prometheus's HTTP API itself (same pattern Grafana's backend uses) and returns the aggregated numbers; the browser never talks to Prometheus directly, so this doesn't add a second, unauthenticated way into your metrics. Requires `server.metrics: true` to actually be enabled and scraped into that Prometheus — this reads the same `proxy_hopper_requests_total`/`proxy_hopper_request_duration_seconds` series documented below. |
+
+```yaml
+server:
+  prometheusUrl: "http://prometheus:9090"   # or PROXY_HOPPER_PROMETHEUS_URL
+```
+
+This is unrelated to `metrics`/`metricsPort` below — those control Proxy Hopper's own `/metrics` *scrape* endpoint (Proxy Hopper as a Prometheus target). `prometheusUrl` is the opposite direction: Proxy Hopper as a Prometheus *client*, for one small admin-UI panel, nothing else.
 
 ---
 

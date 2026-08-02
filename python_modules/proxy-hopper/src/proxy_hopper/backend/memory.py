@@ -136,6 +136,17 @@ class MemoryBackend(Backend):
     async def counter_get(self, key: str) -> int:
         return self._counters.get(key, 0)
 
+    async def counter_increment_by(self, key: str, amount: int) -> int:
+        if amount < 0:
+            raise ValueError(f"counter_increment_by: amount must be >= 0, got {amount}")
+        # No await between read and write — atomically safe in asyncio
+        new = self._counters.get(key, 0) + amount
+        self._counters[key] = new
+        logger.trace(
+            "MemoryBackend: counter_increment_by '%s' + %d → %d", key, amount, new
+        )
+        return new
+
     # ------------------------------------------------------------------
     # Sorted set
     # ------------------------------------------------------------------

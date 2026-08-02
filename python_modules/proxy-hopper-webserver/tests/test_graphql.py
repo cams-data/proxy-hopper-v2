@@ -30,16 +30,32 @@ async def repo(backend):
     return ProxyRepository(backend)
 
 
-def _ctx(repo: ProxyRepository, role: str = "admin", auth_enabled: bool = False) -> Context:
+def _ctx(
+    repo: ProxyRepository,
+    role: str = "admin",
+    auth_enabled: bool = False,
+    app_metrics=None,
+    prometheus_url: str | None = None,
+) -> Context:
     user = AuthenticatedUser(sub=role, role=role, is_api_key=False)
     auth_config = AuthConfig(enabled=auth_enabled)
-    return Context(repo=repo, user=user, auth_config=auth_config)
+    return Context(
+        repo=repo, user=user, auth_config=auth_config,
+        app_metrics=app_metrics, prometheus_url=prometheus_url,
+    )
 
 
-async def _run(query: str, repo: ProxyRepository, role: str = "admin", variables: dict | None = None):
+async def _run(
+    query: str,
+    repo: ProxyRepository,
+    role: str = "admin",
+    variables: dict | None = None,
+    app_metrics=None,
+    prometheus_url: str | None = None,
+):
     result = await schema.execute(
         query,
-        context_value=_ctx(repo, role=role),
+        context_value=_ctx(repo, role=role, app_metrics=app_metrics, prometheus_url=prometheus_url),
         variable_values=variables,
     )
     return result
@@ -180,6 +196,95 @@ class TestQueryStatus:
         assert s["authEnabled"] is False
         assert s["userSub"] == "viewer"
         assert s["userRole"] == "viewer"
+
+
+# ---------------------------------------------------------------------------
+# Query — targetMetrics
+# ---------------------------------------------------------------------------
+
+TARGET_METRICS_QUERY = """
+query($name: String!) {
+  targetMetrics(name: $name) {
+    name totalRequests successRequests failedRequests avgLatencyMs lastRequestAt
+  }
+}
+"""
+
+
+class TestQueryTargetMetrics:
+    async def test_returns_null_when_neither_source_configured(self, repo):
+        """Neither app_metrics nor prometheus_url set on Context — matches
+        a freshly-embedded admin server with server.prometheusUrl unset but
+        somehow no AppMetricsStore either (shouldn't normally happen via the
+        real cli.py wiring, but the resolver must degrade gracefully)."""
+        result = await _run(TARGET_METRICS_QUERY, repo, variables={"name": "t"})
+        assert result.errors is None
+        assert result.data["targetMetrics"] is None
+
+    async def test_app_metrics_tier_returns_recorded_snapshot(self, backend, repo):
+        from proxy_hopper.app_metrics import AppMetricsStore
+
+        store = AppMetricsStore(backend)
+        await store.record("t", success=True, elapsed_seconds=0.1)
+        await store.record("t", success=False, elapsed_seconds=0.3)
+
+        result = await _run(
+            TARGET_METRICS_QUERY, repo, variables={"name": "t"}, app_metrics=store
+        )
+        assert result.errors is None
+        m = result.data["targetMetrics"]
+        assert m["name"] == "t"
+        assert m["totalRequests"] == 2
+        assert m["successRequests"] == 1
+        assert m["failedRequests"] == 1
+        assert m["avgLatencyMs"] == 200.0
+        assert m["lastRequestAt"] is not None
+
+    async def test_app_metrics_tier_zero_snapshot_for_unknown_target(self, backend, repo):
+        from proxy_hopper.app_metrics import AppMetricsStore
+
+        store = AppMetricsStore(backend)
+        result = await _run(
+            TARGET_METRICS_QUERY, repo, variables={"name": "never-seen"}, app_metrics=store
+        )
+        assert result.errors is None
+        m = result.data["targetMetrics"]
+        assert m["totalRequests"] == 0
+        assert m["lastRequestAt"] is None
+
+    async def test_prometheus_tier_takes_priority_over_app_metrics(self, backend, repo, monkeypatch):
+        """When prometheus_url is set, the resolver must use it instead of
+        app_metrics — even if an AppMetricsStore with real data is also on
+        the context (the two are mutually exclusive by cli.py's own wiring,
+        but the resolver's priority order is what's under test here)."""
+        from proxy_hopper.app_metrics import AppMetricsStore, TargetMetricsSnapshot
+
+        store = AppMetricsStore(backend)
+        await store.record("t", success=True, elapsed_seconds=0.1)
+
+        prom_snapshot = TargetMetricsSnapshot(
+            name="t", total_requests=999, success_requests=900,
+            failed_requests=99, avg_latency_ms=42.5, last_request_at=None,
+        )
+
+        async def fake_query(prometheus_url, target):
+            assert prometheus_url == "http://prom:9090"
+            assert target == "t"
+            return prom_snapshot
+
+        monkeypatch.setattr(
+            "proxy_hopper_webserver.prometheus_query.query_target_metrics", fake_query
+        )
+
+        result = await _run(
+            TARGET_METRICS_QUERY, repo, variables={"name": "t"},
+            app_metrics=store, prometheus_url="http://prom:9090",
+        )
+        assert result.errors is None
+        m = result.data["targetMetrics"]
+        assert m["totalRequests"] == 999  # from Prometheus, not the AppMetricsStore's 1
+        assert m["avgLatencyMs"] == 42.5
+        assert m["lastRequestAt"] is None
 
 
 # ---------------------------------------------------------------------------
