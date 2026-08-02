@@ -2,7 +2,9 @@
 
 A small library + CLI for implementing the token server side of Proxy Hopper's **managed auth** feature. If a target you're proxying to requires a per-request `Authorization` header (or `Cookie`, or any other auth header) that needs to be periodically fetched and refreshed — OAuth access tokens, session cookies, rotating API keys — this package lets you write just the token-acquisition logic and get a correctly-shaped HTTP server for free.
 
-Proxy Hopper's core calls your token server before forwarding each request to a target configured with `authManaged: true`, and injects whatever headers it returns into the upstream request. Full protocol reference: [`python_modules/proxy-hopper/README.md`](../proxy-hopper/README.md#managed-auth--token-server).
+Proxy Hopper's core calls your token server before forwarding each request to a target configured with `authManaged: true`, using the specific proxy IP that request will go out on, and injects whatever headers it returns into the upstream request. Full protocol reference: [`python_modules/proxy-hopper/README.md`](../proxy-hopper/README.md#managed-auth--token-server).
+
+**Read this before implementing `get_token()`:** Proxy Hopper's whole purpose is spreading requests across a rotating IP pool so a target can't attribute them all to one caller. It calls your token server separately per `(target, ip)` pair specifically so each IP *can* get its own distinct credential — not so every IP conveniently shares one. A `TokenProvider` that ignores `req.ip` and returns the same static token for every IP will still work mechanically (Proxy Hopper caches it per IP regardless), but the token itself becomes the one constant that ties your rotating IPs back together, which quietly defeats the pool. This only doesn't matter for upstream auth that's genuinely session-less (a single org-wide API key) — for anything OAuth-login or session-cookie based, scope the credential per IP. See [The cursor mechanism](#the-cursor-mechanism) below — using it correctly gets you this for free, without ever branching on `req.ip` explicitly.
 
 ```
 Proxy Hopper                         Your token server
