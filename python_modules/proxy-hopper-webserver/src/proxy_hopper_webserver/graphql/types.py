@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Optional
 import strawberry
 
 if TYPE_CHECKING:
+    from proxy_hopper.app_metrics import TargetMetricsSnapshot
     from proxy_hopper.config import IpPool, ProxyProvider, TargetConfig
 
 
@@ -88,6 +89,16 @@ class StatusType:
     user_role: str
 
 
+@strawberry.type
+class TargetMetricsType:
+    name: str
+    total_requests: int
+    success_requests: int
+    failed_requests: int
+    avg_latency_ms: float
+    last_request_at: Optional[str]
+
+
 def target_to_gql(config: "TargetConfig") -> TargetType:
     return TargetType(
         name=config.name,
@@ -129,4 +140,15 @@ def provider_to_gql(provider: "ProxyProvider") -> ProviderType:
         mutable=provider.mutable,
         static=provider.static,
         has_auth=provider.auth is not None,
+    )
+
+
+def target_metrics_to_gql(snapshot: "TargetMetricsSnapshot") -> TargetMetricsType:
+    return TargetMetricsType(
+        name=snapshot.name,
+        total_requests=snapshot.total_requests,
+        success_requests=snapshot.success_requests,
+        failed_requests=snapshot.failed_requests,
+        avg_latency_ms=snapshot.avg_latency_ms,
+        last_request_at=snapshot.last_request_at,
     )

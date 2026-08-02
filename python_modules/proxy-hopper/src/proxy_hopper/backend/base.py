@@ -117,6 +117,26 @@ class Backend(ABC):
     async def counter_get(self, key: str) -> int:
         """Return the current counter value (0 if key does not exist)."""
 
+    async def counter_increment_by(self, key: str, amount: int) -> int:
+        """Atomically increment the counter at *key* by *amount* and return the new value.
+
+        *amount* may be 0 (a no-op that still returns the current value) but
+        not negative.
+
+        Default: *amount* sequential calls to counter_increment. Backends
+        should override this for a single-round-trip atomic increment
+        (e.g. Redis INCRBY) — the default is portable but not efficient for
+        large amounts.
+        """
+        if amount < 0:
+            raise ValueError(f"counter_increment_by: amount must be >= 0, got {amount}")
+        if amount == 0:
+            return await self.counter_get(key)
+        new = 0
+        for _ in range(amount):
+            new = await self.counter_increment(key)
+        return new
+
     # ------------------------------------------------------------------
     # Sorted set — score-ordered, atomic pop below threshold
     # ------------------------------------------------------------------

@@ -128,6 +128,15 @@ async def _run_admin(cfg) -> None:
     repo = ProxyRepository(backend)
     event_bus = EventBus(backend)
 
+    # Only meaningful when backend=redis — this process shares that Redis
+    # instance with the proxy runners, so it sees their counters. With
+    # backend=memory this reads an empty, disconnected store (see the core
+    # README's Admin API section); harmless, just always zero.
+    app_metrics = None
+    if not server.prometheus_url:
+        from proxy_hopper.app_metrics import AppMetricsStore
+        app_metrics = AppMetricsStore(backend)
+
     for p in cfg.providers:
         await repo.seed_provider(p)
     for pool in cfg.pools:
@@ -141,7 +150,7 @@ async def _run_admin(cfg) -> None:
     )
 
     try:
-        await run_admin_server(cfg, runtime_secret, repo=repo, event_bus=event_bus)
+        await run_admin_server(cfg, runtime_secret, repo=repo, event_bus=event_bus, app_metrics=app_metrics)
     except (KeyboardInterrupt, asyncio.CancelledError):
         log.info("Admin server shutting down…")
     finally:

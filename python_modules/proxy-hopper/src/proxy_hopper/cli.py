@@ -127,6 +127,12 @@ def hash_password_cmd(password: str) -> None:
               help="Interface to bind the embedded admin server. [default: 0.0.0.0]")
 @click.option("--admin-port", default=None, type=int,
               help="Port for the embedded admin server. [default: 8081]")
+@click.option("--prometheus-url", default=None,
+              help="URL of an external Prometheus server the admin API can query "
+                   "for the per-target metrics panel. When set, lightweight "
+                   "in-process request counters (the alternative source for that "
+                   "panel) are not recorded at all, to avoid instrumenting the "
+                   "request path twice. [default: unset — use in-process counters]")
 def run(
     config: Optional[Path],
     host: Optional[str],
@@ -145,6 +151,7 @@ def run(
     admin: Optional[bool],
     admin_host: Optional[str],
     admin_port: Optional[int],
+    prometheus_url: Optional[str],
 ) -> None:
     """Start the proxy server."""
     # --- Load config (YAML > env vars) ---
@@ -190,6 +197,8 @@ def run(
         server.admin_host = admin_host
     if admin_port is not None:
         server.admin_port = admin_port
+    if prometheus_url is not None:
+        server.prometheus_url = prometheus_url
 
     # --- Start logging ---
     configure_logging(
@@ -292,6 +301,15 @@ async def _run(targets, providers, server, cfg=None) -> None:
     repo = ProxyRepository(backend)
     event_bus = EventBus(backend)
 
+    # Lightweight in-process per-target request counters, for the admin UI's
+    # metrics panel. Skipped entirely when server.prometheus_url is set — the
+    # admin API queries Prometheus server-side instead in that case, and
+    # recording both would be pure overhead on the request hot path.
+    app_metrics = None
+    if not server.prometheus_url:
+        from .app_metrics import AppMetricsStore
+        app_metrics = AppMetricsStore(backend)
+
     # Seed providers, pools, and targets from YAML (write-if-not-exists).
     # Repository is the source of truth; YAML is only applied on first run.
     for p in providers:
@@ -325,6 +343,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
             debug_quarantine=server.debug_quarantine,
             event_bus=event_bus,
             token_manager=token_manager,
+            app_metrics=app_metrics,
         )
         for t in all_targets
     ]
@@ -375,7 +394,9 @@ async def _run(targets, providers, server, cfg=None) -> None:
                 await prober.stop()
             return
         import uvicorn
-        admin_app = create_admin_app(cfg, runtime_secret, repo=repo, event_bus=event_bus)
+        admin_app = create_admin_app(
+            cfg, runtime_secret, repo=repo, event_bus=event_bus, app_metrics=app_metrics
+        )
         admin_uvicorn_server = uvicorn.Server(uvicorn.Config(
             admin_app,
             host=server.admin_host,

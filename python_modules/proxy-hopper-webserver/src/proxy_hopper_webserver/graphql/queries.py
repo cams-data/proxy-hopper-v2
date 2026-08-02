@@ -15,9 +15,11 @@ from .types import (
     KeyValueType,
     ProviderType,
     StatusType,
+    TargetMetricsType,
     TargetType,
     pool_to_gql,
     provider_to_gql,
+    target_metrics_to_gql,
     target_to_gql,
 )
 
@@ -91,6 +93,29 @@ class Query:
             )
             for r in rows
         ]
+
+    @strawberry.field(
+        description="Aggregate request metrics for one target — source is Prometheus "
+        "when server.prometheusUrl is configured, otherwise lightweight in-process "
+        "counters (empty/zero if the admin process doesn't share a backend with the "
+        "proxy — see the core README's Admin API section)."
+    )
+    async def target_metrics(
+        self, info: Info[Context, None], name: str
+    ) -> Optional[TargetMetricsType]:
+        from proxy_hopper.auth import Permission
+        require_permission(info, Permission.read)
+        ctx = info.context
+
+        if ctx.prometheus_url:
+            from proxy_hopper_webserver.prometheus_query import query_target_metrics
+            snapshot = await query_target_metrics(ctx.prometheus_url, name)
+        elif ctx.app_metrics is not None:
+            snapshot = await ctx.app_metrics.get(name)
+        else:
+            return None
+
+        return target_metrics_to_gql(snapshot)
 
     @strawberry.field(description="Current auth state and caller identity.")
     async def status(self, info: Info[Context, None]) -> StatusType:

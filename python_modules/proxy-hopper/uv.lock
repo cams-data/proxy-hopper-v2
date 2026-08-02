@@ -701,6 +701,7 @@ name = "proxy-hopper-webserver"
 source = { editable = "../proxy-hopper-webserver" }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpx" },
     { name = "proxy-hopper" },
     { name = "python-multipart" },
     { name = "strawberry-graphql", extra = ["fastapi"] },
@@ -710,6 +711,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.111" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "proxy-hopper", editable = "." },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },

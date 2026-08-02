@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
 if TYPE_CHECKING:
+    from proxy_hopper.app_metrics import AppMetricsStore
     from proxy_hopper.config import ProxyHopperConfig
     from proxy_hopper.repository import ProxyRepository
 
@@ -75,6 +76,7 @@ def create_admin_app(
     runtime_secret: str,
     repo: "ProxyRepository | None" = None,
     event_bus=None,
+    app_metrics: "AppMetricsStore | None" = None,
 ) -> FastAPI:
     """Build and return the configured FastAPI admin application."""
     from proxy_hopper.auth import Permission, create_access_token, verify_password
@@ -145,6 +147,8 @@ def create_admin_app(
             repo=repo,
             auth_config=auth_config,
             get_current_user=get_current_user,
+            app_metrics=app_metrics,
+            prometheus_url=cfg.server.prometheus_url,
         )
         app.include_router(graphql_router, prefix="/graphql")
         logger.info("GraphQL API mounted at /graphql")
@@ -176,11 +180,12 @@ async def run_admin_server(
     runtime_secret: str,
     repo: "ProxyRepository | None" = None,
     event_bus=None,
+    app_metrics: "AppMetricsStore | None" = None,
 ) -> None:
     """Start the admin server as an asyncio-native task."""
     import uvicorn
 
-    app = create_admin_app(cfg, runtime_secret, repo=repo, event_bus=event_bus)
+    app = create_admin_app(cfg, runtime_secret, repo=repo, event_bus=event_bus, app_metrics=app_metrics)
     host = cfg.server.admin_host
     port = cfg.server.admin_port
 

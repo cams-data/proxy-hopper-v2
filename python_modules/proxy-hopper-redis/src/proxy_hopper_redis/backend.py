@@ -156,6 +156,17 @@ class RedisBackend(Backend):
         value = await self._redis.get(key)
         return int(value) if value is not None else 0
 
+    async def counter_increment_by(self, key: str, amount: int) -> int:
+        if amount < 0:
+            raise ValueError(f"counter_increment_by: amount must be >= 0, got {amount}")
+        if amount == 0:
+            return await self.counter_get(key)
+        count = await self._redis.incrby(key, amount)
+        logger.trace(  # type: ignore[attr-defined]
+            "RedisBackend: INCRBY '%s' %d → %d", key, amount, count
+        )
+        return count
+
     # ------------------------------------------------------------------
     # Sorted set (Redis ZSet)
     # ------------------------------------------------------------------
