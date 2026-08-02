@@ -293,7 +293,7 @@ All server fields can also be set as `PROXY_HOPPER_*` env vars (e.g. `PROXY_HOPP
 | `refreshThresholdSeconds` | `60` | Start refreshing a token this many seconds before it expires |
 | `retryIntervalSeconds` | `30` | Cooldown between retry attempts after a token server failure |
 | `maxRetries` | `5` | Consecutive failures before an IP is marked `AUTH_BROKEN` |
-| `exposeProxyUrl` | `false` | Include the proxy-hopper public URL in the `/token` request body |
+| `exposeProxyUrl` | `true` | Include the proxy-hopper public URL in the `/token` request body |
 
 ### CLI flags
 
@@ -563,9 +563,11 @@ Paste the output into `auth.admin.passwordHash` in your config.
 
 ## Managed auth / token server
 
-Some upstream APIs require per-request Authorization headers that must be periodically refreshed — OAuth access tokens, session cookies, rotating API keys. Proxy-hopper can offload this lifecycle management to a **token server** you implement and deploy alongside it.
+Proxy-hopper's core purpose is spreading requests across a rotating pool of IPs so a target can't attribute them all to one caller. If every request carried the same `Authorization` header regardless of which IP sent it, that token would be the one constant thread tying every IP back together — quietly defeating the pool. Managed auth exists to prevent that: proxy-hopper acquires and caches a **separate credential per `(target, proxy-IP)` pair**, not one shared token per target, for upstream APIs that require per-request Authorization headers — OAuth access tokens, session cookies, rotating API keys.
 
-When `authManaged: true` is set on a target, proxy-hopper calls the token server before forwarding each request and injects the returned headers automatically. The token is cached per `(target, proxy-IP)` pair and only refreshed when it nears expiry.
+You implement and deploy a small **token server** alongside proxy-hopper that knows how to acquire (and, critically, correctly scope per IP) whatever credential the upstream requires. When `authManaged: true` is set on a target, proxy-hopper calls the token server before forwarding each request — using the exact IP that will send that request — and injects the returned headers automatically. The token is cached per `(target, proxy-IP)` pair and only refreshed when it nears expiry.
+
+> **The one thing to get right:** a `TokenProvider`/token server that ignores the IP it's given and returns the same static token for every proxy IP will still work mechanically — proxy-hopper caches it per IP regardless — but the credential itself becomes a correlation signal across your rotating pool. This is only correct for upstream auth that's genuinely IP-agnostic (a single org-wide API key with no session concept). For anything session or login-based, each IP should get its own credential — see [The cursor mechanism](#the-cursor-mechanism) and the `proxy-hopper-token-server` package's own README for how.
 
 ### Setup
 
@@ -579,7 +581,7 @@ server:
     refreshThresholdSeconds: 60    # refresh 60s before expiry
     retryIntervalSeconds: 30       # retry after failure
     maxRetries: 5                  # broken-state threshold
-    exposeProxyUrl: false
+    exposeProxyUrl: false          # default: true — disable if your token server doesn't need proxy_url
 ```
 
 **2. Mark the relevant targets:**
