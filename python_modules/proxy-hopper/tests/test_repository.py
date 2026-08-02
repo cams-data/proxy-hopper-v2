@@ -320,6 +320,20 @@ class TestRemoveTarget:
         await repo.remove_target("del-me")
         assert await repo.get_target("del-me") is None
 
+    async def test_remove_static_target_raises(self, repo, backend):
+        cfg = _make_target("frozen-static", static=True)
+        await repo.add_target(cfg)
+        with pytest.raises(ValueError, match="config-static"):
+            await repo.remove_target("frozen-static")
+        assert await backend.kv_get(f"{_TARGET_PREFIX}frozen-static") is not None
+
+    async def test_remove_immutable_target_raises(self, repo, backend):
+        cfg = _make_target("frozen-immutable", static=False, mutable=False)
+        await repo.add_target(cfg)
+        with pytest.raises(ValueError, match="not mutable"):
+            await repo.remove_target("frozen-immutable")
+        assert await backend.kv_get(f"{_TARGET_PREFIX}frozen-immutable") is not None
+
 
 class TestGetTarget:
     async def test_get_missing_returns_none(self, repo):
@@ -435,6 +449,20 @@ class TestRemovePool:
     async def test_remove_nonexistent_is_noop(self, repo):
         await repo.remove_pool("does-not-exist")  # must not raise
 
+    async def test_remove_static_pool_raises(self, repo, backend):
+        pool = _make_pool("frozen-static", static=True)
+        await repo.add_pool(pool)
+        with pytest.raises(ValueError, match="config-static"):
+            await repo.remove_pool("frozen-static")
+        assert await backend.kv_get(f"{_POOL_PREFIX}frozen-static") is not None
+
+    async def test_remove_immutable_pool_raises(self, repo, backend):
+        pool = _make_pool("frozen-immutable", static=False, mutable=False)
+        await repo.add_pool(pool)
+        with pytest.raises(ValueError, match="not mutable"):
+            await repo.remove_pool("frozen-immutable")
+        assert await backend.kv_get(f"{_POOL_PREFIX}frozen-immutable") is not None
+
 
 class TestListPools:
     async def test_empty_returns_empty(self, repo):
@@ -522,6 +550,20 @@ class TestRemoveProvider:
 
     async def test_remove_nonexistent_is_noop(self, repo):
         await repo.remove_provider("does-not-exist")  # must not raise
+
+    async def test_remove_static_provider_raises(self, repo, backend):
+        p = _make_provider("frozen-static", static=True)
+        await repo.add_provider(p)
+        with pytest.raises(ValueError, match="config-static"):
+            await repo.remove_provider("frozen-static")
+        assert await backend.kv_get(f"{_PROVIDER_PREFIX}frozen-static") is not None
+
+    async def test_remove_immutable_provider_raises(self, repo, backend):
+        p = _make_provider("frozen-immutable", static=False, mutable=False)
+        await repo.add_provider(p)
+        with pytest.raises(ValueError, match="not mutable"):
+            await repo.remove_provider("frozen-immutable")
+        assert await backend.kv_get(f"{_PROVIDER_PREFIX}frozen-immutable") is not None
 
     async def test_remove_publishes_event(self, repo):
         await repo.add_provider(_make_provider("pub-rm"))

@@ -239,6 +239,11 @@ class ProxyRepository:
                     f"Target '{name}' is config-static and cannot be removed via the API. "
                     "Remove it from the YAML configuration file instead."
                 )
+            if not existing.mutable:
+                raise ValueError(
+                    f"Target '{name}' is not mutable. "
+                    "Set mutable: true in its configuration to allow runtime removal."
+                )
         await self._backend.kv_delete(f"{_TARGET_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="target", type="remove", name=name))
         logger.info("ProxyRepository: target '%s' removed", name)
@@ -315,6 +320,11 @@ class ProxyRepository:
                 raise ValueError(
                     f"Provider '{name}' is config-static and cannot be removed via the API. "
                     "Remove it from the YAML configuration file instead."
+                )
+            if not existing.mutable:
+                raise ValueError(
+                    f"Provider '{name}' is not mutable. "
+                    "Set mutable: true in its configuration to allow runtime removal."
                 )
         await self._backend.kv_delete(f"{_PROVIDER_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="provider", type="remove", name=name))
@@ -425,6 +435,11 @@ class ProxyRepository:
                 raise ValueError(
                     f"Pool '{name}' is config-static and cannot be removed via the API. "
                     "Remove it from the YAML configuration file instead."
+                )
+            if not existing.mutable:
+                raise ValueError(
+                    f"Pool '{name}' is not mutable. "
+                    "Set mutable: true in its configuration to allow runtime removal."
                 )
         await self._backend.kv_delete(f"{_POOL_PREFIX}{name}")
         await self._publish(ChangeEvent(entity="pool", type="remove", name=name))
