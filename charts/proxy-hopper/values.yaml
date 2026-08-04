@@ -185,6 +185,25 @@ admin:
     #   cpu: 500m
     #   memory: 256Mi
 
+  # Exposes the admin API + web UI outside the cluster via its own Ingress.
+  # Off by default — the admin server has no separate network restriction of
+  # its own beyond config.yaml's auth block, so only enable this if you're
+  # comfortable relying on that (jwtSecret/admin password) as your perimeter,
+  # or you're fronting it with your own additional access control.
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: proxy-hopper-admin.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    #  - secretName: proxy-hopper-admin-tls
+    #    hosts:
+    #      - proxy-hopper-admin.example.com
+
 # ── Token server ─────────────────────────────────────────────────────────────
 # When enabled, the chart deploys your custom token server alongside
 # proxy-hopper (a Deployment + ClusterIP Service) and exposes a predictable
