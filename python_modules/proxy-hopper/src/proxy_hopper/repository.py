@@ -1,14 +1,22 @@
-"""ProxyRepository — runtime entity store backed by persistent KV + pub/sub.
+"""ProxyRepository — runtime entity store backed by ConfigStore + Backend pub/sub.
 
-Stores targets, providers, and IP pools as JSON blobs in the Backend KV store
-and publishes change notifications over pub/sub so all instances hot-reload.
+Stores targets, providers, and IP pools as JSON-serialisable dicts in the
+ConfigStore and publishes change notifications over Backend pub/sub so all
+instances hot-reload.
 
 Key schema
 ----------
-ph:repo:target:{name}    — KV — JSON-serialised TargetConfig
-ph:repo:provider:{name}  — KV — JSON-serialised ProxyProvider
-ph:repo:pool:{name}      — KV — JSON-serialised IpPool
-ph:repo:changes          — pub/sub channel — JSON-serialised ChangeEvent
+ConfigStore entity_type "target"/"provider"/"pool" — see config_store/base.py
+ph:repo:changes — Backend pub/sub channel — {entity, type, name} wake-up signal
+
+Notify-then-reconcile
+----------------------
+Published change events carry no payload — just which entity changed.
+Consumers (e.g. ProxyServer._config_change_listener) re-read the current
+value from ConfigStore on receipt rather than trusting an embedded payload.
+This makes a missed pub/sub message self-healing: the next signal (or a
+periodic reconcile poll) catches a consumer back up, since ConfigStore —
+not the pub/sub message — is the single source of truth.
 
 Three-tier model
 ----------------
@@ -33,15 +41,15 @@ Design rules
 
 HA / multi-instance safety
 --------------------------
-All writes are serialised through the Backend.  After each write a pub/sub
-message is published so other instances pick up the change.
+All writes are serialised through the ConfigStore. After each write a pub/sub
+message is published over Backend so other instances pick up the change.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import AsyncIterator, Literal, Optional
 
 from .backend.base import Backend
@@ -56,12 +64,10 @@ from .config import (
     _parse_address,
     _parse_duration,
 )
+from .config_store.base import ConfigStore
 
 logger = logging.getLogger(__name__)
 
-_TARGET_PREFIX   = "ph:repo:target:"
-_PROVIDER_PREFIX = "ph:repo:provider:"
-_POOL_PREFIX     = "ph:repo:pool:"
 _CHANGES_CHANNEL = "ph:repo:changes"
 
 
@@ -71,12 +77,13 @@ _CHANGES_CHANNEL = "ph:repo:changes"
 
 @dataclass
 class ChangeEvent:
-    """Published whenever a target, provider, or pool is added, updated, or removed."""
+    """Published whenever a target, provider, or pool is added, updated, or
+    removed. Carries no payload — a wake-up signal only. Consumers re-read
+    the current value from ConfigStore on receipt; see module docstring.
+    """
     entity: Literal["target", "provider", "pool"]
     type: Literal["add", "update", "remove"]
     name: str
-    #: Serialised entity dict — present for add/update, None for remove.
-    data: Optional[dict] = field(default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +95,19 @@ def _target_to_dict(config: TargetConfig) -> dict:
 
 
 def _dict_to_target(raw: dict) -> TargetConfig:
+    # Never mutate the caller's dict in place — ConfigStore.get()/list() may
+    # hand back the same object it has stored internally (MemoryConfigStore
+    # does), unlike the old Backend.kv_get path which always deserialised a
+    # fresh dict from a JSON string. Mutating in place here would silently
+    # corrupt the store's own copy on every read.
+    raw = dict(raw)
     if "resolved_ips" in raw and raw["resolved_ips"]:
         raw["resolved_ips"] = [
             ResolvedIP(**ip) if isinstance(ip, dict) else ip
             for ip in raw["resolved_ips"]
         ]
     if "identity" in raw and isinstance(raw["identity"], dict):
-        id_raw = raw["identity"]
+        id_raw = dict(raw["identity"])
         if "warmup" in id_raw and isinstance(id_raw["warmup"], dict):
             id_raw["warmup"] = WarmupConfig(**id_raw["warmup"])
         raw["identity"] = IdentityConfig(**id_raw)
@@ -122,6 +135,8 @@ def _pool_to_dict(pool: IpPool) -> dict:
 
 
 def _dict_to_pool(raw: dict) -> IpPool:
+    # See _dict_to_target's comment — never mutate the caller's dict.
+    raw = dict(raw)
     if "ip_requests" in raw and raw["ip_requests"]:
         raw["ip_requests"] = [
             IpRequest(**req) if isinstance(req, dict) else req
@@ -169,13 +184,15 @@ def _resolve_pool_ips(
 # ---------------------------------------------------------------------------
 
 class ProxyRepository:
-    """Runtime entity store — wraps Backend KV + pub/sub.
+    """Runtime entity store — wraps ConfigStore CRUD + Backend pub/sub.
 
     Three first-class stored entity types: targets, providers, and IP pools.
-    IP-pool runtime state (queue, failures, quarantine) lives in IPPoolStore.
+    IP-pool runtime state (queue, failures, quarantine) lives in IPPoolStore,
+    backed directly by Backend — unrelated to this class.
     """
 
-    def __init__(self, backend: Backend) -> None:
+    def __init__(self, config_store: ConfigStore, backend: Backend) -> None:
+        self._config_store = config_store
         self._backend = backend
 
     # ------------------------------------------------------------------
@@ -187,17 +204,17 @@ class ProxyRepository:
 
         Raises ValueError if a target with this name already exists.
         """
-        existing = await self._backend.kv_get(f"{_TARGET_PREFIX}{config.name}")
+        existing = await self._config_store.get("target", config.name)
         if existing is not None:
             raise ValueError(
                 f"Target '{config.name}' already exists in the repository. "
                 "Use update_target to modify it."
             )
-        await self._backend.kv_set(
-            f"{_TARGET_PREFIX}{config.name}",
-            json.dumps(_target_to_dict(config)),
+        await self._config_store.set(
+            "target", config.name, _target_to_dict(config),
+            static=config.static, mutable=config.mutable,
         )
-        await self._publish(ChangeEvent(entity="target", type="add", name=config.name, data=_target_to_dict(config)))
+        await self._publish(ChangeEvent(entity="target", type="add", name=config.name))
         logger.info("ProxyRepository: target '%s' added", config.name)
 
     async def update_target(self, config: TargetConfig) -> None:
@@ -205,13 +222,12 @@ class ProxyRepository:
 
         Raises ValueError if the target does not exist or is not mutable.
         """
-        existing_raw = await self._backend.kv_get(f"{_TARGET_PREFIX}{config.name}")
-        if existing_raw is None:
+        existing = await self._config_store.get("target", config.name)
+        if existing is None:
             raise ValueError(
                 f"Target '{config.name}' does not exist in the repository. "
                 "Use add_target to create it."
             )
-        existing = _dict_to_target(json.loads(existing_raw))
         if existing.static:
             raise ValueError(
                 f"Target '{config.name}' is config-static and cannot be updated via the API. "
@@ -222,18 +238,17 @@ class ProxyRepository:
                 f"Target '{config.name}' is not mutable. "
                 "Set mutable: true in its configuration to allow runtime updates."
             )
-        await self._backend.kv_set(
-            f"{_TARGET_PREFIX}{config.name}",
-            json.dumps(_target_to_dict(config)),
+        await self._config_store.set(
+            "target", config.name, _target_to_dict(config),
+            static=config.static, mutable=config.mutable,
         )
-        await self._publish(ChangeEvent(entity="target", type="update", name=config.name, data=_target_to_dict(config)))
+        await self._publish(ChangeEvent(entity="target", type="update", name=config.name))
         logger.info("ProxyRepository: target '%s' updated", config.name)
 
     async def remove_target(self, name: str) -> None:
         """Remove a target and notify all instances."""
-        existing_raw = await self._backend.kv_get(f"{_TARGET_PREFIX}{name}")
-        if existing_raw is not None:
-            existing = _dict_to_target(json.loads(existing_raw))
+        existing = await self._config_store.get("target", name)
+        if existing is not None:
             if existing.static:
                 raise ValueError(
                     f"Target '{name}' is config-static and cannot be removed via the API. "
@@ -244,24 +259,24 @@ class ProxyRepository:
                     f"Target '{name}' is not mutable. "
                     "Set mutable: true in its configuration to allow runtime removal."
                 )
-        await self._backend.kv_delete(f"{_TARGET_PREFIX}{name}")
+        await self._config_store.delete("target", name)
         await self._publish(ChangeEvent(entity="target", type="remove", name=name))
         logger.info("ProxyRepository: target '%s' removed", name)
 
     async def get_target(self, name: str) -> Optional[TargetConfig]:
-        raw = await self._backend.kv_get(f"{_TARGET_PREFIX}{name}")
-        if raw is None:
+        entity = await self._config_store.get("target", name)
+        if entity is None:
             return None
-        return _dict_to_target(json.loads(raw))
+        return _dict_to_target(entity.data)
 
     async def list_targets(self) -> list[TargetConfig]:
-        pairs = await self._backend.kv_list(_TARGET_PREFIX)
+        entities = await self._config_store.list("target")
         configs = []
-        for key, raw in pairs:
+        for entity in entities:
             try:
-                configs.append(_dict_to_target(json.loads(raw)))
+                configs.append(_dict_to_target(entity.data))
             except Exception as exc:
-                logger.error("ProxyRepository: failed to deserialise target at key '%s': %s", key, exc)
+                logger.error("ProxyRepository: failed to deserialise target '%s': %s", entity.name, exc)
         return configs
 
     # ------------------------------------------------------------------
@@ -270,29 +285,28 @@ class ProxyRepository:
 
     async def add_provider(self, provider: ProxyProvider) -> None:
         """Persist a new provider, cascade IPs through pools to targets, and notify."""
-        existing = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{provider.name}")
+        existing = await self._config_store.get("provider", provider.name)
         if existing is not None:
             raise ValueError(
                 f"Provider '{provider.name}' already exists in the repository. "
                 "Use update_provider to modify it."
             )
-        await self._backend.kv_set(
-            f"{_PROVIDER_PREFIX}{provider.name}",
-            json.dumps(_provider_to_dict(provider)),
+        await self._config_store.set(
+            "provider", provider.name, _provider_to_dict(provider),
+            static=provider.static, mutable=provider.mutable,
         )
-        await self._publish(ChangeEvent(entity="provider", type="add", name=provider.name, data=_provider_to_dict(provider)))
+        await self._publish(ChangeEvent(entity="provider", type="add", name=provider.name))
         logger.info("ProxyRepository: provider '%s' added", provider.name)
         await self._cascade_provider(provider)
 
     async def update_provider(self, provider: ProxyProvider) -> None:
         """Update an existing provider, cascade IPs through pools to targets, and notify."""
-        existing_raw = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{provider.name}")
-        if existing_raw is None:
+        existing = await self._config_store.get("provider", provider.name)
+        if existing is None:
             raise ValueError(
                 f"Provider '{provider.name}' does not exist in the repository. "
                 "Use add_provider to create it."
             )
-        existing = _dict_to_provider(json.loads(existing_raw))
         if existing.static:
             raise ValueError(
                 f"Provider '{provider.name}' is config-static and cannot be updated via the API. "
@@ -303,19 +317,18 @@ class ProxyRepository:
                 f"Provider '{provider.name}' is not mutable. "
                 "Set mutable: true in its configuration to allow runtime updates."
             )
-        await self._backend.kv_set(
-            f"{_PROVIDER_PREFIX}{provider.name}",
-            json.dumps(_provider_to_dict(provider)),
+        await self._config_store.set(
+            "provider", provider.name, _provider_to_dict(provider),
+            static=provider.static, mutable=provider.mutable,
         )
-        await self._publish(ChangeEvent(entity="provider", type="update", name=provider.name, data=_provider_to_dict(provider)))
+        await self._publish(ChangeEvent(entity="provider", type="update", name=provider.name))
         logger.info("ProxyRepository: provider '%s' updated", provider.name)
         await self._cascade_provider(provider)
 
     async def remove_provider(self, name: str) -> None:
         """Remove a provider and notify.  Does not remove IPs from pools/targets."""
-        existing_raw = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{name}")
-        if existing_raw is not None:
-            existing = _dict_to_provider(json.loads(existing_raw))
+        existing = await self._config_store.get("provider", name)
+        if existing is not None:
             if existing.static:
                 raise ValueError(
                     f"Provider '{name}' is config-static and cannot be removed via the API. "
@@ -326,24 +339,24 @@ class ProxyRepository:
                     f"Provider '{name}' is not mutable. "
                     "Set mutable: true in its configuration to allow runtime removal."
                 )
-        await self._backend.kv_delete(f"{_PROVIDER_PREFIX}{name}")
+        await self._config_store.delete("provider", name)
         await self._publish(ChangeEvent(entity="provider", type="remove", name=name))
         logger.info("ProxyRepository: provider '%s' removed", name)
 
     async def get_provider(self, name: str) -> Optional[ProxyProvider]:
-        raw = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{name}")
-        if raw is None:
+        entity = await self._config_store.get("provider", name)
+        if entity is None:
             return None
-        return _dict_to_provider(json.loads(raw))
+        return _dict_to_provider(entity.data)
 
     async def list_providers(self) -> list[ProxyProvider]:
-        pairs = await self._backend.kv_list(_PROVIDER_PREFIX)
+        entities = await self._config_store.list("provider")
         providers = []
-        for key, raw in pairs:
+        for entity in entities:
             try:
-                providers.append(_dict_to_provider(json.loads(raw)))
+                providers.append(_dict_to_provider(entity.data))
             except Exception as exc:
-                logger.error("ProxyRepository: failed to deserialise provider at key '%s': %s", key, exc)
+                logger.error("ProxyRepository: failed to deserialise provider '%s': %s", entity.name, exc)
         return providers
 
     # ------------------------------------------------------------------
@@ -383,17 +396,17 @@ class ProxyRepository:
 
         Raises ValueError if a pool with this name already exists.
         """
-        existing = await self._backend.kv_get(f"{_POOL_PREFIX}{pool.name}")
+        existing = await self._config_store.get("pool", pool.name)
         if existing is not None:
             raise ValueError(
                 f"Pool '{pool.name}' already exists in the repository. "
                 "Use update_pool to modify it."
             )
-        await self._backend.kv_set(
-            f"{_POOL_PREFIX}{pool.name}",
-            json.dumps(_pool_to_dict(pool)),
+        await self._config_store.set(
+            "pool", pool.name, _pool_to_dict(pool),
+            static=pool.static, mutable=pool.mutable,
         )
-        await self._publish(ChangeEvent(entity="pool", type="add", name=pool.name, data=_pool_to_dict(pool)))
+        await self._publish(ChangeEvent(entity="pool", type="add", name=pool.name))
         logger.info("ProxyRepository: pool '%s' added", pool.name)
 
     async def update_pool(self, pool: IpPool) -> None:
@@ -401,13 +414,12 @@ class ProxyRepository:
 
         Raises ValueError if the pool does not exist or is not mutable.
         """
-        existing_raw = await self._backend.kv_get(f"{_POOL_PREFIX}{pool.name}")
-        if existing_raw is None:
+        existing = await self._config_store.get("pool", pool.name)
+        if existing is None:
             raise ValueError(
                 f"Pool '{pool.name}' does not exist in the repository. "
                 "Use add_pool to create it."
             )
-        existing = _dict_to_pool(json.loads(existing_raw))
         if existing.static:
             raise ValueError(
                 f"Pool '{pool.name}' is config-static and cannot be updated via the API. "
@@ -418,19 +430,18 @@ class ProxyRepository:
                 f"Pool '{pool.name}' is not mutable. "
                 "Set mutable: true in its configuration to allow runtime updates."
             )
-        await self._backend.kv_set(
-            f"{_POOL_PREFIX}{pool.name}",
-            json.dumps(_pool_to_dict(pool)),
+        await self._config_store.set(
+            "pool", pool.name, _pool_to_dict(pool),
+            static=pool.static, mutable=pool.mutable,
         )
-        await self._publish(ChangeEvent(entity="pool", type="update", name=pool.name, data=_pool_to_dict(pool)))
+        await self._publish(ChangeEvent(entity="pool", type="update", name=pool.name))
         logger.info("ProxyRepository: pool '%s' updated", pool.name)
         await self._cascade_pool(pool)
 
     async def remove_pool(self, name: str) -> None:
         """Remove a pool and notify all instances."""
-        existing_raw = await self._backend.kv_get(f"{_POOL_PREFIX}{name}")
-        if existing_raw is not None:
-            existing = _dict_to_pool(json.loads(existing_raw))
+        existing = await self._config_store.get("pool", name)
+        if existing is not None:
             if existing.static:
                 raise ValueError(
                     f"Pool '{name}' is config-static and cannot be removed via the API. "
@@ -441,24 +452,24 @@ class ProxyRepository:
                     f"Pool '{name}' is not mutable. "
                     "Set mutable: true in its configuration to allow runtime removal."
                 )
-        await self._backend.kv_delete(f"{_POOL_PREFIX}{name}")
+        await self._config_store.delete("pool", name)
         await self._publish(ChangeEvent(entity="pool", type="remove", name=name))
         logger.info("ProxyRepository: pool '%s' removed", name)
 
     async def get_pool(self, name: str) -> Optional[IpPool]:
-        raw = await self._backend.kv_get(f"{_POOL_PREFIX}{name}")
-        if raw is None:
+        entity = await self._config_store.get("pool", name)
+        if entity is None:
             return None
-        return _dict_to_pool(json.loads(raw))
+        return _dict_to_pool(entity.data)
 
     async def list_pools(self) -> list[IpPool]:
-        pairs = await self._backend.kv_list(_POOL_PREFIX)
+        entities = await self._config_store.list("pool")
         pools = []
-        for key, raw in pairs:
+        for entity in entities:
             try:
-                pools.append(_dict_to_pool(json.loads(raw)))
+                pools.append(_dict_to_pool(entity.data))
             except Exception as exc:
-                logger.error("ProxyRepository: failed to deserialise pool at key '%s': %s", key, exc)
+                logger.error("ProxyRepository: failed to deserialise pool '%s': %s", entity.name, exc)
         return pools
 
     # ------------------------------------------------------------------
@@ -472,12 +483,12 @@ class ProxyRepository:
         always overwritten so that config-file changes take effect on restart.
         Unstatic entities are written only if no entry already exists.
         """
-        existing = await self._backend.kv_get(f"{_TARGET_PREFIX}{config.name}")
+        existing = await self._config_store.get("target", config.name)
         if existing is not None and not config.static:
             return
-        await self._backend.kv_set(
-            f"{_TARGET_PREFIX}{config.name}",
-            json.dumps(_target_to_dict(config)),
+        await self._config_store.set(
+            "target", config.name, _target_to_dict(config),
+            static=config.static, mutable=config.mutable,
         )
         logger.debug("ProxyRepository: seeded target '%s' (static=%s)", config.name, config.static)
 
@@ -486,12 +497,12 @@ class ProxyRepository:
 
         Managed providers are always overwritten; unstatic are write-if-not-exists.
         """
-        existing = await self._backend.kv_get(f"{_PROVIDER_PREFIX}{provider.name}")
+        existing = await self._config_store.get("provider", provider.name)
         if existing is not None and not provider.static:
             return
-        await self._backend.kv_set(
-            f"{_PROVIDER_PREFIX}{provider.name}",
-            json.dumps(_provider_to_dict(provider)),
+        await self._config_store.set(
+            "provider", provider.name, _provider_to_dict(provider),
+            static=provider.static, mutable=provider.mutable,
         )
         logger.debug("ProxyRepository: seeded provider '%s' (static=%s)", provider.name, provider.static)
 
@@ -500,12 +511,12 @@ class ProxyRepository:
 
         Managed pools are always overwritten; unstatic are write-if-not-exists.
         """
-        existing = await self._backend.kv_get(f"{_POOL_PREFIX}{pool.name}")
+        existing = await self._config_store.get("pool", pool.name)
         if existing is not None and not pool.static:
             return
-        await self._backend.kv_set(
-            f"{_POOL_PREFIX}{pool.name}",
-            json.dumps(_pool_to_dict(pool)),
+        await self._config_store.set(
+            "pool", pool.name, _pool_to_dict(pool),
+            static=pool.static, mutable=pool.mutable,
         )
         logger.debug("ProxyRepository: seeded pool '%s' (static=%s)", pool.name, pool.static)
 
@@ -585,14 +596,11 @@ class ProxyRepository:
                 continue
             updated = target.model_copy(update={"resolved_ips": new_resolved})
             # Bypass update_target mutability check — this is an internal cascade.
-            await self._backend.kv_set(
-                f"{_TARGET_PREFIX}{target.name}",
-                json.dumps(_target_to_dict(updated)),
+            await self._config_store.set(
+                "target", target.name, _target_to_dict(updated),
+                static=updated.static, mutable=updated.mutable,
             )
-            await self._publish(ChangeEvent(
-                entity="target", type="update",
-                name=target.name, data=_target_to_dict(updated),
-            ))
+            await self._publish(ChangeEvent(entity="target", type="update", name=target.name))
             logger.info(
                 "ProxyRepository: cascaded pool '%s' IP update to target '%s'",
                 pool.name, target.name,
@@ -655,7 +663,6 @@ class ProxyRepository:
             "entity": event.entity,
             "type": event.type,
             "name": event.name,
-            "data": event.data,
         })
         await self._backend.publish(_CHANGES_CHANNEL, payload)
 
@@ -690,7 +697,6 @@ class _ChangeSubscription:
                         entity=entity,
                         type=raw["type"],
                         name=raw["name"],
-                        data=raw.get("data"),
                     )
                 except Exception as exc:
                     logger.warning(

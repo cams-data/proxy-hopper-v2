@@ -9,13 +9,22 @@ is not exposed as a CLI/chart option.
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timezone
 
 from .base import ConfigEntity, ConfigStore
 
 
 class MemoryConfigStore(ConfigStore):
-    """dict-of-dicts store, keyed by (entity_type, name). Not durable."""
+    """dict-of-dicts store, keyed by (entity_type, name). Not durable.
+
+    Deep-copies `data` on both set() and get()/list() so callers can never
+    mutate the store's internal state through a returned ConfigEntity, or
+    corrupt it by later mutating a dict they'd previously passed to set().
+    A real SQL-backed store gets this isolation for free from its JSON
+    (de)serialisation round-trip; this in-memory double has to do it
+    explicitly to behave the same way.
+    """
 
     def __init__(self) -> None:
         self._entities: dict[str, dict[str, ConfigEntity]] = {}
@@ -27,7 +36,8 @@ class MemoryConfigStore(ConfigStore):
         pass
 
     async def get(self, entity_type: str, name: str) -> ConfigEntity | None:
-        return self._entities.get(entity_type, {}).get(name)
+        entity = self._entities.get(entity_type, {}).get(name)
+        return self._copy_entity(entity) if entity is not None else None
 
     async def set(
         self,
@@ -41,7 +51,7 @@ class MemoryConfigStore(ConfigStore):
         bucket = self._entities.setdefault(entity_type, {})
         bucket[name] = ConfigEntity(
             name=name,
-            data=data,
+            data=copy.deepcopy(data),
             static=static,
             mutable=mutable,
             # Naive UTC — matches SqlConfigStore's convention (SQLite's
@@ -54,4 +64,14 @@ class MemoryConfigStore(ConfigStore):
         self._entities.get(entity_type, {}).pop(name, None)
 
     async def list(self, entity_type: str) -> list[ConfigEntity]:
-        return list(self._entities.get(entity_type, {}).values())
+        return [self._copy_entity(e) for e in self._entities.get(entity_type, {}).values()]
+
+    @staticmethod
+    def _copy_entity(entity: ConfigEntity) -> ConfigEntity:
+        return ConfigEntity(
+            name=entity.name,
+            data=copy.deepcopy(entity.data),
+            static=entity.static,
+            mutable=entity.mutable,
+            updated_at=entity.updated_at,
+        )
