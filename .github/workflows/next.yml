@@ -326,7 +326,7 @@ jobs:
     if: needs.changes.outputs.chart_only == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
@@ -338,6 +338,7 @@ jobs:
         id: app_version
         run: |
           LATEST_TAG=$(git describe --tags --abbrev=0 --match 'v*')
+          echo "tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${LATEST_TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Install Helm
@@ -372,6 +373,31 @@ jobs:
           OWNER: ${{ github.repository_owner }}
         run: |
           helm push /tmp/helm-charts/proxy-hopper-${CHART_VERSION}.tgz oci://ghcr.io/${OWNER}/helm
+
+      - name: Update release notes with latest chart-only version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHART_VERSION: ${{ steps.chart_version.outputs.version }}
+          RELEASE_TAG: ${{ steps.app_version.outputs.tag }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          cat > chart-only-block.md << EOF
+
+          <!-- chart-only-preview:start -->
+          ## Latest Helm chart (chart-only preview)
+
+          This release's app version and images are unchanged, but the chart
+          has since been updated. Install the latest chart with:
+
+          \`\`\`bash
+          helm install proxy-hopper oci://ghcr.io/${OWNER}/helm/proxy-hopper --version ${CHART_VERSION}
+          \`\`\`
+          <!-- chart-only-preview:end -->
+          EOF
+
+          gh release edit "$RELEASE_TAG" \
+            --notes-file <(gh release view "$RELEASE_TAG" --json body --jq '.body' | sed '/<!-- chart-only-preview:start -->/,/<!-- chart-only-preview:end -->/d'; cat chart-only-block.md) \
+            --repo "${{ github.repository }}"
 
       - name: Summary
         env:
