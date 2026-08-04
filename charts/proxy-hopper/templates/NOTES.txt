@@ -23,7 +23,7 @@ Test:
 
 Redis backend is enabled.
 {{- if .Values.redis.enabled }}
-  Bundled Redis: {{ .Release.Name }}-redis-master:6379
+  Bundled Redis: {{ include "proxy-hopper.redisFullname" . }}:6379
 {{- else }}
   External Redis: {{ .Values.backend.redis.url }}
 {{- end }}

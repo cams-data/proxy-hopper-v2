@@ -260,18 +260,33 @@ tokenServer:
 
   podAnnotations: {}
 
-# ── Redis subchart ───────────────────────────────────────────────────────────
-# Uses the Bitnami Redis chart as an optional dependency.
-# See https://github.com/bitnami/charts/tree/main/bitnami/redis for full values.
+# ── Redis ─────────────────────────────────────────────────────────────────
+# Deploys a single first-party Redis StatefulSet (no replication/sentinel —
+# use backend.redis.url to point at an external Redis instead if you need
+# HA). No auth by default; this is meant for in-cluster use only.
 redis:
   enabled: false
-  architecture: standalone
-  auth:
-    enabled: false
-  master:
-    persistence:
-      enabled: true
-      size: 1Gi
+
+  image:
+    repository: redis
+    tag: 8-alpine
+    pullPolicy: IfNotPresent
+
+  persistence:
+    enabled: true
+    size: 1Gi
+    # storageClass: ""   # cluster default if unset
+
+  resources: {}
+    # requests:
+    #   cpu: 100m
+    #   memory: 128Mi
+    # limits:
+    #   cpu: 500m
+    #   memory: 256Mi
+
+  # Extra args passed to the redis-server entrypoint, e.g. ["--maxmemory", "256mb"]
+  extraArgs: []
 
 # ── Grafana dashboards ───────────────────────────────────────────────────────
 # Creates a ConfigMap with .url keys that the Grafana sidecar picks up and

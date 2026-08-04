@@ -78,11 +78,19 @@ Full image reference — appends -redis suffix when using Redis backend.
 {{- end }}
 
 {{/*
-Redis URL — uses subchart service if redis.enabled, otherwise backend.redis.url.
+Name of the bundled Redis StatefulSet/Service.
+*/}}
+{{- define "proxy-hopper.redisFullname" -}}
+{{- printf "%s-redis" (include "proxy-hopper.fullname" .) }}
+{{- end }}
+
+{{/*
+Redis URL — uses the bundled Redis service if redis.enabled, otherwise
+backend.redis.url.
 */}}
 {{- define "proxy-hopper.redisUrl" -}}
 {{- if .Values.redis.enabled }}
-{{- printf "redis://%s-redis-master:6379/0" .Release.Name }}
+{{- printf "redis://%s:6379/0" (include "proxy-hopper.redisFullname" .) }}
 {{- else }}
 {{- .Values.backend.redis.url }}
 {{- end }}
