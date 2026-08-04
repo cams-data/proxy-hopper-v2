@@ -61,6 +61,7 @@ _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
     "logFormat": "log_format",
     "logFile": "log_file",
     "redisUrl": "redis_url",
+    "configStoreUrl": "config_store_url",
     "metricsPort": "metrics_port",
     "proxyReadTimeout": "proxy_read_timeout",
     "debugProbes": "debug_probes",

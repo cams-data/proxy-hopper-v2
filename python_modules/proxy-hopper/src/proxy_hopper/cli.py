@@ -114,6 +114,13 @@ def hash_password_cmd(password: str) -> None:
 @click.option("--redis-url", default=None,
               envvar="PROXY_HOPPER_REDIS_URL",
               help="Redis connection URL. [default: redis://localhost:6379/0]")
+@click.option("--config-store-url", default=None,
+              envvar="PROXY_HOPPER_CONFIG_STORE_URL",
+              help="SQLAlchemy URL for durable provider/pool/target config "
+                   "(e.g. sqlite+aiosqlite:///./data/config.db or "
+                   "postgresql+asyncpg://user:pass@host/db). Requires "
+                   "proxy-hopper-sql. [default: unset — in-process "
+                   "MemoryConfigStore, config does not survive a restart]")
 @click.option("--probe/--no-probe", default=None,
               help="Enable background IP health prober.")
 @click.option("--probe-interval", default=None, type=float,
@@ -151,6 +158,7 @@ def run(
     metrics_port: Optional[int],
     backend: Optional[str],
     redis_url: Optional[str],
+    config_store_url: Optional[str],
     probe: Optional[bool],
     probe_interval: Optional[float],
     probe_timeout: Optional[float],
@@ -190,6 +198,8 @@ def run(
         server.backend = backend
     if redis_url is not None:
         server.redis_url = redis_url
+    if config_store_url is not None:
+        server.config_store_url = config_store_url
     if probe is not None:
         server.probe = probe
     if probe_interval is not None:
@@ -283,32 +293,17 @@ async def _run(targets, providers, server, cfg=None) -> None:
     # Resolve JWT signing secret once; shared between proxy auth and admin API.
     runtime_secret = make_runtime_secret(cfg.auth.jwt_secret)
 
-    if server.backend == "redis":
-        try:
-            from proxy_hopper_redis import RedisBackend
-        except ImportError:
-            log.error(
-                "Redis backend requested but proxy-hopper-redis is not installed. "
-                "Run: pip install proxy-hopper-redis"
-            )
-            return
-        backend = RedisBackend(server.redis_url)
-    else:
-        from .backend.memory import MemoryBackend
-        backend = MemoryBackend()
+    from .wiring import build_repo
 
-    await backend.start()
+    result = await build_repo(server)
+    if result is None:
+        return
+    backend, config_store, repo = result
 
     from .pool_store import IPPoolStore
-    from .repository import ProxyRepository
-    from .config_store.memory import MemoryConfigStore
-
     from .events import EventBus
 
     pool_store = IPPoolStore(backend)
-    # MemoryConfigStore for now — real config_store_url wiring lands in a
-    # later phase of the config-store migration (see CONFIG_STORE_SCOPE.md).
-    repo = ProxyRepository(config_store=MemoryConfigStore(), backend=backend)
     event_bus = EventBus(backend)
 
     # Lightweight in-process per-target request counters, for the admin UI's
@@ -400,6 +395,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
                 "installed. Run: pip install proxy-hopper-webserver"
             )
             await backend.stop()
+            await config_store.stop()
             if prober:
                 await prober.stop()
             return
@@ -455,5 +451,6 @@ async def _run(targets, providers, server, cfg=None) -> None:
         if prober:
             await prober.stop()
         await backend.stop()
+        await config_store.stop()
 
 

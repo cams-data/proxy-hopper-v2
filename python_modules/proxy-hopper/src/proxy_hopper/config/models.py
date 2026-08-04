@@ -428,6 +428,16 @@ class ServerConfig(BaseSettings):
     redis_url (redisUrl)
         Redis connection URL.  Used when ``backend=redis``.
         Default: ``"redis://localhost:6379/0"``.
+    config_store_url (configStoreUrl)
+        SQLAlchemy connection URL for durable provider/pool/target config
+        (e.g. ``"sqlite+aiosqlite:///./data/config.db"`` or
+        ``"postgresql+asyncpg://user:pass@host/db"``). Requires the
+        proxy-hopper-sql package. Unset uses an in-process MemoryConfigStore
+        instead — config does not survive a restart, same as today's
+        behaviour. Independent of ``backend``/``redis_url``: this controls
+        durable config storage, not operational state (queues/counters/
+        quarantine), which always goes through ``backend`` regardless.
+        Default: ``None``.
     proxy_read_timeout (proxyReadTimeout)
         Optional timeout in seconds for reading the upstream response body.
         Omit to use aiohttp's default (no explicit read timeout).
@@ -483,6 +493,7 @@ class ServerConfig(BaseSettings):
     log_file: Optional[str] = None
     backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
+    config_store_url: Optional[str] = None
     metrics: bool = False
     metrics_port: int = 9090
     proxy_read_timeout: Optional[float] = None

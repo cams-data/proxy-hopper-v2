@@ -37,6 +37,7 @@ def main() -> None:
 @click.option("--backend", default=None, envvar="PROXY_HOPPER_BACKEND",
               type=click.Choice(["memory", "redis"], case_sensitive=False))
 @click.option("--redis-url", default=None, envvar="PROXY_HOPPER_REDIS_URL")
+@click.option("--config-store-url", default=None, envvar="PROXY_HOPPER_CONFIG_STORE_URL")
 def admin(
     config: Optional[Path],
     host: Optional[str],
@@ -46,16 +47,22 @@ def admin(
     log_file: Optional[str],
     backend: Optional[str],
     redis_url: Optional[str],
+    config_store_url: Optional[str],
 ) -> None:
     """Start the admin server (GraphQL API + web UI).
 
     With ``backend: redis``, connects to the same Redis instance as the proxy
-    runners and sees live state — deploy as a separate pod with a single
-    replica. With ``backend: memory``, this process gets its own private
-    in-process backend that the proxy process cannot write to, so it will
-    only ever show YAML-seeded state, never live runtime state — use
-    ``proxy-hopper run --admin`` instead for a memory-backend deployment,
+    runners and sees live operational state — deploy as a separate pod with a
+    single replica. With ``backend: memory``, this process gets its own
+    private in-process backend the proxy process cannot write to, so it will
+    only ever show YAML-seeded operational state, never live runtime state —
+    use ``proxy-hopper run --admin`` instead for a memory-backend deployment,
     which runs both in one process sharing one backend directly.
+
+    ``config_store_url`` is independent of the above: pointing this and the
+    proxy runners at the same SQLite/Postgres URL makes admin-API-created
+    provider/pool/target config visible to both, regardless of ``backend`` —
+    durable config sharing no longer requires the redis backend.
     """
     if config is None:
         click.echo("Error: --config / PROXY_HOPPER_CONFIG is required.", err=True)
@@ -78,6 +85,8 @@ def admin(
         server.backend = backend
     if redis_url is not None:
         server.redis_url = redis_url
+    if config_store_url is not None:
+        server.config_store_url = config_store_url
 
     configure_logging(
         level=server.log_level,
@@ -99,8 +108,7 @@ def admin(
 async def _run_admin(cfg) -> None:
     from proxy_hopper.auth import make_runtime_secret
     from proxy_hopper.pool_store import IPPoolStore
-    from proxy_hopper.repository import ProxyRepository
-    from proxy_hopper.config_store.memory import MemoryConfigStore
+    from proxy_hopper.wiring import build_repo
 
     from .app import run_admin_server
 
@@ -108,27 +116,13 @@ async def _run_admin(cfg) -> None:
     server = cfg.server
     runtime_secret = make_runtime_secret(cfg.auth.jwt_secret)
 
-    if server.backend == "redis":
-        try:
-            from proxy_hopper_redis import RedisBackend
-        except ImportError:
-            log.error(
-                "Redis backend requested but proxy-hopper-redis is not installed. "
-                "Run: pip install proxy-hopper-redis"
-            )
-            return
-        backend = RedisBackend(server.redis_url)
-    else:
-        from proxy_hopper.backend.memory import MemoryBackend
-        backend = MemoryBackend()
-
-    await backend.start()
+    result = await build_repo(server)
+    if result is None:
+        return
+    backend, config_store, repo = result
 
     from proxy_hopper.events import EventBus
 
-    # MemoryConfigStore for now — real config_store_url wiring lands in a
-    # later phase of the config-store migration (see CONFIG_STORE_SCOPE.md).
-    repo = ProxyRepository(config_store=MemoryConfigStore(), backend=backend)
     event_bus = EventBus(backend)
 
     # Only meaningful when backend=redis — this process shares that Redis
@@ -158,3 +152,4 @@ async def _run_admin(cfg) -> None:
         log.info("Admin server shutting down…")
     finally:
         await backend.stop()
+        await config_store.stop()
