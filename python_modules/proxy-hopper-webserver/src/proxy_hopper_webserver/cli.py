@@ -100,6 +100,7 @@ async def _run_admin(cfg) -> None:
     from proxy_hopper.auth import make_runtime_secret
     from proxy_hopper.pool_store import IPPoolStore
     from proxy_hopper.repository import ProxyRepository
+    from proxy_hopper.config_store.memory import MemoryConfigStore
 
     from .app import run_admin_server
 
@@ -125,7 +126,9 @@ async def _run_admin(cfg) -> None:
 
     from proxy_hopper.events import EventBus
 
-    repo = ProxyRepository(backend)
+    # MemoryConfigStore for now — real config_store_url wiring lands in a
+    # later phase of the config-store migration (see CONFIG_STORE_SCOPE.md).
+    repo = ProxyRepository(config_store=MemoryConfigStore(), backend=backend)
     event_bus = EventBus(backend)
 
     # Only meaningful when backend=redis — this process shares that Redis

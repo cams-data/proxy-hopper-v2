@@ -9,6 +9,7 @@ import pytest_asyncio
 
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import ResolvedIP, TargetConfig
+from proxy_hopper.config_store.memory import MemoryConfigStore
 from proxy_hopper.pool_store import IPPoolStore
 from proxy_hopper.repository import ChangeEvent, ProxyRepository
 from proxy_hopper.server import ProxyServer
@@ -35,7 +36,7 @@ async def _make_server_with_repo(initial_configs=None):
     raw_backend = MemoryBackend()
     await raw_backend.start()
     pool_store = IPPoolStore(raw_backend)
-    repo = ProxyRepository(raw_backend)
+    repo = ProxyRepository(config_store=MemoryConfigStore(), backend=raw_backend)
 
     configs = initial_configs or [_make_config("existing")]
     managers = [TargetManager(cfg, pool_store) for cfg in configs]
@@ -233,8 +234,11 @@ class TestApplyChangeProvider:
         assert len(server._providers) == 0
 
         p = ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"])
-        data = p.model_dump(mode="json")
-        event = ChangeEvent(entity="provider", type="add", name="prov", data=data)
+        # No embedded payload on ChangeEvent (see repository.py's module
+        # docstring) — _apply_provider_change re-reads from the repository,
+        # so the provider must actually be persisted there first.
+        await repo.add_provider(p)
+        event = ChangeEvent(entity="provider", type="add", name="prov")
         await server._apply_change(event)
 
         assert any(p.name == "prov" for p in server._providers)
@@ -245,10 +249,11 @@ class TestApplyChangeProvider:
         old_p = ProxyProvider(name="prov", ip_list=["1.1.1.1:3128"])
         server, pool_store, repo, raw = await _make_server_with_repo([])
         server._providers = [old_p]
+        await repo.add_provider(old_p)
 
         new_p = ProxyProvider(name="prov", ip_list=["9.9.9.9:3128"])
-        data = new_p.model_dump(mode="json")
-        event = ChangeEvent(entity="provider", type="update", name="prov", data=data)
+        await repo.update_provider(new_p)
+        event = ChangeEvent(entity="provider", type="update", name="prov")
         await server._apply_change(event)
 
         found = next(p for p in server._providers if p.name == "prov")
@@ -277,7 +282,7 @@ class TestServerLifecycleWithRepository:
         raw_backend = MemoryBackend()
         await raw_backend.start()
         pool_store = IPPoolStore(raw_backend)
-        repo = ProxyRepository(raw_backend)
+        repo = ProxyRepository(config_store=MemoryConfigStore(), backend=raw_backend)
         server = ProxyServer(
             [],
             host="127.0.0.1",
@@ -295,7 +300,7 @@ class TestServerLifecycleWithRepository:
         raw_backend = MemoryBackend()
         await raw_backend.start()
         pool_store = IPPoolStore(raw_backend)
-        repo = ProxyRepository(raw_backend)
+        repo = ProxyRepository(config_store=MemoryConfigStore(), backend=raw_backend)
         server = ProxyServer(
             [],
             host="127.0.0.1",
@@ -324,7 +329,7 @@ class TestServerLifecycleWithRepository:
         raw_backend = MemoryBackend()
         await raw_backend.start()
         pool_store = IPPoolStore(raw_backend)
-        repo = ProxyRepository(raw_backend)
+        repo = ProxyRepository(config_store=MemoryConfigStore(), backend=raw_backend)
         server = ProxyServer(
             [],
             host="127.0.0.1",

@@ -8,6 +8,7 @@ import pytest_asyncio
 from proxy_hopper.auth import AuthenticatedUser
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import AuthConfig, IpPool, IpRequest, ProxyProvider, ResolvedIP, TargetConfig
+from proxy_hopper.config_store.memory import MemoryConfigStore
 from proxy_hopper.repository import ProxyRepository
 from proxy_hopper_webserver.graphql import schema
 from proxy_hopper_webserver.graphql.context import Context
@@ -27,7 +28,7 @@ async def backend():
 
 @pytest_asyncio.fixture
 async def repo(backend):
-    return ProxyRepository(backend)
+    return ProxyRepository(config_store=MemoryConfigStore(), backend=backend)
 
 
 def _ctx(

@@ -301,11 +301,14 @@ async def _run(targets, providers, server, cfg=None) -> None:
 
     from .pool_store import IPPoolStore
     from .repository import ProxyRepository
+    from .config_store.memory import MemoryConfigStore
 
     from .events import EventBus
 
     pool_store = IPPoolStore(backend)
-    repo = ProxyRepository(backend)
+    # MemoryConfigStore for now — real config_store_url wiring lands in a
+    # later phase of the config-store migration (see CONFIG_STORE_SCOPE.md).
+    repo = ProxyRepository(config_store=MemoryConfigStore(), backend=backend)
     event_bus = EventBus(backend)
 
     # Lightweight in-process per-target request counters, for the admin UI's

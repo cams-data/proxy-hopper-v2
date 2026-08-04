@@ -194,7 +194,7 @@ class ProxyServer:
         if event.entity == "target":
             await self._apply_target_change(event)
         elif event.entity == "provider":
-            self._apply_provider_change(event)
+            await self._apply_provider_change(event)
 
     async def _apply_target_change(self, event) -> None:
         if event.type == "add":
@@ -263,20 +263,28 @@ class ProxyServer:
             await old.stop()
             logger.info("ProxyServer: dynamically removed target '%s'", event.name)
 
-    def _apply_provider_change(self, event) -> None:
+    async def _apply_provider_change(self, event) -> None:
         """Keep self._providers in sync so new managers get fresh credentials."""
-        from .repository import _dict_to_provider
         if event.type == "remove":
             self._providers[:] = [p for p in self._providers if p.name != event.name]
             logger.info("ProxyServer: provider '%s' removed from local cache", event.name)
-        elif event.data is not None:
-            new_p = _dict_to_provider(event.data)
-            idx = next((i for i, p in enumerate(self._providers) if p.name == event.name), None)
-            if idx is not None:
-                self._providers[idx] = new_p
-            else:
-                self._providers.append(new_p)
-            logger.info("ProxyServer: provider '%s' updated in local cache", event.name)
+            return
+
+        # No embedded payload on the event (see repository.py's module
+        # docstring) — re-read the current value from the repository.
+        new_p = await self._repository.get_provider(event.name)
+        if new_p is None:
+            logger.warning(
+                "ProxyServer: %s event for provider '%s' but not found in repository",
+                event.type, event.name,
+            )
+            return
+        idx = next((i for i, p in enumerate(self._providers) if p.name == event.name), None)
+        if idx is not None:
+            self._providers[idx] = new_p
+        else:
+            self._providers.append(new_p)
+        logger.info("ProxyServer: provider '%s' updated in local cache", event.name)
 
     def _build_manager(self, config: "TargetConfig") -> "TargetManager":
         from .target_manager import TargetManager

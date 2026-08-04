@@ -6,6 +6,7 @@ import pytest
 import pytest_asyncio
 
 from proxy_hopper.backend.memory import MemoryBackend
+from proxy_hopper.config_store.memory import MemoryConfigStore
 from proxy_hopper.repository import ProxyRepository
 
 
@@ -19,4 +20,4 @@ async def backend():
 
 @pytest_asyncio.fixture
 async def repo(backend):
-    return ProxyRepository(backend)
+    return ProxyRepository(config_store=MemoryConfigStore(), backend=backend)

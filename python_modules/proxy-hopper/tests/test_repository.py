@@ -9,12 +9,10 @@ import pytest_asyncio
 
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import IpPool, IpRequest, ProxyProvider, ResolvedIP, TargetConfig
+from proxy_hopper.config_store.memory import MemoryConfigStore
 from proxy_hopper.repository import (
     ChangeEvent,
     ProxyRepository,
-    _TARGET_PREFIX,
-    _PROVIDER_PREFIX,
-    _POOL_PREFIX,
     _dict_to_target,
     _dict_to_provider,
     _dict_to_pool,
@@ -28,6 +26,14 @@ from test_helpers import make_target_config
 
 # ---------------------------------------------------------------------------
 # Fixtures
+#
+# Single implementation (MemoryConfigStore/MemoryBackend) — matches this
+# file's existing convention of testing ProxyRepository's business logic
+# against one representative backend. Cross-implementation equivalence
+# (memory/sqlite/postgres) is proven separately in
+# python_modules/tests/test_repository_config_store_contract.py, the same
+# split already used for Backend (memory/redis) vs. ProxyRepository/pool
+# logic — see that project's conftest.py for the precedent.
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture
@@ -39,8 +45,16 @@ async def backend():
 
 
 @pytest_asyncio.fixture
-async def repo(backend):
-    return ProxyRepository(backend)
+async def config_store():
+    s = MemoryConfigStore()
+    await s.start()
+    yield s
+    await s.stop()
+
+
+@pytest_asyncio.fixture
+async def repo(config_store, backend):
+    return ProxyRepository(config_store=config_store, backend=backend)
 
 
 def _make_target(name="api", pool_name="test-pool", ip_list=None, **kw) -> TargetConfig:
@@ -202,11 +216,11 @@ class TestPoolSerialisation:
 # ---------------------------------------------------------------------------
 
 class TestAddTarget:
-    async def test_add_persists_to_kv(self, repo, backend):
+    async def test_add_persists(self, repo, config_store):
         cfg = _make_target("new-target")
         await repo.add_target(cfg)
-        raw = await backend.kv_get(f"{_TARGET_PREFIX}new-target")
-        assert raw is not None
+        entity = await config_store.get("target", "new-target")
+        assert entity is not None
 
     async def test_add_then_get_round_trips(self, repo):
         cfg = _make_target("roundtrip")
@@ -241,7 +255,6 @@ class TestAddTarget:
         assert events[0].entity == "target"
         assert events[0].type == "add"
         assert events[0].name == "pub-add"
-        assert events[0].data is not None
 
 
 class TestUpdateTarget:
@@ -287,10 +300,10 @@ class TestUpdateTarget:
 
 
 class TestRemoveTarget:
-    async def test_remove_deletes_from_kv(self, repo, backend):
+    async def test_remove_deletes(self, repo, config_store):
         await repo.add_target(_make_target("to-remove"))
         await repo.remove_target("to-remove")
-        assert await backend.kv_get(f"{_TARGET_PREFIX}to-remove") is None
+        assert await config_store.get("target", "to-remove") is None
 
     async def test_remove_nonexistent_is_noop(self, repo):
         await repo.remove_target("does-not-exist")  # must not raise
@@ -313,26 +326,25 @@ class TestRemoveTarget:
         assert events[0].entity == "target"
         assert events[0].type == "remove"
         assert events[0].name == "pub-rm"
-        assert events[0].data is None
 
     async def test_get_after_remove_returns_none(self, repo):
         await repo.add_target(_make_target("del-me"))
         await repo.remove_target("del-me")
         assert await repo.get_target("del-me") is None
 
-    async def test_remove_static_target_raises(self, repo, backend):
+    async def test_remove_static_target_raises(self, repo, config_store):
         cfg = _make_target("frozen-static", static=True)
         await repo.add_target(cfg)
         with pytest.raises(ValueError, match="config-static"):
             await repo.remove_target("frozen-static")
-        assert await backend.kv_get(f"{_TARGET_PREFIX}frozen-static") is not None
+        assert await config_store.get("target", "frozen-static") is not None
 
-    async def test_remove_immutable_target_raises(self, repo, backend):
+    async def test_remove_immutable_target_raises(self, repo, config_store):
         cfg = _make_target("frozen-immutable", static=False, mutable=False)
         await repo.add_target(cfg)
         with pytest.raises(ValueError, match="not mutable"):
             await repo.remove_target("frozen-immutable")
-        assert await backend.kv_get(f"{_TARGET_PREFIX}frozen-immutable") is not None
+        assert await config_store.get("target", "frozen-immutable") is not None
 
 
 class TestGetTarget:
@@ -363,8 +375,11 @@ class TestListTargets:
         targets = await repo.list_targets()
         assert [t.name for t in targets] == ["keep"]
 
-    async def test_only_lists_target_prefix(self, repo, backend):
-        await backend.kv_set("ph:repo:provider:noise", '{"name": "noise", "ip_list": ["1.1.1.1:3128"], "mutable": true}')
+    async def test_only_lists_targets_not_other_entity_types(self, repo, config_store):
+        await config_store.set(
+            "provider", "noise", {"name": "noise", "ip_list": ["1.1.1.1:3128"]},
+            static=False, mutable=True,
+        )
         await repo.add_target(_make_target("real"))
         targets = await repo.list_targets()
         assert len(targets) == 1
@@ -376,11 +391,11 @@ class TestListTargets:
 # ---------------------------------------------------------------------------
 
 class TestAddPool:
-    async def test_add_persists_to_kv(self, repo, backend):
+    async def test_add_persists(self, repo, config_store):
         pool = _make_pool("p1")
         await repo.add_pool(pool)
-        raw = await backend.kv_get(f"{_POOL_PREFIX}p1")
-        assert raw is not None
+        entity = await config_store.get("pool", "p1")
+        assert entity is not None
 
     async def test_add_then_get_round_trips(self, repo):
         pool = _make_pool("roundtrip", "prov", 3)
@@ -441,27 +456,27 @@ class TestUpdatePool:
 
 
 class TestRemovePool:
-    async def test_remove_deletes_from_kv(self, repo, backend):
+    async def test_remove_deletes(self, repo, config_store):
         await repo.add_pool(_make_pool("to-remove"))
         await repo.remove_pool("to-remove")
-        assert await backend.kv_get(f"{_POOL_PREFIX}to-remove") is None
+        assert await config_store.get("pool", "to-remove") is None
 
     async def test_remove_nonexistent_is_noop(self, repo):
         await repo.remove_pool("does-not-exist")  # must not raise
 
-    async def test_remove_static_pool_raises(self, repo, backend):
+    async def test_remove_static_pool_raises(self, repo, config_store):
         pool = _make_pool("frozen-static", static=True)
         await repo.add_pool(pool)
         with pytest.raises(ValueError, match="config-static"):
             await repo.remove_pool("frozen-static")
-        assert await backend.kv_get(f"{_POOL_PREFIX}frozen-static") is not None
+        assert await config_store.get("pool", "frozen-static") is not None
 
-    async def test_remove_immutable_pool_raises(self, repo, backend):
+    async def test_remove_immutable_pool_raises(self, repo, config_store):
         pool = _make_pool("frozen-immutable", static=False, mutable=False)
         await repo.add_pool(pool)
         with pytest.raises(ValueError, match="not mutable"):
             await repo.remove_pool("frozen-immutable")
-        assert await backend.kv_get(f"{_POOL_PREFIX}frozen-immutable") is not None
+        assert await config_store.get("pool", "frozen-immutable") is not None
 
 
 class TestListPools:
@@ -480,11 +495,11 @@ class TestListPools:
 # ---------------------------------------------------------------------------
 
 class TestAddProvider:
-    async def test_add_persists_to_kv(self, repo, backend):
+    async def test_add_persists(self, repo, config_store):
         p = _make_provider("new-prov")
         await repo.add_provider(p)
-        raw = await backend.kv_get(f"{_PROVIDER_PREFIX}new-prov")
-        assert raw is not None
+        entity = await config_store.get("provider", "new-prov")
+        assert entity is not None
 
     async def test_add_then_get_round_trips(self, repo):
         p = _make_provider("roundtrip")
@@ -543,27 +558,27 @@ class TestUpdateProvider:
 
 
 class TestRemoveProvider:
-    async def test_remove_deletes_from_kv(self, repo, backend):
+    async def test_remove_deletes(self, repo, config_store):
         await repo.add_provider(_make_provider("to-remove"))
         await repo.remove_provider("to-remove")
-        assert await backend.kv_get(f"{_PROVIDER_PREFIX}to-remove") is None
+        assert await config_store.get("provider", "to-remove") is None
 
     async def test_remove_nonexistent_is_noop(self, repo):
         await repo.remove_provider("does-not-exist")  # must not raise
 
-    async def test_remove_static_provider_raises(self, repo, backend):
+    async def test_remove_static_provider_raises(self, repo, config_store):
         p = _make_provider("frozen-static", static=True)
         await repo.add_provider(p)
         with pytest.raises(ValueError, match="config-static"):
             await repo.remove_provider("frozen-static")
-        assert await backend.kv_get(f"{_PROVIDER_PREFIX}frozen-static") is not None
+        assert await config_store.get("provider", "frozen-static") is not None
 
-    async def test_remove_immutable_provider_raises(self, repo, backend):
+    async def test_remove_immutable_provider_raises(self, repo, config_store):
         p = _make_provider("frozen-immutable", static=False, mutable=False)
         await repo.add_provider(p)
         with pytest.raises(ValueError, match="not mutable"):
             await repo.remove_provider("frozen-immutable")
-        assert await backend.kv_get(f"{_PROVIDER_PREFIX}frozen-immutable") is not None
+        assert await config_store.get("provider", "frozen-immutable") is not None
 
     async def test_remove_publishes_event(self, repo):
         await repo.add_provider(_make_provider("pub-rm"))
@@ -600,8 +615,8 @@ class TestListProviders:
         providers = await repo.list_providers()
         assert {p.name for p in providers} == {"a", "b"}
 
-    async def test_only_lists_provider_prefix(self, repo, backend):
-        await backend.kv_set(f"{_TARGET_PREFIX}noise", '{"name":"noise"}')
+    async def test_only_lists_providers_not_other_entity_types(self, repo, config_store):
+        await config_store.set("target", "noise", {"name": "noise"}, static=False, mutable=True)
         await repo.add_provider(_make_provider("real"))
         providers = await repo.list_providers()
         assert len(providers) == 1
@@ -748,6 +763,20 @@ class TestCascadeProvider:
 
         unchanged = await repo.get_target("unrelated")
         assert unchanged.resolved_ips[0].host == "5.5.5.5"
+
+    async def test_cascade_update_visible_directly_in_config_store(self, repo, config_store):
+        """Phase 3 acceptance test: after a cascade, the recomputed
+        resolved_ips are visible by reading ConfigStore directly — not just
+        through repo.get_target — proving the write landed in durable
+        storage itself, not some intermediate cache. Pairs with the
+        no-payload ChangeEvent: consumers MUST re-read from here."""
+        await self._setup(repo, ["1.1.1.1:3128"], count=1)
+        provider = await repo.get_provider("prov")
+        await repo.update_provider(provider.model_copy(update={"ip_list": ["9.9.9.9:3128"]}))
+
+        entity = await config_store.get("target", "t")
+        assert entity is not None
+        assert entity.data["resolved_ips"][0]["host"] == "9.9.9.9"
 
     async def test_multiple_targets_same_pool_all_cascaded(self, repo):
         """Two targets sharing a pool both get the cascade update."""
@@ -950,16 +979,19 @@ class TestSubscribeChanges:
 
 class TestChangeEvent:
     def test_target_add_event(self):
-        e = ChangeEvent(entity="target", type="add", name="x", data={"a": 1})
+        e = ChangeEvent(entity="target", type="add", name="x")
         assert e.entity == "target"
         assert e.type == "add"
         assert e.name == "x"
-        assert e.data == {"a": 1}
-
-    def test_provider_remove_event_data_none(self):
-        e = ChangeEvent(entity="provider", type="remove", name="x")
-        assert e.data is None
 
     def test_pool_add_event(self):
-        e = ChangeEvent(entity="pool", type="add", name="p", data={"name": "p"})
+        e = ChangeEvent(entity="pool", type="add", name="p")
         assert e.entity == "pool"
+
+    def test_event_carries_no_payload(self):
+        """Notify-then-reconcile design: the event is a wake-up signal only —
+        consumers re-read the authoritative value from ConfigStore rather
+        than trusting an embedded payload. See repository.py's module
+        docstring."""
+        e = ChangeEvent(entity="target", type="add", name="x")
+        assert not hasattr(e, "data")
