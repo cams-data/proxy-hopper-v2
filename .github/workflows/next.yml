@@ -7,15 +7,57 @@ on:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Changes — detects pushes that touch only the Helm chart (charts/**).
+  # Those skip the wheel build / multi-arch Docker build entirely and go
+  # straight to the lightweight chart-only publish job below, instead of
+  # bumping the app version and rebuilding images that haven't changed.
+  # Defaults to "not chart-only" (i.e. runs the full pipeline) whenever the
+  # diff can't be determined, e.g. on the branch's first push.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      chart_only: ${{ steps.check.outputs.chart_only }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check whether only chart files changed
+        id: check
+        run: |
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "chart_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "${{ github.event.before }}" "${{ github.event.after }}")
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          if [ -n "$CHANGED" ] && ! echo "$CHANGED" | grep -qv '^charts/'; then
+            echo "chart_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "chart_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ---------------------------------------------------------------------------
   # Tag — reads conventional commits since the last tag and pushes a new one.
   # Pre-release tags are suffixed with '-pre.N' (e.g. v0.1.1-pre.1).
   # If no bump-worthy commits exist the step is a no-op (new_tag is empty).
   #
   # Tests are NOT re-run here — CI already requires them to pass on every PR
   # before it can be merged into next.
+  #
+  # Skipped entirely for chart-only pushes — see the "changes" job above and
+  # "chart-only" job below.
   # ---------------------------------------------------------------------------
   tag:
     name: Tag pre-release
+    needs: changes
+    if: needs.changes.outputs.chart_only != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -270,3 +312,76 @@ jobs:
           gh release edit "${{ needs.tag.outputs.new_tag }}" \
             --notes-file <(gh release view "${{ needs.tag.outputs.new_tag }}" --json body --jq '.body' && cat helm-links.md) \
             --repo "${{ github.repository }}"
+
+  # ---------------------------------------------------------------------------
+  # Chart-only — for pushes that touch nothing but charts/**. Skips the app
+  # version bump and image builds entirely; packages the chart pinned to the
+  # most recently released app version (the latest "v*" tag) and pushes it to
+  # ghcr.io under its own "<appVersion>-chart.<sha>" version, so it doesn't
+  # collide with real release versions from the "helm" job above.
+  # ---------------------------------------------------------------------------
+  chart-only:
+    name: Publish Helm chart (chart-only change)
+    needs: changes
+    if: needs.changes.outputs.chart_only == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine latest released app version
+        id: app_version
+        run: |
+          LATEST_TAG=$(git describe --tags --abbrev=0 --match 'v*')
+          echo "version=${LATEST_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update chart version
+        id: chart_version
+        env:
+          APP_VERSION: ${{ steps.app_version.outputs.version }}
+        run: |
+          CHART_VERSION="${APP_VERSION}-chart.$(git rev-parse --short HEAD)"
+          echo "version=${CHART_VERSION}" >> "$GITHUB_OUTPUT"
+          sed -i "s/^version:.*/version: ${CHART_VERSION}/" charts/proxy-hopper/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${APP_VERSION}\"/" charts/proxy-hopper/Chart.yaml
+
+      - name: Fetch chart dependencies
+        run: helm dependency update charts/proxy-hopper
+
+      - name: Package chart
+        run: helm package charts/proxy-hopper --destination /tmp/helm-charts
+
+      - name: Push chart to ghcr.io
+        env:
+          CHART_VERSION: ${{ steps.chart_version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          helm push /tmp/helm-charts/proxy-hopper-${CHART_VERSION}.tgz oci://ghcr.io/${OWNER}/helm
+
+      - name: Summary
+        env:
+          CHART_VERSION: ${{ steps.chart_version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          {
+            echo "### Chart-only preview published"
+            echo
+            echo '```bash'
+            echo "helm install proxy-hopper oci://ghcr.io/${OWNER}/helm/proxy-hopper --version ${CHART_VERSION}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
