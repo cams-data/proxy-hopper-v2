@@ -48,6 +48,7 @@ spec:
           image: {{ include "proxy-hopper.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
+            - run
             - --config
             - /etc/proxy-hopper/config.yaml
             {{- if .Values.metrics.enabled }}
