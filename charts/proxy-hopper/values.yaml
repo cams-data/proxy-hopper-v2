@@ -296,6 +296,15 @@ redis:
     size: 1Gi
     # storageClass: ""   # cluster default if unset
 
+  # fsGroup makes the kubelet chown/chmod the mounted volume to this group at
+  # mount time, so redis can write to /data regardless of which UID the
+  # container actually ends up running as (the official image only self-chowns
+  # /data and drops to its "redis" user when it starts as root — some clusters
+  # mutate pods to run non-root by default, which skips that entirely and
+  # leaves /data owned by whoever provisioned the PVC, usually root).
+  podSecurityContext:
+    fsGroup: 999
+
   resources: {}
     # requests:
     #   cpu: 100m
