@@ -1,0 +1,16 @@
+{{- if eq .Values.configStore.dialect "sqlite" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "proxy-hopper.fullname" . }}-config-store
+  labels:
+    {{- include "proxy-hopper.labels" . | nindent 4 }}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.configStore.sqlite.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.configStore.sqlite.persistence.size }}
+{{- end }}

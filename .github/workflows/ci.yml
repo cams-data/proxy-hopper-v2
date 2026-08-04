@@ -108,3 +108,51 @@ jobs:
         run: |
           uv sync --python ${{ matrix.python-version }} --all-extras
           uv run pytest --tb=short -q
+
+  helm-lint:
+    name: Helm lint / template
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: helm lint
+        run: helm lint charts/proxy-hopper
+
+      - name: helm template — default values
+        run: helm template test charts/proxy-hopper > /dev/null
+
+      - name: helm template — redis backend + admin
+        run: |
+          helm template test charts/proxy-hopper \
+            --set backend.type=redis --set redis.enabled=true --set admin.enabled=true \
+            > /dev/null
+
+      - name: helm template — configStore=sqlite
+        run: |
+          helm template test charts/proxy-hopper \
+            --set configStore.dialect=sqlite --set admin.enabled=true \
+            > /dev/null
+
+      - name: helm template — configStore=postgres (url and existingSecret)
+        run: |
+          helm template test charts/proxy-hopper \
+            --set configStore.dialect=postgres --set configStore.url=postgresql+asyncpg://u:p@host/db --set admin.enabled=true \
+            > /dev/null
+          helm template test charts/proxy-hopper \
+            --set configStore.dialect=postgres --set configStore.existingSecret=my-secret --set admin.enabled=true \
+            > /dev/null
+
+      - name: helm template — configStore=sqlite single-writer guards must fail
+        run: |
+          if helm template test charts/proxy-hopper --set configStore.dialect=sqlite --set replicaCount=2 > /dev/null 2>&1; then
+            echo "Expected 'helm template' to fail with replicaCount=2 + configStore.dialect=sqlite (single-writer guard regressed)." >&2
+            exit 1
+          fi
+          if helm template test charts/proxy-hopper --set configStore.dialect=sqlite --set autoscaling.enabled=true > /dev/null 2>&1; then
+            echo "Expected 'helm template' to fail with autoscaling.enabled + configStore.dialect=sqlite (single-writer guard regressed)." >&2
+            exit 1
+          fi
