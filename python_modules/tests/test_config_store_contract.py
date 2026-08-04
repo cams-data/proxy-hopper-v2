@@ -1,9 +1,9 @@
 """Generic ConfigStore contract tests.
 
 Parametrized over every registered store type. Adding a new implementation
-(e.g. a Postgres dialect in a later phase) requires only adding an entry to
-_STORE_FACTORIES — every test below then runs against it automatically.
-Mirrors conftest.py's _BACKEND_FACTORIES pattern.
+requires only adding an entry to _STORE_FACTORIES — every test below then
+runs against it automatically. Mirrors conftest.py's _BACKEND_FACTORIES
+pattern.
 
 Lives in this cross-package `proxy-hopper-tests` project (not inside
 proxy-hopper/tests/) for the same reason the Backend contract suite does:
@@ -13,18 +13,28 @@ package's own test suite depend on proxy-hopper-sql.
 sqlite is backed by a temp *file* per test (pytest's built-in tmp_path,
 already function-scoped/unique) rather than :memory: — async connection
 pooling makes :memory: behave inconsistently across connections.
+
+postgres, like the redis backend contract, only runs when POSTGRES_URL is
+set in the environment (a real service container in CI); skipped locally
+without one — there's no in-memory Postgres fake worth reaching for here.
+Unlike sqlite's temp-file-per-test isolation, postgres tests share one
+long-lived database, so the table is truncated before each test instead.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
+from sqlalchemy import text
 
 from proxy_hopper.config_store.base import ConfigStore
 from proxy_hopper.config_store.memory import MemoryConfigStore
 from proxy_hopper_sql import migrations
 from proxy_hopper_sql.config_store import SqlConfigStore
+
+_POSTGRES_URL = os.environ.get("POSTGRES_URL", "")
 
 
 def _make_memory(tmp_path) -> ConfigStore:
@@ -41,10 +51,23 @@ def _make_sqlite(tmp_path) -> ConfigStore:
     return SqlConfigStore(url)
 
 
+def _make_postgres(tmp_path) -> ConfigStore:
+    # Schema is applied once, session-wide, by _postgres_schema below.
+    return SqlConfigStore(_POSTGRES_URL)
+
+
 _STORE_FACTORIES = {
     "memory": _make_memory,
     "sqlite": _make_sqlite,
 }
+if _POSTGRES_URL:
+    _STORE_FACTORIES["postgres"] = _make_postgres
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _postgres_schema() -> None:
+    if _POSTGRES_URL:
+        migrations.upgrade(_POSTGRES_URL)
 
 
 @pytest.fixture(params=list(_STORE_FACTORIES))
@@ -56,6 +79,9 @@ def store_name(request) -> str:
 async def store(store_name, tmp_path) -> ConfigStore:
     s = await asyncio.to_thread(_STORE_FACTORIES[store_name], tmp_path)
     await s.start()
+    if store_name == "postgres":
+        async with s._engine.begin() as conn:
+            await conn.execute(text("DELETE FROM config_entities"))
     yield s
     await s.stop()
 

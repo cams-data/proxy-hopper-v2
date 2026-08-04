@@ -34,6 +34,18 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,6 +79,8 @@ jobs:
 
       - name: Run proxy-hopper-sql tests
         working-directory: python_modules/proxy-hopper-sql
+        env:
+          POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
         run: |
           uv sync --python ${{ matrix.python-version }} --all-extras
           uv run pytest --tb=short -q
@@ -84,6 +98,7 @@ jobs:
         working-directory: python_modules/tests
         env:
           REDIS_URL: redis://localhost:6379/0
+          POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/postgres
         run: |
           uv sync --python ${{ matrix.python-version }}
           uv run pytest --tb=short -q
