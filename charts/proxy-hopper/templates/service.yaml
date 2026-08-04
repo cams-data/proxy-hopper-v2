@@ -17,7 +17,7 @@ spec:
       protocol: TCP
       name: metrics
     {{- end }}
-    {{- /* Admin port is on the separate admin Service (admin-service.yaml). */ -}}
+    {{- /* Admin port is on the separate admin Service (admin-service.yaml). */}}
   selector:
     {{- include "proxy-hopper.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: proxy
