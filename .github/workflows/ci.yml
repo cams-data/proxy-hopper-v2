@@ -65,6 +65,21 @@ jobs:
           uv sync --python ${{ matrix.python-version }} --all-extras
           uv run pytest --tb=short -q
 
+      - name: Run proxy-hopper-sql tests
+        working-directory: python_modules/proxy-hopper-sql
+        run: |
+          uv sync --python ${{ matrix.python-version }} --all-extras
+          uv run pytest --tb=short -q
+
+      - name: Alembic multi-head guard
+        working-directory: python_modules/proxy-hopper-sql
+        run: |
+          heads=$(uv run python -c "from proxy_hopper_sql import migrations; print(len(migrations.heads('sqlite+aiosqlite:///:memory:')))")
+          if [ "$heads" != "1" ]; then
+            echo "Expected exactly 1 Alembic head, found $heads — merge the migration branches." >&2
+            exit 1
+          fi
+
       - name: Run contract tests (all backends)
         working-directory: python_modules/tests
         env:

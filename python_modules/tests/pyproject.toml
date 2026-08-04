@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 dependencies = [
     "proxy-hopper",
     "proxy-hopper-redis",
+    "proxy-hopper-sql",
     "fakeredis>=2.20",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
@@ -20,6 +21,7 @@ dependencies = [
 [tool.uv.sources]
 proxy-hopper = { path = "../proxy-hopper", editable = true }
 proxy-hopper-redis = { path = "../proxy-hopper-redis", editable = true }
+proxy-hopper-sql = { path = "../proxy-hopper-sql", editable = true }
 
 [tool.setuptools]
 packages = []

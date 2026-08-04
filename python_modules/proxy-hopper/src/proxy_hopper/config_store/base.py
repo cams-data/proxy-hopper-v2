@@ -32,6 +32,8 @@ class ConfigEntity:
     data: dict
     static: bool
     mutable: bool
+    # Naive UTC by convention across every implementation — SQLite's
+    # DATETIME type doesn't reliably round-trip tz-aware datetimes.
     updated_at: datetime
 
 

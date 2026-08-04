@@ -70,6 +70,13 @@ try:
 except ImportError:
     pass
 
+# Load the migrate command from proxy-hopper-sql if installed.
+try:
+    from proxy_hopper_sql.cli import migrate as _migrate_cmd
+    main.add_command(_migrate_cmd, name="migrate")
+except ImportError:
+    pass
+
 
 @main.command("hash-password")
 @click.argument("password")
