@@ -1,20 +1,49 @@
 """Generic ConfigStore contract tests.
 
 Parametrized over every registered store type. Adding a new implementation
-(e.g. SqlConfigStore in a later phase) requires only adding an entry to
+(e.g. a Postgres dialect in a later phase) requires only adding an entry to
 _STORE_FACTORIES — every test below then runs against it automatically.
-Mirrors python_modules/tests/conftest.py's _BACKEND_FACTORIES pattern.
+Mirrors conftest.py's _BACKEND_FACTORIES pattern.
+
+Lives in this cross-package `proxy-hopper-tests` project (not inside
+proxy-hopper/tests/) for the same reason the Backend contract suite does:
+exercising SqlConfigStore here would otherwise make the core proxy-hopper
+package's own test suite depend on proxy-hopper-sql.
+
+sqlite is backed by a temp *file* per test (pytest's built-in tmp_path,
+already function-scoped/unique) rather than :memory: — async connection
+pooling makes :memory: behave inconsistently across connections.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 
 from proxy_hopper.config_store.base import ConfigStore
 from proxy_hopper.config_store.memory import MemoryConfigStore
+from proxy_hopper_sql import migrations
+from proxy_hopper_sql.config_store import SqlConfigStore
+
+
+def _make_memory(tmp_path) -> ConfigStore:
+    return MemoryConfigStore()
+
+
+def _make_sqlite(tmp_path) -> ConfigStore:
+    # migrations.upgrade() calls alembic, which internally does its own
+    # asyncio.run() — can't call it directly from inside a running loop
+    # (i.e. from an async fixture), so factories are invoked via
+    # asyncio.to_thread below instead of awaited directly.
+    url = f"sqlite+aiosqlite:///{tmp_path / 'config.db'}"
+    migrations.upgrade(url)
+    return SqlConfigStore(url)
+
 
 _STORE_FACTORIES = {
-    "memory": MemoryConfigStore,
+    "memory": _make_memory,
+    "sqlite": _make_sqlite,
 }
 
 
@@ -24,16 +53,16 @@ def store_name(request) -> str:
 
 
 @pytest.fixture
-async def store(store_name) -> ConfigStore:
-    s = _STORE_FACTORIES[store_name]()
+async def store(store_name, tmp_path) -> ConfigStore:
+    s = await asyncio.to_thread(_STORE_FACTORIES[store_name], tmp_path)
     await s.start()
     yield s
     await s.stop()
 
 
 class TestLifecycle:
-    async def test_start_stop(self, store_name):
-        s = _STORE_FACTORIES[store_name]()
+    async def test_start_stop(self, store_name, tmp_path):
+        s = await asyncio.to_thread(_STORE_FACTORIES[store_name], tmp_path)
         await s.start()
         await s.stop()
 

@@ -44,7 +44,10 @@ class MemoryConfigStore(ConfigStore):
             data=data,
             static=static,
             mutable=mutable,
-            updated_at=datetime.now(timezone.utc),
+            # Naive UTC — matches SqlConfigStore's convention (SQLite's
+            # DATETIME type doesn't reliably round-trip tz-aware values),
+            # kept consistent across every ConfigStore implementation.
+            updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         )
 
     async def delete(self, entity_type: str, name: str) -> None:
