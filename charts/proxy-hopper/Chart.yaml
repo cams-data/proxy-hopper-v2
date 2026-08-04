@@ -17,9 +17,3 @@ sources:
 maintainers:
   - name: cams-data
     url: https://github.com/cams-data
-
-dependencies:
-  - name: redis
-    version: "20.x.x"
-    repository: "https://charts.bitnami.com/bitnami"
-    condition: redis.enabled
