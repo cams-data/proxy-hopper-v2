@@ -38,6 +38,10 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if eq .Values.backend.type "redis" }}
+      initContainers:
+        {{- include "proxy-hopper.waitForRedisInitContainer" . | nindent 8 }}
+      {{- end }}
       containers:
         - name: proxy-hopper-admin
           {{- with .Values.securityContext }}

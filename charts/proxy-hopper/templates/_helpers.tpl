@@ -97,6 +97,29 @@ backend.redis.url.
 {{- end }}
 
 {{/*
+Init container that blocks pod startup until Redis answers PING — avoids
+CrashLoopBackOff climbing to a multi-minute wait when Redis is briefly
+unavailable (e.g. still attaching its volume) at pod start. Callers are
+expected to only include this when backend.type=redis.
+*/}}
+{{- define "proxy-hopper.waitForRedisInitContainer" -}}
+- name: wait-for-redis
+  image: "{{ .Values.redis.image.repository }}:{{ .Values.redis.image.tag }}"
+  imagePullPolicy: {{ .Values.redis.image.pullPolicy }}
+  command:
+    - sh
+    - -c
+    - |
+      until redis-cli -u "$REDIS_URL" ping; do
+        echo "Waiting for Redis..."
+        sleep 2
+      done
+  env:
+    - name: REDIS_URL
+      value: {{ include "proxy-hopper.redisUrl" . }}
+{{- end }}
+
+{{/*
 Name of the ConfigMap or Secret holding config.yaml.
 */}}
 {{- define "proxy-hopper.configName" -}}
