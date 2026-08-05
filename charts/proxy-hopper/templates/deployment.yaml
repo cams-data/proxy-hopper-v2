@@ -1,3 +1,11 @@
+{{- if eq .Values.configStore.dialect "sqlite" }}
+{{- if gt (.Values.replicaCount | int) 1 }}
+{{- fail "configStore.dialect=sqlite requires replicaCount=1 — SQLite is single-writer. Use configStore.dialect=postgres for multi-replica deployments." }}
+{{- end }}
+{{- if .Values.autoscaling.enabled }}
+{{- fail "configStore.dialect=sqlite is incompatible with autoscaling.enabled — SQLite is single-writer and cannot scale beyond one replica. Use configStore.dialect=postgres instead." }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,9 +47,14 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if eq .Values.backend.type "redis" }}
+      {{- if or (eq .Values.backend.type "redis") (eq .Values.configStore.dialect "sqlite") }}
       initContainers:
+        {{- if eq .Values.backend.type "redis" }}
         {{- include "proxy-hopper.waitForRedisInitContainer" . | nindent 8 }}
+        {{- end }}
+        {{- if eq .Values.configStore.dialect "sqlite" }}
+        {{- include "proxy-hopper.configStoreMigrateInitContainer" . | nindent 8 }}
+        {{- end }}
       {{- end }}
       containers:
         - name: {{ .Chart.Name }}
@@ -51,6 +64,11 @@ spec:
           {{- end }}
           image: {{ include "proxy-hopper.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- $csEnv := include "proxy-hopper.configStoreUrlEnv" . | trim }}
+          {{- if $csEnv }}
+          env:
+            {{- $csEnv | nindent 12 }}
+          {{- end }}
           args:
             - run
             - --config
@@ -95,6 +113,10 @@ spec:
             - name: config
               mountPath: /etc/proxy-hopper
               readOnly: true
+            {{- if eq .Values.configStore.dialect "sqlite" }}
+            - name: config-store-data
+              mountPath: {{ include "proxy-hopper.configStoreSqliteMountPath" . }}
+            {{- end }}
       volumes:
         - name: config
           {{- if eq (include "proxy-hopper.configIsSecret" .) "true" }}
@@ -104,6 +126,11 @@ spec:
           configMap:
             name: {{ include "proxy-hopper.configName" . }}
           {{- end }}
+        {{- if eq .Values.configStore.dialect "sqlite" }}
+        - name: config-store-data
+          persistentVolumeClaim:
+            claimName: {{ include "proxy-hopper.fullname" . }}-config-store
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -316,6 +316,35 @@ redis:
   # Extra args passed to the redis-server entrypoint, e.g. ["--maxmemory", "256mb"]
   extraArgs: []
 
+# ── Config store ─────────────────────────────────────────────────────────────
+# Durable storage for provider/pool/target config created via the admin API.
+# Unrelated to backend/redis above, which is only operational state (IP
+# queues, rate-limit counters, quarantine) — this is what makes admin-API
+# config changes survive a pod restart. Off by default: config created via
+# the admin API does not survive a restart until you set dialect below,
+# same as before this feature existed.
+configStore:
+  # "" (disabled), "sqlite", or "postgres".
+  dialect: ""
+
+  # Required when dialect=postgres. Ignored for dialect=sqlite (the chart
+  # manages that file's URL itself, see sqlite.persistence below) and when
+  # dialect is unset. existingSecret takes priority if both are set.
+  url: ""
+  existingSecret: ""
+  existingSecretKey: url
+
+  # Only used when dialect=sqlite. The PVC backing the local file, mounted
+  # on the main deployment only — SQLite is single-writer, so this does not
+  # extend to a separately-enabled admin.* Deployment (it cannot safely
+  # share this PVC), and the chart refuses to render if replicaCount>1 or
+  # autoscaling.enabled=true for the same reason. Use dialect=postgres if
+  # you need config shared across more than one pod.
+  sqlite:
+    persistence:
+      size: 256Mi
+      # storageClass: ""   # cluster default if unset
+
 # ── Grafana dashboards ───────────────────────────────────────────────────────
 # Creates a ConfigMap with .url keys that the Grafana sidecar picks up and
 # fetches from GitHub. Requires the Grafana dashboard sidecar to be configured

@@ -66,6 +66,16 @@ spec:
             - name: PROXY_HOPPER_REDIS_URL
               value: {{ include "proxy-hopper.redisUrl" . }}
             {{- end }}
+            {{- /*
+            sqlite deliberately excluded here — it's single-writer and lives
+            on a PVC mounted only by the main deployment (see values.yaml's
+            configStore comments). This admin Deployment falls back to
+            MemoryConfigStore when dialect=sqlite, same as when unset. Use
+            dialect=postgres to share config with a separate admin Deployment.
+            */}}
+            {{- if eq .Values.configStore.dialect "postgres" }}
+            {{- include "proxy-hopper.configStoreUrlEnv" . | trim | nindent 12 }}
+            {{- end }}
           ports:
             - name: admin
               containerPort: {{ .Values.admin.port }}

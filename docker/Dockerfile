@@ -1,10 +1,11 @@
 FROM python:3.12-slim
 
-COPY wheels/proxy_hopper-*.whl wheels/proxy_hopper_webserver-*.whl /tmp/wheels/
+COPY wheels/proxy_hopper-*.whl wheels/proxy_hopper_webserver-*.whl wheels/proxy_hopper_sql-*.whl /tmp/wheels/
 
 RUN WHEEL=$(echo /tmp/wheels/proxy_hopper-*.whl) && \
     WS_WHEEL=$(echo /tmp/wheels/proxy_hopper_webserver-*.whl) && \
-    pip install --no-cache-dir "${WHEEL}[uvloop]" "${WS_WHEEL}"
+    SQL_WHEEL=$(echo /tmp/wheels/proxy_hopper_sql-*.whl) && \
+    pip install --no-cache-dir "${WHEEL}[uvloop]" "${WS_WHEEL}" "${SQL_WHEEL}"
 
 VOLUME ["/etc/proxy-hopper"]
 

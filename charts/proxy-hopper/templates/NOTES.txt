@@ -28,6 +28,18 @@ Redis backend is enabled.
   External Redis: {{ .Values.backend.redis.url }}
 {{- end }}
 {{- end }}
+{{- if .Values.configStore.dialect }}
+
+Config store ({{ .Values.configStore.dialect }}) is enabled — provider/pool/target
+config created via the admin API survives a pod restart.
+{{- if eq .Values.configStore.dialect "sqlite" }}
+  Local file on PVC {{ include "proxy-hopper.fullname" . }}-config-store, mounted on the main deployment only.
+{{- end }}
+{{- else }}
+
+Config store is disabled — provider/pool/target config created via the admin
+API does NOT survive a pod restart (set configStore.dialect to change this).
+{{- end }}
 {{- if .Values.admin.enabled }}
 
 Admin server is running as a separate Deployment ({{ include "proxy-hopper.fullname" . }}-admin).

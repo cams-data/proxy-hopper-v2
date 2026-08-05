@@ -154,6 +154,7 @@ jobs:
           uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper
           uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper-redis
           uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper-webserver
+          uv build --wheel --sdist --out-dir dist python_modules/proxy-hopper-sql
 
       - name: Create GitHub release
         env:

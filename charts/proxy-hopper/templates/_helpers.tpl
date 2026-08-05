@@ -147,3 +147,72 @@ correct regardless of release name:
 {{- define "proxy-hopper.tokenServerUrl" -}}
 {{- printf "http://%s-token-server:%d" (include "proxy-hopper.fullname" .) (.Values.tokenServer.port | int) }}
 {{- end }}
+
+{{/*
+PROXY_HOPPER_CONFIG_STORE_URL env entry, or empty when configStore.dialect
+is unset. configStore.dialect selects the mechanism:
+  "sqlite"   — chart-managed local file on a PVC mounted on the main
+               deployment only. Single-writer: incompatible with
+               replicaCount>1 or autoscaling, and NOT wired into a
+               separately-enabled admin.* Deployment (it cannot safely
+               share this PVC). Use "postgres" for config shared across
+               more than one pod.
+  "postgres" — external, via configStore.url or configStore.existingSecret
+               (sourced here from existingSecret when set, to keep
+               credential-bearing URLs out of the pod spec — otherwise a
+               plain configStore.url value). Works with any replica count.
+*/}}
+{{- define "proxy-hopper.configStoreUrlEnv" -}}
+{{- if eq .Values.configStore.dialect "postgres" }}
+{{- if .Values.configStore.existingSecret }}
+- name: PROXY_HOPPER_CONFIG_STORE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.configStore.existingSecret }}
+      key: {{ .Values.configStore.existingSecretKey | default "url" }}
+{{- else }}
+- name: PROXY_HOPPER_CONFIG_STORE_URL
+  value: {{ .Values.configStore.url | quote }}
+{{- end }}
+{{- else if eq .Values.configStore.dialect "sqlite" }}
+- name: PROXY_HOPPER_CONFIG_STORE_URL
+  value: {{ include "proxy-hopper.configStoreSqliteUrl" . | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+Chart-managed local SQLite path — must match the volumeMount path used
+everywhere this is mounted (deployment.yaml, config-store-pvc.yaml).
+*/}}
+{{- define "proxy-hopper.configStoreSqliteMountPath" -}}
+/var/lib/proxy-hopper
+{{- end }}
+
+{{/*
+Four slashes total after the scheme — SQLAlchemy's sqlite convention for an
+absolute path (three would mean relative-to-cwd). configStoreSqliteMountPath
+already contributes its own leading slash, so only /// are written here.
+*/}}
+{{- define "proxy-hopper.configStoreSqliteUrl" -}}
+sqlite+aiosqlite:///{{ include "proxy-hopper.configStoreSqliteMountPath" . }}/config.db
+{{- end }}
+
+{{/*
+Init container that applies ConfigStore migrations before the main
+container starts — sqlite only. Postgres uses a pre-install/pre-upgrade
+Helm hook Job instead (config-store-migrate-job.yaml); sqlite uses an
+initContainer on the same pod (same structural pattern as
+waitForRedisInitContainer above) since the file it migrates is on that
+pod's own PVC, not a separately-reachable server.
+*/}}
+{{- define "proxy-hopper.configStoreMigrateInitContainer" -}}
+- name: config-store-migrate
+  image: {{ include "proxy-hopper.image" . }}
+  imagePullPolicy: {{ .Values.image.pullPolicy }}
+  command: ["proxy-hopper", "migrate"]
+  env:
+    {{- include "proxy-hopper.configStoreUrlEnv" . | trim | nindent 4 }}
+  volumeMounts:
+    - name: config-store-data
+      mountPath: {{ include "proxy-hopper.configStoreSqliteMountPath" . }}
+{{- end }}
