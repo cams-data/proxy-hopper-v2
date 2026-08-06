@@ -472,6 +472,21 @@ class ProxyRepository:
                 logger.error("ProxyRepository: failed to deserialise pool '%s': %s", entity.name, exc)
         return pools
 
+    async def resolve_pool_member_ips(self, name: str) -> list[ResolvedIP]:
+        """Return the concrete IPs *name* currently draws from its providers.
+
+        Pools don't store their own resolved IPs (only targets do) — this
+        computes the same deterministic first-N selection targets get via
+        the pool cascade (see ``_resolve_pool_ips``), for callers (the admin
+        API's ``poolIpHealth`` query) that need a pool's membership without
+        going through a target. Returns ``[]`` if the pool doesn't exist.
+        """
+        pool = await self.get_pool(name)
+        if pool is None:
+            return []
+        provider_map = {p.name: p for p in await self.list_providers()}
+        return _resolve_pool_ips(pool, provider_map)
+
     # ------------------------------------------------------------------
     # Startup seeding (write-if-not-exists, no pub/sub)
     # ------------------------------------------------------------------

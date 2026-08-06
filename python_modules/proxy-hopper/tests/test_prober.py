@@ -243,6 +243,102 @@ class TestProbeMetrics:
 
 
 # ---------------------------------------------------------------------------
+# Optional IpHealthStore recording
+# ---------------------------------------------------------------------------
+
+class TestHealthStoreRecording:
+    def _make_entry(self, address: str, provider: str = "p", region: str = "AU") -> _ProbeEntry:
+        return _ProbeEntry(address=address, provider=provider, region=region)
+
+    @pytest.mark.asyncio
+    async def test_no_health_store_is_a_noop(self):
+        """Default (health_store=None) must not attempt to record anywhere new."""
+        p = _make_provider("p", ["1.1.1.1:80"])
+        prober = IPProber(providers=[p], probe_urls=["https://1.1.1.1"], interval=9999, timeout=5.0)
+        assert prober._health_store is None
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        prober._session = mock_session
+
+        with patch("proxy_hopper.prober.get_metrics", return_value=MagicMock()):
+            await prober._probe_address(self._make_entry("1.1.1.1:80"))
+        # No exception means no attempted call against a None store.
+
+    @pytest.mark.asyncio
+    async def test_success_recorded_to_health_store(self):
+        p = _make_provider("p", ["1.1.1.1:80"])
+        health_store = AsyncMock()
+        prober = IPProber(
+            providers=[p], probe_urls=["https://1.1.1.1"], interval=9999, timeout=5.0,
+            health_store=health_store,
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        prober._session = mock_session
+
+        with patch("proxy_hopper.prober.get_metrics", return_value=MagicMock()):
+            await prober._probe_address(self._make_entry("1.1.1.1:80"))
+
+        health_store.record.assert_awaited_once_with(
+            "1.1.1.1:80", success=True, provider="p", reason=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_timeout_recorded_to_health_store_with_reason(self):
+        p = _make_provider("p", ["1.1.1.1:80"])
+        health_store = AsyncMock()
+        prober = IPProber(
+            providers=[p], probe_urls=["https://1.1.1.1"], interval=9999, timeout=5.0,
+            health_store=health_store,
+        )
+
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(side_effect=asyncio.TimeoutError)
+        prober._session = mock_session
+
+        with patch("proxy_hopper.prober.get_metrics", return_value=MagicMock()):
+            await prober._probe_address(self._make_entry("1.1.1.1:80"))
+
+        health_store.record.assert_awaited_once_with(
+            "1.1.1.1:80", success=False, provider="p", reason="timeout",
+        )
+
+    @pytest.mark.asyncio
+    async def test_5xx_recorded_to_health_store_with_reason(self):
+        p = _make_provider("p", ["1.1.1.1:80"])
+        health_store = AsyncMock()
+        prober = IPProber(
+            providers=[p], probe_urls=["https://1.1.1.1"], interval=9999, timeout=5.0,
+            health_store=health_store,
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 502
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        mock_session = AsyncMock()
+        mock_session.get = MagicMock(return_value=mock_resp)
+        prober._session = mock_session
+
+        with patch("proxy_hopper.prober.get_metrics", return_value=MagicMock()):
+            await prober._probe_address(self._make_entry("1.1.1.1:80"))
+
+        health_store.record.assert_awaited_once_with(
+            "1.1.1.1:80", success=False, provider="p", reason="http_error",
+        )
+
+
+# ---------------------------------------------------------------------------
 # URL rotation
 # ---------------------------------------------------------------------------
 

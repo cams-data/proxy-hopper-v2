@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from proxy_hopper_webserver.prometheus_query import query_target_metrics
+from proxy_hopper_webserver.prometheus_query import query_ip_health, query_target_metrics
 
 
 def _prom_response(value: float | None) -> MagicMock:
@@ -141,3 +141,71 @@ class TestQueryTargetMetrics:
             await query_target_metrics("http://prom:9090/", "t")
 
         assert all(not url.startswith("http://prom:9090//") for url in captured_urls)
+
+
+def _prom_vector_response(rows: list[tuple[str, str, float, float]]) -> MagicMock:
+    """A response shaped like Prometheus's instant-query API, one result row
+    per (address, provider, value, timestamp)."""
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "status": "success",
+        "data": {
+            "resultType": "vector",
+            "result": [
+                {"metric": {"address": addr, "provider": provider}, "value": [ts, str(value)]}
+                for addr, provider, value, ts in rows
+            ],
+        },
+    }
+    return resp
+
+
+class TestQueryIpHealth:
+    async def test_empty_addresses_short_circuits_without_a_request(self):
+        with patch.object(httpx.AsyncClient, "get", AsyncMock()) as mock_get:
+            result = await query_ip_health("http://prom:9090", [])
+        assert result == {}
+        mock_get.assert_not_called()
+
+    async def test_reachable_and_unreachable_addresses(self):
+        mock_get = AsyncMock(return_value=_prom_vector_response([
+            ("1.1.1.1:3128", "p", 1.0, 1234567890),
+            ("2.2.2.2:3128", "p", 0.0, 1234567890),
+        ]))
+        with patch.object(httpx.AsyncClient, "get", mock_get):
+            result = await query_ip_health("http://prom:9090", ["1.1.1.1:3128", "2.2.2.2:3128"])
+
+        assert result["1.1.1.1:3128"].status == "up"
+        assert result["1.1.1.1:3128"].provider == "p"
+        assert result["1.1.1.1:3128"].reason is None  # gauge carries no reason label
+        assert result["2.2.2.2:3128"].status == "down"
+
+    async def test_address_with_no_matching_series_is_unknown(self):
+        mock_get = AsyncMock(return_value=_prom_vector_response([
+            ("1.1.1.1:3128", "p", 1.0, 1234567890),
+        ]))
+        with patch.object(httpx.AsyncClient, "get", mock_get):
+            result = await query_ip_health("http://prom:9090", ["1.1.1.1:3128", "3.3.3.3:3128"])
+
+        assert result["1.1.1.1:3128"].status == "up"
+        assert result["3.3.3.3:3128"].status is None
+
+    async def test_query_failure_returns_all_unknown(self):
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(side_effect=httpx.ConnectError("boom"))):
+            result = await query_ip_health("http://prom:9090", ["1.1.1.1:3128"])
+        assert result["1.1.1.1:3128"].status is None
+
+    async def test_address_with_dots_is_escaped_in_promql(self):
+        """A literal '.' in an IP must not act as a regex wildcard in the
+        PromQL label matcher — e.g. '1.1.1.1' must not also match '1X1X1X1'."""
+        captured_queries: list[str] = []
+
+        async def fake_get(url, params=None, **kwargs):
+            captured_queries.append(params["query"])
+            return _prom_vector_response([])
+
+        with patch.object(httpx.AsyncClient, "get", AsyncMock(side_effect=fake_get)):
+            await query_ip_health("http://prom:9090", ["1.1.1.1:3128"])
+
+        assert all(r"1\.1\.1\.1" in q for q in captured_queries)

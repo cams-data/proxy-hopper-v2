@@ -144,6 +144,15 @@ async def _run_admin(cfg) -> None:
         from proxy_hopper.app_metrics import AppMetricsStore
         app_metrics = AppMetricsStore(backend)
 
+    # Same reasoning as app_metrics above — this process never runs the
+    # prober itself (see prober.py's cli.py docstring), so this only ever
+    # sees real data when backend=redis and the proxy runners' prober writes
+    # into the same Redis instance.
+    ip_health = None
+    if not server.prometheus_url:
+        from proxy_hopper.ip_health import IpHealthStore
+        ip_health = IpHealthStore(backend, probe_interval=server.probe_interval)
+
     for p in cfg.providers:
         await repo.seed_provider(p)
     for pool in cfg.pools:
@@ -157,7 +166,10 @@ async def _run_admin(cfg) -> None:
     )
 
     try:
-        await run_admin_server(cfg, runtime_secret, repo=repo, event_bus=event_bus, app_metrics=app_metrics)
+        await run_admin_server(
+            cfg, runtime_secret, repo=repo, event_bus=event_bus,
+            app_metrics=app_metrics, ip_health=ip_health,
+        )
     except (KeyboardInterrupt, asyncio.CancelledError):
         log.info("Admin server shutting down…")
     finally:

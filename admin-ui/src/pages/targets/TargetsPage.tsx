@@ -7,6 +7,7 @@ import { Card, CardBody, CardHeader } from "../../components/ui/Card";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input } from "../../components/ui/Input";
 import { Spinner } from "../../components/ui/Spinner";
+import { StatusDot } from "../../components/ui/StatusDot";
 import { TARGETS_QUERY, TARGET_METRICS_QUERY, TARGET_IP_STATES_QUERY, POOLS_QUERY } from "../../graphql/queries";
 import { ADD_TARGET, UPDATE_TARGET, REMOVE_TARGET } from "../../graphql/mutations";
 import { getClient } from "../../lib/client";
@@ -643,11 +644,7 @@ function IpRow({
             : "text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-800"
         }`}
       >
-        <span
-          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-            ip.quarantined ? "bg-red-500" : "bg-green-500"
-          }`}
-        />
+        <StatusDot status={ip.quarantined ? "unhealthy" : "healthy"} />
         <code className="truncate font-mono">{ip.address}</code>
         {ip.failures > 0 && (
           <span className="ml-auto shrink-0 text-amber-500">{ip.failures}✕</span>

@@ -10,6 +10,7 @@ from strawberry.types import Info
 from ._auth import require_permission
 from .context import Context
 from .types import (
+    IpHealthType,
     IpPoolType,
     IpRuntimeStateType,
     KeyValueType,
@@ -17,11 +18,34 @@ from .types import (
     StatusType,
     TargetMetricsType,
     TargetType,
+    ip_health_to_gql,
     pool_to_gql,
     provider_to_gql,
     target_metrics_to_gql,
     target_to_gql,
 )
+
+
+async def _resolve_ip_health(ctx: Context, addresses: list[str]) -> list[IpHealthType]:
+    """Dual-source lookup shared by provider_ip_health/pool_ip_health — same
+    Prometheus-first, IpHealthStore-fallback priority as target_metrics.
+    Every requested address gets a row (status=None when neither source has
+    data), never a partial list — see IpHealthStore.get_many.
+    """
+    if not addresses:
+        return []
+    if ctx.prometheus_url:
+        from proxy_hopper_webserver.prometheus_query import query_ip_health
+        snapshots = await query_ip_health(ctx.prometheus_url, addresses)
+    elif ctx.ip_health is not None:
+        snapshots = await ctx.ip_health.get_many(addresses)
+    else:
+        from proxy_hopper.ip_health import IpHealthSnapshot
+        snapshots = {
+            addr: IpHealthSnapshot(address=addr, provider=None, status=None, last_check_at=None, reason=None)
+            for addr in addresses
+        }
+    return [ip_health_to_gql(snapshots[addr]) for addr in addresses]
 
 
 @strawberry.type
@@ -116,6 +140,48 @@ class Query:
             return None
 
         return target_metrics_to_gql(snapshot)
+
+    @strawberry.field(
+        description="Reachability status for every IP in a provider's ipList, from "
+        "the background prober — source is Prometheus when server.prometheusUrl is "
+        "configured, otherwise the in-process/shared-backend IpHealthStore (empty "
+        "status if the admin process doesn't share a backend with the running "
+        "proxies — see admin-server/overview.mdx's Embedded vs separate process). "
+        "Diagnostic only — does not affect quarantine, which is target-scoped and "
+        "driven solely by live-traffic failures."
+    )
+    async def provider_ip_health(
+        self, info: Info[Context, None], provider_name: str
+    ) -> list[IpHealthType]:
+        from proxy_hopper.auth import Permission
+        require_permission(info, Permission.read)
+        ctx = info.context
+        provider = await ctx.repo.get_provider(provider_name)
+        if provider is None:
+            return []
+        return await _resolve_ip_health(ctx, list(provider.ip_list))
+
+    @strawberry.field(
+        description="Reachability status for every IP a pool currently draws from its "
+        "providers (same first-N selection used to build target resolvedIps). Same "
+        "dual source and diagnostic-only caveat as providerIpHealth."
+    )
+    async def pool_ip_health(
+        self, info: Info[Context, None], pool_name: str
+    ) -> list[IpHealthType]:
+        from proxy_hopper.auth import Permission
+        require_permission(info, Permission.read)
+        ctx = info.context
+        resolved = await ctx.repo.resolve_pool_member_ips(pool_name)
+        addresses = [f"{ip.host}:{ip.port}" for ip in resolved]
+        rows = await _resolve_ip_health(ctx, addresses)
+        # Attach provider attribution from the pool resolution itself — the
+        # health source (especially Prometheus) may not always have it.
+        provider_by_address = {f"{ip.host}:{ip.port}": ip.provider for ip in resolved}
+        for row in rows:
+            if row.provider is None:
+                row.provider = provider_by_address.get(row.address)
+        return rows
 
     @strawberry.field(description="Current auth state and caller identity.")
     async def status(self, info: Info[Context, None]) -> StatusType:

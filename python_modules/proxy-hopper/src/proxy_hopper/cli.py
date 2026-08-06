@@ -323,6 +323,13 @@ async def _run(targets, providers, server, cfg=None) -> None:
         from .app_metrics import AppMetricsStore
         app_metrics = AppMetricsStore(backend)
 
+    # Per-IP reachability status from the background prober, for the admin
+    # UI's Providers/Pools pages. Unlike app_metrics, always constructed —
+    # the prober runs once per probe interval (tens of seconds), not once per
+    # request, so recording here alongside Prometheus is negligible cost.
+    from .ip_health import IpHealthStore
+    ip_health_store = IpHealthStore(backend, probe_interval=server.probe_interval)
+
     # Seed providers, pools, and targets from YAML (write-if-not-exists).
     # Repository is the source of truth; YAML is only applied on first run.
     for p in providers:
@@ -385,6 +392,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
             interval=server.probe_interval,
             timeout=server.probe_timeout,
             debug=server.debug_probes,
+            health_store=ip_health_store,
         )
         await prober.start()
 
@@ -409,7 +417,8 @@ async def _run(targets, providers, server, cfg=None) -> None:
             return
         import uvicorn
         admin_app = create_admin_app(
-            cfg, runtime_secret, repo=repo, event_bus=event_bus, app_metrics=app_metrics
+            cfg, runtime_secret, repo=repo, event_bus=event_bus, app_metrics=app_metrics,
+            ip_health=ip_health_store,
         )
         admin_uvicorn_server = uvicorn.Server(uvicorn.Config(
             admin_app,

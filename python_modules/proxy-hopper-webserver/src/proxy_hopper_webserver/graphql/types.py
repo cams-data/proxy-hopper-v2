@@ -9,6 +9,7 @@ import strawberry
 if TYPE_CHECKING:
     from proxy_hopper.app_metrics import TargetMetricsSnapshot
     from proxy_hopper.config import IpPool, ProxyProvider, TargetConfig
+    from proxy_hopper.ip_health import IpHealthSnapshot
 
 
 @strawberry.type
@@ -100,6 +101,15 @@ class TargetMetricsType:
     last_request_at: Optional[str]
 
 
+@strawberry.type
+class IpHealthType:
+    address: str
+    provider: Optional[str]
+    status: Optional[str]  # "up" | "down" | None (never probed / no data source)
+    last_check_at: Optional[str]
+    reason: Optional[str]
+
+
 def target_to_gql(config: "TargetConfig") -> TargetType:
     return TargetType(
         name=config.name,
@@ -152,4 +162,14 @@ def target_metrics_to_gql(snapshot: "TargetMetricsSnapshot") -> TargetMetricsTyp
         failed_requests=snapshot.failed_requests,
         avg_latency_ms=snapshot.avg_latency_ms,
         last_request_at=snapshot.last_request_at,
+    )
+
+
+def ip_health_to_gql(snapshot: "IpHealthSnapshot") -> IpHealthType:
+    return IpHealthType(
+        address=snapshot.address,
+        provider=snapshot.provider,
+        status=snapshot.status,
+        last_check_at=snapshot.last_check_at,
+        reason=snapshot.reason,
     )

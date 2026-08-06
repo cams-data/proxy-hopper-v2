@@ -7,7 +7,7 @@ import { Card, CardBody, CardHeader } from "../../components/ui/Card";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input } from "../../components/ui/Input";
 import { Spinner } from "../../components/ui/Spinner";
-import { POOLS_QUERY, PROVIDERS_QUERY } from "../../graphql/queries";
+import { POOLS_QUERY, PROVIDERS_QUERY, POOL_IP_HEALTH_QUERY } from "../../graphql/queries";
 import { ADD_POOL, UPDATE_POOL, REMOVE_POOL } from "../../graphql/mutations";
 import { Combobox } from "../../components/ui/Combobox";
 import { getClient } from "../../lib/client";
@@ -22,6 +22,12 @@ interface Pool {
   static: boolean;
   mutable: boolean;
   ipRequests: IpRequest[];
+}
+
+interface IpHealth {
+  address: string;
+  provider: string | null;
+  status: string | null; // "up" | "down" | null (unknown)
 }
 
 type PoolFormValue = { name: string; rows: IpRequest[] };
@@ -313,6 +319,20 @@ function PoolDetail({
 }) {
   const totalIps = pool.ipRequests.reduce((n, r) => n + r.count, 0);
 
+  const [{ data: healthData }] = useQuery({
+    query: POOL_IP_HEALTH_QUERY,
+    variables: { poolName: pool.name },
+    requestPolicy: "cache-and-network",
+  });
+  const health: IpHealth[] = healthData?.poolIpHealth ?? [];
+  const healthByProvider = new Map<string, IpHealth[]>();
+  for (const h of health) {
+    if (!h.provider) continue;
+    const list = healthByProvider.get(h.provider) ?? [];
+    list.push(h);
+    healthByProvider.set(h.provider, list);
+  }
+
   return (
     <div className="max-w-lg">
       <div className="mb-4 flex items-start justify-between">
@@ -344,12 +364,24 @@ function PoolDetail({
         </CardHeader>
         <CardBody className="p-0">
           <ul className="divide-y divide-gray-100 dark:divide-gray-800">
-            {pool.ipRequests.map((r) => (
-              <li key={r.provider} className="flex items-center justify-between px-4 py-2 text-sm">
-                <code className="font-mono text-gray-900 dark:text-gray-100">{r.provider}</code>
-                <span className="text-xs text-gray-400">{r.count} IP{r.count !== 1 ? "s" : ""}</span>
-              </li>
-            ))}
+            {pool.ipRequests.map((r) => {
+              const rows = healthByProvider.get(r.provider) ?? [];
+              const knownRows = rows.filter((h) => h.status !== null);
+              const healthy = rows.filter((h) => h.status === "up").length;
+              return (
+                <li key={r.provider} className="flex items-center justify-between px-4 py-2 text-sm">
+                  <code className="font-mono text-gray-900 dark:text-gray-100">{r.provider}</code>
+                  <div className="flex items-center gap-2">
+                    {knownRows.length > 0 && (
+                      <Badge variant={healthy === rows.length ? "success" : healthy === 0 ? "danger" : "warning"}>
+                        {healthy}/{rows.length} healthy
+                      </Badge>
+                    )}
+                    <span className="text-xs text-gray-400">{r.count} IP{r.count !== 1 ? "s" : ""}</span>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </CardBody>
       </Card>
