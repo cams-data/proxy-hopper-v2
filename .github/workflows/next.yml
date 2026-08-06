@@ -135,7 +135,7 @@ jobs:
           cd admin-ui
           npm ci
           npm run build
-          cp -r dist ../python_modules/proxy-hopper-webserver/src/proxy_hopper_webserver/ui/
+          cp -r dist/. ../python_modules/proxy-hopper-webserver/src/proxy_hopper_webserver/ui/
 
       - name: Build wheels and sdists
         run: |
