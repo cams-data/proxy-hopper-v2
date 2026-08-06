@@ -126,4 +126,5 @@ class Query:
             auth_enabled=ctx.auth_config.enabled if ctx.auth_config else False,
             user_sub=ctx.user.sub,
             user_role=ctx.user.role,
+            read_only=ctx.read_only,
         )

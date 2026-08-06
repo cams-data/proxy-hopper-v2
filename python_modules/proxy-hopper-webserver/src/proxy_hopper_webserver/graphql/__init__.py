@@ -27,6 +27,7 @@ def create_graphql_router(
     get_current_user: Any,
     app_metrics: "AppMetricsStore | None" = None,
     prometheus_url: "str | None" = None,
+    read_only: bool = False,
 ) -> GraphQLRouter:
     """Return a Strawberry ``GraphQLRouter`` wired to *repo* and *auth_config*."""
     from fastapi import Depends, Request
@@ -39,6 +40,7 @@ def create_graphql_router(
         return Context(
             repo=repo, user=user, auth_config=auth_config,
             app_metrics=app_metrics, prometheus_url=prometheus_url,
+            read_only=read_only,
         )
 
     return GraphQLRouter(schema, context_getter=get_context)

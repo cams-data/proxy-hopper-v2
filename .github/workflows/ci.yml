@@ -131,6 +131,12 @@ jobs:
             --set backend.type=redis --set redis.enabled=true --set admin.enabled=true \
             > /dev/null
 
+      - name: helm template — admin.readOnly (no config store)
+        run: |
+          helm template test charts/proxy-hopper \
+            --set admin.enabled=true --set admin.readOnly=true \
+            > /dev/null
+
       - name: helm template — configStore=sqlite
         run: |
           helm template test charts/proxy-hopper \
