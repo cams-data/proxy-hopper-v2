@@ -6,6 +6,7 @@ export const STATUS_QUERY = gql`
       authEnabled
       userSub
       userRole
+      readOnly
     }
   }
 `;

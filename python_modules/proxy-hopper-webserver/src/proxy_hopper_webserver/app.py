@@ -138,6 +138,7 @@ def create_admin_app(
             ],
             "backend": cfg.server.backend,
             "auth_enabled": auth_config.enabled,
+            "read_only": cfg.server.admin_read_only,
             "user": {"sub": user.sub, "role": user.role},
         }
 
@@ -149,6 +150,7 @@ def create_admin_app(
             get_current_user=get_current_user,
             app_metrics=app_metrics,
             prometheus_url=cfg.server.prometheus_url,
+            read_only=cfg.server.admin_read_only,
         )
         app.include_router(graphql_router, prefix="/graphql")
         logger.info("GraphQL API mounted at /graphql")

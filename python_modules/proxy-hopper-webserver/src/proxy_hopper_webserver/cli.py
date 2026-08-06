@@ -38,6 +38,8 @@ def main() -> None:
               type=click.Choice(["memory", "redis"], case_sensitive=False))
 @click.option("--redis-url", default=None, envvar="PROXY_HOPPER_REDIS_URL")
 @click.option("--config-store-url", default=None, envvar="PROXY_HOPPER_CONFIG_STORE_URL")
+@click.option("--admin-read-only/--no-admin-read-only", default=None,
+              envvar="PROXY_HOPPER_ADMIN_READ_ONLY")
 def admin(
     config: Optional[Path],
     host: Optional[str],
@@ -48,6 +50,7 @@ def admin(
     backend: Optional[str],
     redis_url: Optional[str],
     config_store_url: Optional[str],
+    admin_read_only: Optional[bool],
 ) -> None:
     """Start the admin server (GraphQL API + web UI).
 
@@ -63,6 +66,11 @@ def admin(
     proxy runners at the same SQLite/Postgres URL makes admin-API-created
     provider/pool/target config visible to both, regardless of ``backend`` —
     durable config sharing no longer requires the redis backend.
+
+    ``admin_read_only`` is independent of both: it rejects every GraphQL
+    mutation regardless of ``config_store_url``, leaving the admin API
+    usable for monitoring only (status, targets, pools, providers,
+    metrics) — the "no database, YAML-only config" deployment kind.
     """
     if config is None:
         click.echo("Error: --config / PROXY_HOPPER_CONFIG is required.", err=True)
@@ -87,6 +95,8 @@ def admin(
         server.redis_url = redis_url
     if config_store_url is not None:
         server.config_store_url = config_store_url
+    if admin_read_only is not None:
+        server.admin_read_only = admin_read_only
 
     configure_logging(
         level=server.log_level,

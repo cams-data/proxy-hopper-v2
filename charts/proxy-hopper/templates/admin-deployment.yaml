@@ -60,6 +60,10 @@ spec:
               value: "0.0.0.0"
             - name: PROXY_HOPPER_ADMIN_PORT
               value: {{ .Values.admin.port | quote }}
+            {{- if .Values.admin.readOnly }}
+            - name: PROXY_HOPPER_ADMIN_READ_ONLY
+              value: "true"
+            {{- end }}
             {{- if eq .Values.backend.type "redis" }}
             - name: PROXY_HOPPER_BACKEND
               value: redis

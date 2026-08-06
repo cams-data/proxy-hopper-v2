@@ -72,6 +72,7 @@ _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
     "probeUrls": "probe_urls",
     "adminPort": "admin_port",
     "adminHost": "admin_host",
+    "adminReadOnly": "admin_read_only",
     "authServer": "auth_server",
 }
 

@@ -21,6 +21,7 @@ class Context(BaseContext):
         auth_config: Optional["AuthConfig"],
         app_metrics: Optional["AppMetricsStore"] = None,
         prometheus_url: Optional[str] = None,
+        read_only: bool = False,
     ) -> None:
         super().__init__()
         self.repo = repo
@@ -29,3 +30,6 @@ class Context(BaseContext):
         # At most one of these is set — see queries.py's `target_metrics`.
         self.app_metrics = app_metrics
         self.prometheus_url = prometheus_url
+        # Deployment-level lockout on mutations — see server.adminReadOnly
+        # and _auth.py's require_permission. Independent of auth_config.
+        self.read_only = read_only

@@ -37,12 +37,14 @@ def _ctx(
     auth_enabled: bool = False,
     app_metrics=None,
     prometheus_url: str | None = None,
+    read_only: bool = False,
 ) -> Context:
     user = AuthenticatedUser(sub=role, role=role, is_api_key=False)
     auth_config = AuthConfig(enabled=auth_enabled)
     return Context(
         repo=repo, user=user, auth_config=auth_config,
         app_metrics=app_metrics, prometheus_url=prometheus_url,
+        read_only=read_only,
     )
 
 
@@ -53,10 +55,14 @@ async def _run(
     variables: dict | None = None,
     app_metrics=None,
     prometheus_url: str | None = None,
+    read_only: bool = False,
 ):
     result = await schema.execute(
         query,
-        context_value=_ctx(repo, role=role, app_metrics=app_metrics, prometheus_url=prometheus_url),
+        context_value=_ctx(
+            repo, role=role, app_metrics=app_metrics, prometheus_url=prometheus_url,
+            read_only=read_only,
+        ),
         variable_values=variables,
     )
     return result
@@ -631,3 +637,61 @@ class TestPermissions:
             context_value=ctx,
         )
         assert result.errors is None
+
+
+# ---------------------------------------------------------------------------
+# Read-only mode (server.adminReadOnly) — the "no database, YAML-only"
+# deployment kind. A deployment-level lockout, independent of and checked
+# before role-based auth (see TestPermissions above).
+# ---------------------------------------------------------------------------
+
+class TestReadOnlyMode:
+    async def test_blocks_mutation(self, repo):
+        result = await _run(
+            'mutation { addPool(input: {name:"p", ipRequests:[{provider:"x", count:1}]}) { name } }',
+            repo, read_only=True,
+        )
+        assert result.errors is not None
+        assert any("read-only" in str(e).lower() for e in result.errors)
+
+    async def test_does_not_persist_the_rejected_mutation(self, repo):
+        await _run(
+            'mutation { addPool(input: {name:"p", ipRequests:[{provider:"x", count:1}]}) { name } }',
+            repo, read_only=True,
+        )
+        assert await repo.get_pool("p") is None
+
+    async def test_allows_queries(self, repo):
+        await repo.add_pool(_make_pool("existing"))
+        result = await _run("{ pools { name } }", repo, read_only=True)
+        assert result.errors is None
+        assert result.data["pools"] == [{"name": "existing"}]
+
+    async def test_allows_status_query_and_reports_read_only(self, repo):
+        result = await _run("{ status { readOnly } }", repo, read_only=True)
+        assert result.errors is None
+        assert result.data["status"]["readOnly"] is True
+
+    async def test_blocks_even_with_admin_role_and_auth_enabled(self, repo):
+        """Read-only is a deployment-level lockout, not a role — an admin
+        with auth enabled is blocked exactly the same as anyone else."""
+        user = AuthenticatedUser(sub="admin", role="admin", is_api_key=False)
+        ctx = Context(
+            repo=repo, user=user, auth_config=AuthConfig(enabled=True), read_only=True,
+        )
+        result = await schema.execute(
+            'mutation { addPool(input: {name:"p", ipRequests:[{provider:"x", count:1}]}) { name } }',
+            context_value=ctx,
+        )
+        assert result.errors is not None
+        assert any("read-only" in str(e).lower() for e in result.errors)
+
+    async def test_default_is_not_read_only(self, repo):
+        """Confirms read_only=False (the default) leaves today's behavior
+        unchanged — mutations succeed exactly as before this feature."""
+        result = await _run(
+            'mutation { addPool(input: {name:"p", ipRequests:[{provider:"x", count:1}]}) { name } }',
+            repo,
+        )
+        assert result.errors is None
+

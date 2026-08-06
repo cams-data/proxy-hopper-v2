@@ -141,6 +141,11 @@ def hash_password_cmd(password: str) -> None:
               help="Interface to bind the embedded admin server. [default: 0.0.0.0]")
 @click.option("--admin-port", default=None, type=int,
               help="Port for the embedded admin server. [default: 8081]")
+@click.option("--admin-read-only/--no-admin-read-only", default=None,
+              help="Reject GraphQL mutations on the admin API — all config comes "
+                   "from the YAML file only. Queries (status, targets, pools, "
+                   "providers, metrics) are unaffected. Independent of "
+                   "--config-store-url. [default: false]")
 @click.option("--prometheus-url", default=None,
               help="URL of an external Prometheus server the admin API can query "
                    "for the per-target metrics panel. When set, lightweight "
@@ -166,6 +171,7 @@ def run(
     admin: Optional[bool],
     admin_host: Optional[str],
     admin_port: Optional[int],
+    admin_read_only: Optional[bool],
     prometheus_url: Optional[str],
 ) -> None:
     """Start the proxy server."""
@@ -214,6 +220,8 @@ def run(
         server.admin_host = admin_host
     if admin_port is not None:
         server.admin_port = admin_port
+    if admin_read_only is not None:
+        server.admin_read_only = admin_read_only
     if prometheus_url is not None:
         server.prometheus_url = prometheus_url
 

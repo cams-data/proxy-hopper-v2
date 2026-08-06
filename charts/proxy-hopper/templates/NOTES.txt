@@ -42,7 +42,7 @@ API does NOT survive a pod restart (set configStore.dialect to change this).
 {{- end }}
 {{- if .Values.admin.enabled }}
 
-Admin server is running as a separate Deployment ({{ include "proxy-hopper.fullname" . }}-admin).
+Admin server is running as a separate Deployment ({{ include "proxy-hopper.fullname" . }}-admin){{ if .Values.admin.readOnly }} in READ-ONLY mode — mutations are rejected, config comes from config.inline/existingConfigMap/existingSecret only. Queries (status, targets, pools, providers, metrics) still work{{ end }}.
 Access it via port-forward (it is ClusterIP-only by default):
 
   kubectl port-forward svc/{{ include "proxy-hopper.fullname" . }}-admin {{ .Values.admin.port }}:{{ .Values.admin.port }} -n {{ .Release.Namespace }}

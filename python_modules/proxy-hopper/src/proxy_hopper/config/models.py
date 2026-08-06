@@ -438,6 +438,17 @@ class ServerConfig(BaseSettings):
         durable config storage, not operational state (queues/counters/
         quarantine), which always goes through ``backend`` regardless.
         Default: ``None``.
+    admin_read_only (adminReadOnly)
+        When ``True``, the admin API rejects every GraphQL mutation
+        (add/update/remove target, pool, provider, and IP list edits) —
+        all config comes from the YAML file only. Queries (status, targets,
+        pools, providers, metrics) are unaffected; the admin server remains
+        fully usable for monitoring. Independent of ``config_store_url``:
+        without a config store, this is the "YAML-only, admin server for
+        monitoring only" deployment kind — no database anywhere, config
+        changes only via editing the YAML and redeploying. With a config
+        store, it instead locks a durable store to changes made only via
+        GitOps/config redeploys, never via the API. Default: ``False``.
     proxy_read_timeout (proxyReadTimeout)
         Optional timeout in seconds for reading the upstream response body.
         Omit to use aiohttp's default (no explicit read timeout).
@@ -509,6 +520,7 @@ class ServerConfig(BaseSettings):
     admin: bool = False
     admin_port: int = 8081
     admin_host: str = "0.0.0.0"
+    admin_read_only: bool = False
     prometheus_url: Optional[str] = None
     auth_server: Optional[AuthServerConfig] = None
 

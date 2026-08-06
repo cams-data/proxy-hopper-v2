@@ -38,8 +38,9 @@ function HomeInner() {
   const [poolsResult] = useQuery({ query: POOLS_QUERY });
   const [targetsResult] = useQuery({ query: TARGETS_QUERY });
 
-  const status: { authEnabled: boolean; userSub: string; userRole: string } | undefined =
-    statusResult.data?.status;
+  const status:
+    | { authEnabled: boolean; userSub: string; userRole: string; readOnly: boolean }
+    | undefined = statusResult.data?.status;
   const providers = providersResult.data?.providers ?? [];
   const pools = poolsResult.data?.pools ?? [];
   const targets = targetsResult.data?.targets ?? [];
@@ -79,6 +80,7 @@ function HomeInner() {
             <Row label="Auth" value={status?.authEnabled ? "Enabled" : "Disabled"} />
             <Row label="User" value={status?.userSub} />
             <Row label="Role" value={status?.userRole} />
+            <Row label="Config" value={status?.readOnly ? "Read-only (YAML)" : "Mutable"} />
           </CardBody>
         </Card>
 

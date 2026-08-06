@@ -87,6 +87,7 @@ class StatusType:
     auth_enabled: bool
     user_sub: str
     user_role: str
+    read_only: bool
 
 
 @strawberry.type

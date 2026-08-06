@@ -175,6 +175,15 @@ admin:
   replicaCount: 1
   # Port the admin server listens on inside the container.
   port: 8081
+  # When true, the admin API rejects every GraphQL mutation — all config
+  # comes from config.inline/existingConfigMap/existingSecret only. Queries
+  # (status, targets, pools, providers, metrics) are unaffected — the admin
+  # server stays fully usable for monitoring. Independent of configStore:
+  # with configStore.dialect unset, this is the "no database, YAML-only"
+  # deployment kind — a monitoring-only admin server with zero persistence
+  # anywhere. With a configStore configured, it instead locks that durable
+  # store to changes made only via redeploying config, never via the API.
+  readOnly: false
   service:
     type: ClusterIP
   resources: {}
