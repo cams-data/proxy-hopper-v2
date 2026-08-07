@@ -114,8 +114,10 @@ class TestDispatcher:
     async def test_no_ip_returns_503(self):
         cfg = make_config(max_queue_wait=0.1)
         raw_backend, pool_store = await make_pool_store()
-        # Pre-claim init so the queue's start() skips seeding — queue has no identities.
-        await pool_store.claim_init(cfg.name)
+        # Pre-hold the reconcile lock so the queue's start() skips its own
+        # reconcile (loses the race, trusts an already-in-progress winner) —
+        # queue has no identities.
+        await pool_store.reconcile_lock_acquire(cfg.name, "test-holds-lock", ttl_seconds=60)
 
         mgr = TargetManager(cfg, pool_store)
         # Start just the dispatcher, not the full queue (queue is already set up)

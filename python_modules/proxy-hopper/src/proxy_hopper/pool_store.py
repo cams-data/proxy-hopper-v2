@@ -10,6 +10,12 @@ ph:{target}:identity:{uuid}       — KV         — JSON-serialised Identity da
 ph:{target}:ip:{address}          — KV         — active UUID for this address
 ph:{target}:retired:{address}     — KV         — "1" if address is retired
 ph:{target}:init                  — Init       — SETNX claim for first-start seeding
+                                                  (no longer consulted by IdentityQueue.start(),
+                                                  which reconciles on every start instead — see
+                                                  reconcile-lock below. Kept for the Backend ABC
+                                                  contract and any future one-shot use.)
+ph:{target}:reconcile-lock        — Lock       — short-lived mutex serialising concurrent
+                                                  IdentityQueue.start() reconciles for one target
 ph:{target}:failures:{addr}       — Counter    — consecutive failure count for *addr*
 ph:{target}:quarantine            — Sorted set — member=address, score=release_epoch
 
@@ -54,6 +60,10 @@ def _init_key(target: str) -> str:
     return f"{_PREFIX}:{target}:init"
 
 
+def _reconcile_lock_key(target: str) -> str:
+    return f"{_PREFIX}:{target}:reconcile-lock"
+
+
 def _failures_key(target: str, address: str) -> str:
     return f"{_PREFIX}:{target}:failures:{address}"
 
@@ -75,6 +85,25 @@ class IPPoolStore:
     async def claim_init(self, target: str) -> bool:
         """Return True iff this caller wins the init race for *target*."""
         return await self._backend.claim_init(_init_key(target))
+
+    # ------------------------------------------------------------------
+    # Reconcile lock — short-lived mutex, not a permanent one-shot claim
+    # ------------------------------------------------------------------
+
+    async def reconcile_lock_acquire(self, target: str, token: str, ttl_seconds: int) -> bool:
+        """Attempt to acquire the reconcile lock for *target*.
+
+        Unlike ``claim_init``, this is a renewable mutex (TTL-bounded, not
+        permanent) — every ``IdentityQueue.start()`` call competes for it,
+        not just the first one ever.
+        """
+        return await self._backend.lock_acquire(
+            _reconcile_lock_key(target), token, ttl_seconds
+        )
+
+    async def reconcile_lock_release(self, target: str, token: str) -> bool:
+        """Release the reconcile lock for *target* iff still held by *token*."""
+        return await self._backend.lock_release(_reconcile_lock_key(target), token)
 
     # ------------------------------------------------------------------
     # Pool queue — stores identity UUID strings

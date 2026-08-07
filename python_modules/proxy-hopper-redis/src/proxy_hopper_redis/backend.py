@@ -12,6 +12,7 @@ Sorted sets  — Redis ZSets    (ZADD / ZRANGEBYSCORE+ZREM Lua / ZRANGE)
 KV store     — Redis Strings  (SET / GET / DEL / SCAN+MGET)
 Pub/sub      — Redis Pub/Sub  (PUBLISH / SUBSCRIBE on dedicated connection)
 Init lock    — Redis Strings  (SET NX EX)
+Mutex lock   — Redis Strings  (SET NX EX acquire / WATCH+MULTI+DEL release)
 
 HA / multi-instance safety
 --------------------------
@@ -28,6 +29,11 @@ sorted_set_pop_by_max_score
 claim_init
     SET NX EX — atomic acquire + TTL in one round trip.  First caller wins;
     TTL allows re-seeding after a full Redis flush without a process restart.
+
+lock_acquire / lock_release
+    SET NX EX to acquire; WATCH/MULTI/EXEC (not Lua) to release only if
+    still held by the caller's token — see lock_release's docstring for why
+    Lua was avoided here specifically.
 """
 
 from __future__ import annotations
@@ -276,15 +282,30 @@ class RedisBackend(Backend):
         return acquired
 
     async def lock_release(self, key: str, value: str) -> bool:
-        _LUA_RELEASE = """
-        if redis.call('get', KEYS[1]) == ARGV[1] then
-            return redis.call('del', KEYS[1])
-        else
-            return 0
-        end
+        """Check-and-delete via WATCH/MULTI/EXEC rather than a Lua EVAL.
+
+        Deliberately avoids server-side scripting: EVAL requires the Redis
+        Lua interpreter (fakeredis needs the optional ``lupa`` dependency to
+        support it, which this project doesn't otherwise need), while
+        WATCH-based optimistic locking gives the same atomicity for a single
+        key using only core commands. A concurrent writer between WATCH and
+        EXEC aborts the transaction (``WatchError``) rather than corrupting
+        state, so we just treat that as "lock no longer ours to release".
         """
-        result = await self._redis.eval(_LUA_RELEASE, 1, key, value)
-        released = bool(result)
+        async with self._redis.pipeline(transaction=True) as pipe:
+            try:
+                await pipe.watch(key)
+                current = await pipe.get(key)
+                if current != value:
+                    await pipe.unwatch()
+                    released = False
+                else:
+                    pipe.multi()
+                    pipe.delete(key)
+                    result = await pipe.execute()
+                    released = bool(result and result[0])
+            except aioredis.WatchError:
+                released = False
         logger.trace(  # type: ignore[attr-defined]
             "RedisBackend: lock_release '%s' → %s", key, "released" if released else "not held by this caller"
         )
