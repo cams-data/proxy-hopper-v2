@@ -38,8 +38,12 @@ def _identity_key(target: str, uuid: str) -> str:
     return f"{_PREFIX}:{target}:identity:{uuid}"
 
 
+def _ip_prefix(target: str) -> str:
+    return f"{_PREFIX}:{target}:ip:"
+
+
 def _ip_key(target: str, address: str) -> str:
-    return f"{_PREFIX}:{target}:ip:{address}"
+    return f"{_ip_prefix(target)}{address}"
 
 
 def _retired_key(target: str, address: str) -> str:
@@ -121,6 +125,17 @@ class IPPoolStore:
     async def ip_delete(self, target: str, address: str) -> None:
         """Remove the active UUID record for *address*."""
         await self._backend.kv_delete(_ip_key(target, address))
+
+    async def list_addresses(self, target: str) -> list[str]:
+        """Return every address currently registered as active for *target*.
+
+        Used to diff already-registered backend state against the current
+        config on every process start, not just the first one ever to
+        observe an empty pool -- see CONFIG_RECONCILER_SCOPE.md §6.
+        """
+        prefix = _ip_prefix(target)
+        rows = await self._backend.kv_list(prefix)
+        return [key[len(prefix):] for key, _ in rows]
 
     # ------------------------------------------------------------------
     # Retired address set — addresses pending discard
