@@ -36,6 +36,7 @@ def _ctx(
     role: str = "admin",
     auth_enabled: bool = False,
     app_metrics=None,
+    ip_health=None,
     prometheus_url: str | None = None,
     read_only: bool = False,
 ) -> Context:
@@ -43,7 +44,7 @@ def _ctx(
     auth_config = AuthConfig(enabled=auth_enabled)
     return Context(
         repo=repo, user=user, auth_config=auth_config,
-        app_metrics=app_metrics, prometheus_url=prometheus_url,
+        app_metrics=app_metrics, ip_health=ip_health, prometheus_url=prometheus_url,
         read_only=read_only,
     )
 
@@ -54,14 +55,15 @@ async def _run(
     role: str = "admin",
     variables: dict | None = None,
     app_metrics=None,
+    ip_health=None,
     prometheus_url: str | None = None,
     read_only: bool = False,
 ):
     result = await schema.execute(
         query,
         context_value=_ctx(
-            repo, role=role, app_metrics=app_metrics, prometheus_url=prometheus_url,
-            read_only=read_only,
+            repo, role=role, app_metrics=app_metrics, ip_health=ip_health,
+            prometheus_url=prometheus_url, read_only=read_only,
         ),
         variable_values=variables,
     )
@@ -292,6 +294,122 @@ class TestQueryTargetMetrics:
         assert m["totalRequests"] == 999  # from Prometheus, not the AppMetricsStore's 1
         assert m["avgLatencyMs"] == 42.5
         assert m["lastRequestAt"] is None
+
+
+# ---------------------------------------------------------------------------
+# Query — providerIpHealth / poolIpHealth
+# ---------------------------------------------------------------------------
+
+PROVIDER_IP_HEALTH_QUERY = """
+query($providerName: String!) {
+  providerIpHealth(providerName: $providerName) {
+    address provider status lastCheckAt reason
+  }
+}
+"""
+
+POOL_IP_HEALTH_QUERY = """
+query($poolName: String!) {
+  poolIpHealth(poolName: $poolName) {
+    address provider status lastCheckAt reason
+  }
+}
+"""
+
+
+class TestQueryProviderIpHealth:
+    async def test_unknown_provider_returns_empty_list(self, repo):
+        result = await _run(
+            PROVIDER_IP_HEALTH_QUERY, repo, variables={"providerName": "ghost"}
+        )
+        assert result.errors is None
+        assert result.data["providerIpHealth"] == []
+
+    async def test_neither_source_configured_returns_unknown_rows(self, repo):
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128", "2.2.2.2:3128"]))
+        result = await _run(
+            PROVIDER_IP_HEALTH_QUERY, repo, variables={"providerName": "p"}
+        )
+        assert result.errors is None
+        rows = result.data["providerIpHealth"]
+        assert {r["address"] for r in rows} == {"1.1.1.1:3128", "2.2.2.2:3128"}
+        assert all(r["status"] is None for r in rows)
+
+    async def test_ip_health_store_tier_returns_recorded_status(self, backend, repo):
+        from proxy_hopper.ip_health import IpHealthStore
+
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128", "2.2.2.2:3128"]))
+        store = IpHealthStore(backend)
+        await store.record("1.1.1.1:3128", success=True, provider="p")
+        await store.record("2.2.2.2:3128", success=False, provider="p", reason="timeout")
+
+        result = await _run(
+            PROVIDER_IP_HEALTH_QUERY, repo, variables={"providerName": "p"}, ip_health=store,
+        )
+        assert result.errors is None
+        by_address = {r["address"]: r for r in result.data["providerIpHealth"]}
+        assert by_address["1.1.1.1:3128"]["status"] == "up"
+        assert by_address["2.2.2.2:3128"]["status"] == "down"
+        assert by_address["2.2.2.2:3128"]["reason"] == "timeout"
+
+    async def test_prometheus_tier_takes_priority_over_ip_health_store(self, backend, repo, monkeypatch):
+        from proxy_hopper.ip_health import IpHealthSnapshot, IpHealthStore
+
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128"]))
+        store = IpHealthStore(backend)
+        await store.record("1.1.1.1:3128", success=False, provider="p", reason="timeout")
+
+        async def fake_query(prometheus_url, addresses):
+            assert prometheus_url == "http://prom:9090"
+            assert addresses == ["1.1.1.1:3128"]
+            return {"1.1.1.1:3128": IpHealthSnapshot(
+                address="1.1.1.1:3128", provider="p", status="up",
+                last_check_at="2026-01-01T00:00:00+00:00", reason=None,
+            )}
+
+        monkeypatch.setattr(
+            "proxy_hopper_webserver.prometheus_query.query_ip_health", fake_query
+        )
+
+        result = await _run(
+            PROVIDER_IP_HEALTH_QUERY, repo, variables={"providerName": "p"},
+            ip_health=store, prometheus_url="http://prom:9090",
+        )
+        assert result.errors is None
+        row = result.data["providerIpHealth"][0]
+        assert row["status"] == "up"  # from Prometheus, not the store's "down"
+
+
+class TestQueryPoolIpHealth:
+    async def test_unknown_pool_returns_empty_list(self, repo):
+        result = await _run(POOL_IP_HEALTH_QUERY, repo, variables={"poolName": "ghost"})
+        assert result.errors is None
+        assert result.data["poolIpHealth"] == []
+
+    async def test_returns_rows_for_pools_resolved_member_ips(self, repo):
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128", "2.2.2.2:3128", "3.3.3.3:3128"]))
+        await repo.add_pool(_make_pool("pool", "p", count=2))
+
+        result = await _run(POOL_IP_HEALTH_QUERY, repo, variables={"poolName": "pool"})
+        assert result.errors is None
+        rows = result.data["poolIpHealth"]
+        # First-N selection — only the first 2 of the provider's 3 IPs.
+        assert {r["address"] for r in rows} == {"1.1.1.1:3128", "2.2.2.2:3128"}
+        assert all(r["provider"] == "p" for r in rows)
+
+    async def test_ip_health_store_tier_returns_recorded_status(self, backend, repo):
+        from proxy_hopper.ip_health import IpHealthStore
+
+        await repo.add_provider(ProxyProvider(name="p", ip_list=["1.1.1.1:3128"]))
+        await repo.add_pool(_make_pool("pool", "p", count=1))
+        store = IpHealthStore(backend)
+        await store.record("1.1.1.1:3128", success=True, provider="p")
+
+        result = await _run(
+            POOL_IP_HEALTH_QUERY, repo, variables={"poolName": "pool"}, ip_health=store,
+        )
+        assert result.errors is None
+        assert result.data["poolIpHealth"][0]["status"] == "up"
 
 
 # ---------------------------------------------------------------------------

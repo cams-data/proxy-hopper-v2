@@ -100,3 +100,27 @@ export const TARGET_METRICS_QUERY = gql`
     }
   }
 `;
+
+export const PROVIDER_IP_HEALTH_QUERY = gql`
+  query ProviderIpHealth($providerName: String!) {
+    providerIpHealth(providerName: $providerName) {
+      address
+      provider
+      status
+      lastCheckAt
+      reason
+    }
+  }
+`;
+
+export const POOL_IP_HEALTH_QUERY = gql`
+  query PoolIpHealth($poolName: String!) {
+    poolIpHealth(poolName: $poolName) {
+      address
+      provider
+      status
+      lastCheckAt
+      reason
+    }
+  }
+`;

@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from datetime import UTC, datetime
 
 import httpx
 
 from proxy_hopper.app_metrics import TargetMetricsSnapshot
+from proxy_hopper.ip_health import IpHealthSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,25 @@ async def _instant_query(client: httpx.AsyncClient, base_url: str, promql: str) 
     except (httpx.HTTPError, KeyError, ValueError, IndexError, TypeError) as exc:
         logger.warning("Prometheus query failed (%r): %s", promql, exc)
         return 0.0
+
+
+async def _instant_query_vector(
+    client: httpx.AsyncClient, base_url: str, promql: str,
+) -> list[dict]:
+    """Run one Prometheus instant query, returning the raw result vector
+    (a list of ``{"metric": {...labels}, "value": [ts, val]}`` rows) instead
+    of a single collapsed float — for queries that return one row per label
+    set, like ``query_ip_health`` below. Empty list on any failure, same
+    "partial over error" rationale as ``_instant_query``.
+    """
+    try:
+        resp = await client.get(f"{base_url}/api/v1/query", params={"query": promql})
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("data", {}).get("result", [])
+    except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
+        logger.warning("Prometheus query failed (%r): %s", promql, exc)
+        return []
 
 
 async def query_target_metrics(prometheus_url: str, target: str) -> TargetMetricsSnapshot:
@@ -84,3 +106,51 @@ async def query_target_metrics(prometheus_url: str, target: str) -> TargetMetric
         avg_latency_ms=avg_latency_ms,
         last_request_at=None,
     )
+
+
+async def query_ip_health(prometheus_url: str, addresses: list[str]) -> dict[str, IpHealthSnapshot]:
+    """Query Prometheus for the current reachability of each of *addresses*.
+
+    Reads ``proxy_hopper_ip_reachable`` (see ``prober.py``'s docstring) — one
+    query covering every address via a label regex, rather than one query
+    per address, since a pool/provider can have many IPs.
+
+    ``reason`` is always ``None``: the gauge carries no failure-reason label
+    (only the ``proxy_hopper_probe_failure_total`` counter does), which this
+    doesn't cross-reference — same "field this source genuinely can't answer
+    stays None" precedent as ``query_target_metrics``'s ``last_request_at``.
+    Addresses with no matching series come back as "unknown" (``status=None``),
+    same as ``IpHealthStore.get_many``'s never-probed case.
+    """
+    if not addresses:
+        return {}
+    base_url = prometheus_url.rstrip("/")
+    pattern = "|".join(re.escape(addr) for addr in addresses)
+    query = f'proxy_hopper_ip_reachable{{address=~"{pattern}"}}'
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT_SECONDS) as client:
+        rows = await _instant_query_vector(client, base_url, query)
+
+    found: dict[str, IpHealthSnapshot] = {}
+    for row in rows:
+        try:
+            metric = row["metric"]
+            address = metric["address"]
+            value = float(row["value"][1])
+            checked_at = datetime.fromtimestamp(float(row["value"][0]), tz=UTC).isoformat()
+        except (KeyError, ValueError, TypeError, IndexError):
+            continue
+        found[address] = IpHealthSnapshot(
+            address=address,
+            provider=metric.get("provider") or None,
+            status="up" if value else "down",
+            last_check_at=checked_at,
+            reason=None,
+        )
+
+    return {
+        address: found.get(address) or IpHealthSnapshot(
+            address=address, provider=None, status=None, last_check_at=None, reason=None,
+        )
+        for address in addresses
+    }

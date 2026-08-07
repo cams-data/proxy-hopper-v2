@@ -7,7 +7,8 @@ import { Card, CardBody, CardHeader } from "../../components/ui/Card";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input } from "../../components/ui/Input";
 import { Spinner } from "../../components/ui/Spinner";
-import { PROVIDERS_QUERY } from "../../graphql/queries";
+import { StatusDot, type StatusDotStatus } from "../../components/ui/StatusDot";
+import { PROVIDERS_QUERY, PROVIDER_IP_HEALTH_QUERY } from "../../graphql/queries";
 import {
   ADD_PROVIDER,
   UPDATE_PROVIDER,
@@ -22,6 +23,18 @@ interface Provider_ {
   hasAuth: boolean;
   static: boolean;
   mutable: boolean;
+}
+
+interface IpHealth {
+  address: string;
+  status: string | null; // "up" | "down" | null (unknown)
+  reason: string | null;
+}
+
+function healthToDotStatus(status: string | null): StatusDotStatus {
+  if (status === "up") return "healthy";
+  if (status === "down") return "unhealthy";
+  return "unknown";
 }
 
 const EMPTY_FORM = {
@@ -294,6 +307,14 @@ function ProviderDetail({
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  const [{ data: healthData }] = useQuery({
+    query: PROVIDER_IP_HEALTH_QUERY,
+    variables: { providerName: provider.name },
+    requestPolicy: "cache-and-network",
+  });
+  const health: IpHealth[] = healthData?.providerIpHealth ?? [];
+  const statusByAddress = new Map(health.map((h) => [h.address, h]));
+
   return (
     <div className="max-w-lg">
       <div className="mb-4 flex items-start justify-between">
@@ -343,11 +364,18 @@ function ProviderDetail({
           </CardHeader>
           <CardBody className="p-0">
             <ul className="divide-y divide-gray-100 dark:divide-gray-800 max-h-64 overflow-y-auto">
-              {provider.ipList.map((ip) => (
-                <li key={ip} className="px-4 py-2">
-                  <code className="font-mono text-sm text-gray-900 dark:text-gray-100">{ip}</code>
-                </li>
-              ))}
+              {provider.ipList.map((ip) => {
+                const h = statusByAddress.get(ip);
+                return (
+                  <li key={ip} className="flex items-center gap-2 px-4 py-2">
+                    <StatusDot
+                      status={healthToDotStatus(h?.status ?? null)}
+                      title={h?.status === "down" ? (h.reason ?? "unreachable") : undefined}
+                    />
+                    <code className="font-mono text-sm text-gray-900 dark:text-gray-100">{ip}</code>
+                  </li>
+                );
+              })}
             </ul>
           </CardBody>
         </Card>

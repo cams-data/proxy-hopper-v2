@@ -490,6 +490,46 @@ class TestListPools:
         assert {p.name for p in pools} == {"a", "b"}
 
 
+class TestResolvePoolMemberIps:
+    async def test_nonexistent_pool_returns_empty(self, repo):
+        assert await repo.resolve_pool_member_ips("ghost") == []
+
+    async def test_happy_path_first_n_selection(self, repo):
+        provider = _make_provider("p1", ["1.1.1.1:3128", "2.2.2.2:3128", "3.3.3.3:3128"])
+        await repo.add_provider(provider)
+        await repo.add_pool(_make_pool("pool-a", provider="p1", count=2))
+
+        resolved = await repo.resolve_pool_member_ips("pool-a")
+        addresses = [f"{ip.host}:{ip.port}" for ip in resolved]
+        assert addresses == ["1.1.1.1:3128", "2.2.2.2:3128"]
+        assert all(ip.provider == "p1" for ip in resolved)
+
+    async def test_count_larger_than_provider_ip_list_is_clamped(self, repo):
+        provider = _make_provider("p1", ["1.1.1.1:3128"])
+        await repo.add_provider(provider)
+        await repo.add_pool(_make_pool("pool-a", provider="p1", count=99))
+
+        resolved = await repo.resolve_pool_member_ips("pool-a")
+        assert len(resolved) == 1
+
+    async def test_missing_provider_is_skipped_not_raised(self, repo):
+        pool = IpPool(name="pool-a", ip_requests=[IpRequest(provider="does-not-exist", count=2)])
+        await repo.add_pool(pool)
+        assert await repo.resolve_pool_member_ips("pool-a") == []
+
+    async def test_multiple_providers_combined(self, repo):
+        await repo.add_provider(_make_provider("p1", ["1.1.1.1:3128"]))
+        await repo.add_provider(_make_provider("p2", ["2.2.2.2:3128"]))
+        pool = IpPool(name="pool-a", ip_requests=[
+            IpRequest(provider="p1", count=1),
+            IpRequest(provider="p2", count=1),
+        ])
+        await repo.add_pool(pool)
+
+        resolved = await repo.resolve_pool_member_ips("pool-a")
+        assert {ip.provider for ip in resolved} == {"p1", "p2"}
+
+
 # ---------------------------------------------------------------------------
 # Provider CRUD
 # ---------------------------------------------------------------------------

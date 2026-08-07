@@ -1,9 +1,11 @@
 """Background IP health prober.
 
 Periodically tests every known proxy IP address against a set of well-known
-endpoints and records the results as Prometheus metrics.  Completely
-independent of the pool, backend, and target machinery — it has no side
-effects on IP state and no knowledge of targets.
+endpoints and records the results as Prometheus metrics (and, optionally, an
+``IpHealthStore`` for the admin API — see below).  Completely independent of
+the pool, backend, and target machinery for *operational* purposes — it never
+touches pool/quarantine/rotation state (owned solely by ``IdentityQueue``) and
+has no knowledge of targets beyond the inline-ipList fallback below.
 
 The prober works from the full set of ProxyProvider definitions.  Each
 provider's IPs are probed using that provider's credentials, and results are
@@ -17,6 +19,15 @@ Metrics written
   proxy_hopper_probe_failure_total{address, provider, region, reason}    Counter
   proxy_hopper_probe_duration_seconds{address, provider, region}         Histogram
   proxy_hopper_ip_reachable{address, provider, region}                   Gauge  (1=up, 0=down)
+
+IpHealthStore
+-------------
+When constructed with ``health_store``, every probe result is also recorded
+there — a small, queryable-by-the-admin-API mirror of the same up/down signal
+(see ``ip_health.py``). This is purely informational (surfaced on the
+Providers/Pools admin UI pages); it never feeds quarantine, which stays
+target-scoped and driven only by live-traffic failures (see
+``target_manager.py``/``pool.py``).
 """
 
 from __future__ import annotations
@@ -24,13 +35,16 @@ from __future__ import annotations
 import asyncio
 import itertools
 import time
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import aiohttp
 
 from .config import ProxyProvider, TargetConfig
 from .logging_config import get_logger
 from .metrics import get_metrics
+
+if TYPE_CHECKING:
+    from .ip_health import IpHealthStore
 
 logger = get_logger(__name__)
 
@@ -90,6 +104,7 @@ class IPProber:
         interval: float = 60.0,
         timeout: float = 10.0,
         debug: bool = False,
+        health_store: "IpHealthStore | None" = None,
     ) -> None:
         entries: list[_ProbeEntry] = []
         seen: set[str] = set()
@@ -125,6 +140,7 @@ class IPProber:
         self._interval = interval
         self._timeout = timeout
         self._debug = debug
+        self._health_store = health_store
         self._task: asyncio.Task | None = None
         self._session: aiohttp.ClientSession | None = None
         self._running = False
@@ -188,6 +204,30 @@ class IPProber:
                 )
             await asyncio.sleep(self._interval)
 
+    async def _record(
+        self,
+        entry: _ProbeEntry,
+        *,
+        success: bool,
+        duration: float,
+        reason: str | None = None,
+    ) -> None:
+        """Record one probe result to Prometheus and, if configured, IpHealthStore."""
+        if success:
+            get_metrics().record_probe_success(
+                entry.address, duration,
+                provider=entry.provider, region=entry.region,
+            )
+        else:
+            get_metrics().record_probe_failure(
+                entry.address, reason, duration,
+                provider=entry.provider, region=entry.region,
+            )
+        if self._health_store is not None:
+            await self._health_store.record(
+                entry.address, success=success, provider=entry.provider, reason=reason,
+            )
+
     async def _probe_address(self, entry: _ProbeEntry) -> None:
         """Run a single probe through one proxy IP and record the result."""
         url = next(self._url_cycles[entry.address])
@@ -214,10 +254,7 @@ class IPProber:
                     if resp.status < 500:
                         # Any non-5xx response means the proxy IP is reachable
                         # and forwarding traffic — treat as success.
-                        get_metrics().record_probe_success(
-                            entry.address, duration,
-                            provider=entry.provider, region=entry.region,
-                        )
+                        await self._record(entry, success=True, duration=duration)
                         if self._debug:
                             logger.debug(
                                 "IPProber: %s via %s → %d (%.3fs)",
@@ -226,10 +263,7 @@ class IPProber:
                     else:
                         reason = "http_error"
                         duration = time.monotonic() - start
-                        get_metrics().record_probe_failure(
-                            entry.address, reason, duration,
-                            provider=entry.provider, region=entry.region,
-                        )
+                        await self._record(entry, success=False, duration=duration, reason=reason)
                         logger.warning(
                             "IPProber: %s via %s → %d (%.3fs)",
                             url, entry.address, resp.status, duration,
@@ -238,26 +272,17 @@ class IPProber:
         except asyncio.TimeoutError:
             reason = "timeout"
             duration = time.monotonic() - start
-            get_metrics().record_probe_failure(
-                entry.address, reason, duration,
-                provider=entry.provider, region=entry.region,
-            )
+            await self._record(entry, success=False, duration=duration, reason=reason)
             logger.warning("IPProber: %s via %s timed out after %.1fs", url, entry.address, duration)
 
         except aiohttp.ClientProxyConnectionError:
             reason = "proxy_unreachable"
             duration = time.monotonic() - start
-            get_metrics().record_probe_failure(
-                entry.address, reason, duration,
-                provider=entry.provider, region=entry.region,
-            )
+            await self._record(entry, success=False, duration=duration, reason=reason)
             logger.warning("IPProber: could not connect to proxy %s", entry.address)
 
         except aiohttp.ClientError as exc:
             reason = "connection_error"
             duration = time.monotonic() - start
-            get_metrics().record_probe_failure(
-                entry.address, reason, duration,
-                provider=entry.provider, region=entry.region,
-            )
+            await self._record(entry, success=False, duration=duration, reason=reason)
             logger.warning("IPProber: %s via %s — %s: %s", url, entry.address, type(exc).__name__, exc)

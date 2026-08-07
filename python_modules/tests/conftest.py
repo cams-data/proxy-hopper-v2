@@ -26,6 +26,7 @@ import pytest_asyncio
 from proxy_hopper.app_metrics import AppMetricsStore
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import ResolvedIP, TargetConfig
+from proxy_hopper.ip_health import IpHealthStore
 from proxy_hopper.pool import IdentityQueue
 from proxy_hopper.pool_store import IPPoolStore
 from proxy_hopper_redis.backend import RedisBackend
@@ -130,6 +131,16 @@ def app_metrics(pool_store) -> AppMetricsStore:
     since counter_increment_by has no IPPoolStore wrapper.
     """
     return AppMetricsStore(pool_store._backend)
+
+
+@pytest.fixture
+def ip_health(pool_store) -> IpHealthStore:
+    """An IpHealthStore backed by each registered backend type.
+
+    Short probe_interval so the TTL contract tests aren't tied to the
+    production default of 60s.
+    """
+    return IpHealthStore(pool_store._backend, probe_interval=1.0)
 
 
 # ---------------------------------------------------------------------------

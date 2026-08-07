@@ -16,6 +16,7 @@ from .queries import Query
 if TYPE_CHECKING:
     from proxy_hopper.app_metrics import AppMetricsStore
     from proxy_hopper.config import AuthConfig
+    from proxy_hopper.ip_health import IpHealthStore
     from proxy_hopper.repository import ProxyRepository
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)
@@ -26,6 +27,7 @@ def create_graphql_router(
     auth_config: "AuthConfig | None",
     get_current_user: Any,
     app_metrics: "AppMetricsStore | None" = None,
+    ip_health: "IpHealthStore | None" = None,
     prometheus_url: "str | None" = None,
     read_only: bool = False,
 ) -> GraphQLRouter:
@@ -39,7 +41,8 @@ def create_graphql_router(
     ) -> Context:
         return Context(
             repo=repo, user=user, auth_config=auth_config,
-            app_metrics=app_metrics, prometheus_url=prometheus_url,
+            app_metrics=app_metrics, ip_health=ip_health,
+            prometheus_url=prometheus_url,
             read_only=read_only,
         )
 

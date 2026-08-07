@@ -19,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 if TYPE_CHECKING:
     from proxy_hopper.app_metrics import AppMetricsStore
     from proxy_hopper.config import ProxyHopperConfig
+    from proxy_hopper.ip_health import IpHealthStore
     from proxy_hopper.repository import ProxyRepository
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,7 @@ def create_admin_app(
     repo: "ProxyRepository | None" = None,
     event_bus=None,
     app_metrics: "AppMetricsStore | None" = None,
+    ip_health: "IpHealthStore | None" = None,
 ) -> FastAPI:
     """Build and return the configured FastAPI admin application."""
     from proxy_hopper.auth import Permission, create_access_token, verify_password
@@ -149,6 +151,7 @@ def create_admin_app(
             auth_config=auth_config,
             get_current_user=get_current_user,
             app_metrics=app_metrics,
+            ip_health=ip_health,
             prometheus_url=cfg.server.prometheus_url,
             read_only=cfg.server.admin_read_only,
         )
@@ -183,11 +186,15 @@ async def run_admin_server(
     repo: "ProxyRepository | None" = None,
     event_bus=None,
     app_metrics: "AppMetricsStore | None" = None,
+    ip_health: "IpHealthStore | None" = None,
 ) -> None:
     """Start the admin server as an asyncio-native task."""
     import uvicorn
 
-    app = create_admin_app(cfg, runtime_secret, repo=repo, event_bus=event_bus, app_metrics=app_metrics)
+    app = create_admin_app(
+        cfg, runtime_secret, repo=repo, event_bus=event_bus,
+        app_metrics=app_metrics, ip_health=ip_health,
+    )
     host = cfg.server.admin_host
     port = cfg.server.admin_port
 
