@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 from datetime import datetime, timezone
+from typing import Optional
 
 from .base import ConfigEntity, ConfigStore
 
@@ -47,6 +48,7 @@ class MemoryConfigStore(ConfigStore):
         *,
         static: bool,
         mutable: bool,
+        source_file: Optional[str] = None,
     ) -> None:
         bucket = self._entities.setdefault(entity_type, {})
         bucket[name] = ConfigEntity(
@@ -58,6 +60,7 @@ class MemoryConfigStore(ConfigStore):
             # DATETIME type doesn't reliably round-trip tz-aware values),
             # kept consistent across every ConfigStore implementation.
             updated_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            source_file=source_file,
         )
 
     async def delete(self, entity_type: str, name: str) -> None:
@@ -74,4 +77,5 @@ class MemoryConfigStore(ConfigStore):
             static=entity.static,
             mutable=entity.mutable,
             updated_at=entity.updated_at,
+            source_file=entity.source_file,
         )

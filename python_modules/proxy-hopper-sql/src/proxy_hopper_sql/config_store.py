@@ -12,6 +12,7 @@ migration job) — start() does not create tables.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Optional
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import insert, select, update
@@ -56,6 +57,7 @@ class SqlConfigStore(ConfigStore):
         *,
         static: bool,
         mutable: bool,
+        source_file: Optional[str] = None,
     ) -> None:
         # Naive UTC — SQLite's DATETIME type doesn't reliably round-trip
         # tz-aware datetimes, so ConfigEntity.updated_at is naive UTC by
@@ -75,7 +77,10 @@ class SqlConfigStore(ConfigStore):
                         config_entities.c.entity_type == entity_type,
                         config_entities.c.name == name,
                     )
-                    .values(data=data, static=static, mutable=mutable, updated_at=now)
+                    .values(
+                        data=data, static=static, mutable=mutable,
+                        updated_at=now, source_file=source_file,
+                    )
                 )
             else:
                 await conn.execute(
@@ -86,6 +91,7 @@ class SqlConfigStore(ConfigStore):
                         static=static,
                         mutable=mutable,
                         updated_at=now,
+                        source_file=source_file,
                     )
                 )
 
@@ -115,4 +121,5 @@ class SqlConfigStore(ConfigStore):
             static=row.static,
             mutable=row.mutable,
             updated_at=row.updated_at,
+            source_file=row.source_file,
         )

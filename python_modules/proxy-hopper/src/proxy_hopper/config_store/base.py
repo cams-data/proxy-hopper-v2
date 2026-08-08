@@ -17,6 +17,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 
 @dataclass
@@ -35,6 +36,12 @@ class ConfigEntity:
     # Naive UTC by convention across every implementation — SQLite's
     # DATETIME type doesn't reliably round-trip tz-aware datetimes.
     updated_at: datetime
+    # Root-relative path of the file that produced this entity, e.g.
+    # "providers/aws.yaml" — set by ProxyRepository.reconcile() for
+    # file-owned (static) entities so conflict/duplicate messages can name
+    # the actual file. None for admin-API-created entities and any entity
+    # that predates this field.
+    source_file: Optional[str] = None
 
 
 class ConfigStore(ABC):
@@ -65,11 +72,14 @@ class ConfigStore(ABC):
         *,
         static: bool,
         mutable: bool,
+        source_file: Optional[str] = None,
     ) -> None:
         """Create or overwrite the entity named *name*.
 
-        Overwrites `data`, `static`, `mutable`, and `updated_at` in full —
-        this is not a partial update.
+        Overwrites `data`, `static`, `mutable`, `source_file`, and
+        `updated_at` in full — this is not a partial update. `source_file`
+        defaults to None so every pre-existing call site (admin-API CRUD)
+        needs no change; only ProxyRepository.reconcile() passes it.
         """
 
     @abstractmethod

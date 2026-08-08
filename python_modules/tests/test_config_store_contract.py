@@ -103,6 +103,39 @@ class TestRoundTrip:
         assert entity.static is False
         assert entity.mutable is True
 
+    async def test_source_file_defaults_to_none(self, store):
+        await store.set("target", "t1", {"regex": ".*"}, static=False, mutable=True)
+        entity = await store.get("target", "t1")
+        assert entity.source_file is None
+
+    async def test_source_file_round_trips(self, store):
+        await store.set(
+            "provider", "p1", {"ipList": []}, static=True, mutable=False,
+            source_file="providers/aws.yaml",
+        )
+        entity = await store.get("provider", "p1")
+        assert entity.source_file == "providers/aws.yaml"
+
+    async def test_source_file_round_trips_through_list(self, store):
+        await store.set(
+            "provider", "p1", {"ipList": []}, static=True, mutable=False,
+            source_file="providers/aws.yaml",
+        )
+        entities = await store.list("provider")
+        assert entities[0].source_file == "providers/aws.yaml"
+
+    async def test_source_file_updated_on_overwrite(self, store):
+        await store.set(
+            "target", "t1", {"v": 1}, static=True, mutable=False,
+            source_file="01-first.yaml",
+        )
+        await store.set(
+            "target", "t1", {"v": 1}, static=True, mutable=False,
+            source_file="02-second.yaml",
+        )
+        entity = await store.get("target", "t1")
+        assert entity.source_file == "02-second.yaml"
+
     async def test_get_missing_returns_none(self, store):
         assert await store.get("target", "does-not-exist") is None
 

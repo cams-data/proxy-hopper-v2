@@ -17,4 +17,5 @@ config_entities = Table(
     Column("static", Boolean, nullable=False),
     Column("mutable", Boolean, nullable=False),
     Column("updated_at", DateTime, nullable=False),
+    Column("source_file", String, nullable=True),
 )
