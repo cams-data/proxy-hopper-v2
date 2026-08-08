@@ -8,7 +8,7 @@ from textwrap import dedent
 import pytest
 
 from proxy_hopper.config import load_config
-from proxy_hopper.config_source import scan_config_source
+from proxy_hopper.config_source import compute_source_signature, scan_config_source
 
 
 def _write(path: Path, content: str) -> None:
@@ -226,3 +226,57 @@ class TestRootDoesNotExist:
     def test_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             scan_config_source(tmp_path / "does-not-exist")
+
+
+class TestComputeSourceSignature:
+    def test_raises_file_not_found(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            compute_source_signature(tmp_path / "does-not-exist")
+
+    def test_stable_across_repeated_calls(self, tmp_path):
+        _write(tmp_path / "a.yaml", "targets: []")
+        assert compute_source_signature(tmp_path) == compute_source_signature(tmp_path)
+
+    def test_changes_when_file_content_changes(self, tmp_path):
+        path = tmp_path / "a.yaml"
+        _write(path, "targets: []")
+        before = compute_source_signature(tmp_path)
+        _write(path, "targets: [1]")
+        after = compute_source_signature(tmp_path)
+        assert before != after
+
+    def test_changes_when_a_file_is_added(self, tmp_path):
+        _write(tmp_path / "a.yaml", "targets: []")
+        before = compute_source_signature(tmp_path)
+        _write(tmp_path / "b.yaml", "targets: []")
+        after = compute_source_signature(tmp_path)
+        assert before != after
+
+    def test_changes_when_a_file_is_removed(self, tmp_path):
+        _write(tmp_path / "a.yaml", "targets: []")
+        _write(tmp_path / "b.yaml", "targets: []")
+        before = compute_source_signature(tmp_path)
+        (tmp_path / "b.yaml").unlink()
+        after = compute_source_signature(tmp_path)
+        assert before != after
+
+    def test_changes_when_a_file_is_renamed_with_identical_content(self, tmp_path):
+        # Locks in that the path is part of the hash, not just concatenated
+        # bytes -- a rename must be detected even if content is unchanged.
+        _write(tmp_path / "a.yaml", "targets: []")
+        before = compute_source_signature(tmp_path)
+        (tmp_path / "a.yaml").rename(tmp_path / "z.yaml")
+        after = compute_source_signature(tmp_path)
+        assert before != after
+
+    def test_single_file_root_ignores_sibling_files(self, tmp_path):
+        target = tmp_path / "config.yaml"
+        _write(target, "targets: []")
+        single_file_sig = compute_source_signature(target)
+
+        # Adding an unrelated sibling file must not change a single-file
+        # root's signature -- it isn't part of the scan.
+        _write(tmp_path / "unrelated.yaml", "targets: []")
+        assert compute_source_signature(target) == single_file_sig
+        # ...but it does change the directory root's signature.
+        assert compute_source_signature(tmp_path) != single_file_sig

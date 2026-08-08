@@ -57,6 +57,7 @@ happen here; it happens when Phase 4 constructs the real ``TargetConfig``.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -115,6 +116,13 @@ class MergedFileConfig:
 # ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
+
+def _require_root(root: Path | str) -> Path:
+    root = Path(root)
+    if not root.exists():
+        raise FileNotFoundError(f"config source path does not exist: {root}")
+    return root
+
 
 def _discover_files(root: Path) -> list[Path]:
     if root.is_file():
@@ -217,10 +225,7 @@ def scan_config_source(root: Path | str) -> tuple[MergedFileConfig, list[str], l
     non-empty ``errors`` list means every file failed to parse -- Phase 4's
     empty-result guard (§4) should treat these two cases differently.
     """
-    root = Path(root)
-    if not root.exists():
-        raise FileNotFoundError(f"config source path does not exist: {root}")
-
+    root = _require_root(root)
     files = _discover_files(root)
 
     errors: list[str] = []
@@ -261,3 +266,41 @@ def scan_config_source(root: Path | str) -> tuple[MergedFileConfig, list[str], l
     )
     warnings = providers.warnings + pools.warnings + targets.warnings
     return merged_config, warnings, errors
+
+
+def compute_source_signature(root: Path | str) -> str:
+    """Cheap, content-based fingerprint of the discovered file set.
+
+    For the Phase 5 poll loop: deliberately does *not* parse or validate
+    anything, just enough I/O (a directory walk + reading raw bytes) to
+    detect "did anything change", so the comparatively expensive
+    ``scan_config_source()`` + ``ProxyRepository.reconcile()`` pair only
+    runs when this signature actually differs from the last poll.
+
+    Content-based rather than mtime/size-based on purpose: a Kubernetes
+    ConfigMap update swaps a symlink atomically, which can leave mtimes
+    inconsistent (a new file doesn't necessarily get a newer mtime than the
+    symlink target it replaced) — hashing the bytes themselves sidesteps
+    that entirely, at the cost of reading every file every poll. For
+    config-file-sized inputs (kilobytes) at a multi-second interval, that
+    cost is negligible; this is not meant for polling large data files.
+
+    Raises FileNotFoundError under the same condition as
+    ``scan_config_source`` (root itself missing) -- everything else
+    (an unreadable individual file) is folded into the hash rather than
+    raised, so a transient per-file read glitch shows up as "the signature
+    changed" (triggering a real reconcile attempt, which will itself
+    surface the error) rather than crashing the poll loop.
+    """
+    root = _require_root(root)
+    files = _discover_files(root)
+    digest = hashlib.sha256()
+    for file in files:
+        digest.update(_display_path(root, file).encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            digest.update(file.read_bytes())
+        except OSError as exc:
+            digest.update(f"<unreadable: {exc}>".encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()

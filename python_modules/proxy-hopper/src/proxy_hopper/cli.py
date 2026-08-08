@@ -14,6 +14,13 @@ Usage examples
 # Start the proxy server
 proxy-hopper run --config config.yaml
 
+# Start against a directory of *.yaml/*.yml files instead of one file --
+# recursively merged with deterministic precedence (see
+# CONFIG_RECONCILER_SCOPE.md), hot-reloaded on change (server.configWatch),
+# no restart required. server:/auth: blocks aren't sourced from any file in
+# this mode -- use CLI flags/env vars for those.
+proxy-hopper run --config ./config.d/
+
 # Start the admin server (GraphQL API + web UI) as a separate process/deployment.
 # Only sees live state when backend=redis — a separate process gets its own
 # private in-memory backend when backend=memory, so this is a no-op for
@@ -50,7 +57,7 @@ from typing import Optional
 
 import click
 
-from .config import load_config
+from .config import ServerConfig, load_config
 from .logging_config import configure_logging
 
 # Note: we do NOT use auto_envvar_prefix here — env vars are read inside
@@ -90,7 +97,10 @@ def hash_password_cmd(password: str) -> None:
 @click.option("--config", "-c", required=False, default=None,
               envvar="PROXY_HOPPER_CONFIG",
               type=click.Path(exists=True, path_type=Path),
-              help="Path to targets YAML config file.")
+              help="Path to a YAML config file, or a directory of *.yaml/*.yml "
+                   "files (recursively merged, deterministic precedence — see "
+                   "CONFIG_RECONCILER_SCOPE.md). A directory is watched for "
+                   "changes and hot-reloaded; see server.configWatch.")
 @click.option("--host", default=None,
               help="Interface to bind the proxy server. [default: 0.0.0.0]")
 @click.option("--port", default=None, type=int,
@@ -182,8 +192,17 @@ def run(
         )
         sys.exit(1)
 
-    cfg = load_config(config)
-    server = cfg.server
+    # A directory source (multi-file, see CONFIG_RECONCILER_SCOPE.md) has no
+    # single server:/auth: block to read -- those stay CLI-flags/env-vars
+    # only in that mode, same as a single file that simply omits them.
+    # Provider/pool/target seeding for both cases happens inside _run() via
+    # FileConfigSource, not here -- config_path is passed straight through.
+    if config.is_dir():
+        cfg = None
+        server = ServerConfig()
+    else:
+        cfg = load_config(config)
+        server = cfg.server
 
     # --- Apply CLI overrides (highest priority) ---
     if host is not None:
@@ -245,11 +264,14 @@ def run(
         start_metrics_server(server.metrics_port)
 
     # --- Run ---
+    # targets/providers are passed as empty lists -- config_path drives
+    # seeding now (via FileConfigSource + ProxyRepository.reconcile()), for
+    # both the file and directory cases. See _run()'s docstring.
     try:
         import uvloop
-        uvloop.run(_run(cfg.targets, cfg.providers, server, cfg))
+        uvloop.run(_run([], [], server, cfg, config_path=config))
     except ImportError:
-        asyncio.run(_run(cfg.targets, cfg.providers, server, cfg))
+        asyncio.run(_run([], [], server, cfg, config_path=config))
 
 
 @main.command()
@@ -286,7 +308,31 @@ def validate(config: Path) -> None:
 # Async run helper
 # ---------------------------------------------------------------------------
 
-async def _run(targets, providers, server, cfg=None) -> None:
+async def _run(
+    targets, providers, server, cfg=None, *, config_path: Optional[Path] = None,
+) -> None:
+    """Build and run the proxy server (plus optional embedded admin server).
+
+    Two ways to seed providers/pools/targets, mutually exclusive:
+
+    - *config_path* set (the real CLI path, both single-file and directory
+      sources): seeding goes through ``FileConfigSource`` +
+      ``ProxyRepository.reconcile()`` once before serving, then — if
+      ``server.config_watch.enabled`` — a background task re-runs the same
+      pair whenever ``compute_source_signature(config_path)`` changes.
+      *targets*/*providers* are ignored entirely in this mode.
+    - *config_path* is None: the pre-reconciler direct-construction path —
+      *targets*/*providers*/``cfg.pools`` are seeded via the old
+      ``seed_target``/``seed_provider``/``seed_pool`` write-if-not-exists
+      calls, unchanged. Exists for callers that build ``TargetConfig``/
+      ``ProxyProvider`` objects directly rather than going through a YAML
+      file (e.g. this package's own test suite).
+
+    Either way, every manager built below reads from ``repo`` *after*
+    seeding/reconcile completes (``repo.list_targets()``/``list_providers()``)
+    rather than trusting *targets*/*providers* directly — the repository is
+    the source of truth at runtime, per this module's own design rules.
+    """
     from .auth import make_runtime_secret
     from .config import AuthConfig, ProxyHopperConfig
     from .server import ProxyServer
@@ -330,18 +376,34 @@ async def _run(targets, providers, server, cfg=None) -> None:
     from .ip_health import IpHealthStore
     ip_health_store = IpHealthStore(backend, probe_interval=server.probe_interval)
 
-    # Seed providers, pools, and targets from YAML (write-if-not-exists).
-    # Repository is the source of truth; YAML is only applied on first run.
-    for p in providers:
-        await repo.seed_provider(p)
-    for pool in cfg.pools:
-        await repo.seed_pool(pool)
-    for t in targets:
-        await repo.seed_target(t)
+    if config_path is not None:
+        from .config_source import scan_config_source
 
-    # Build managers from the full repository state (YAML seeds + any prior
-    # runtime mutations that survived across restarts in the backend).
+        merged, source_warnings, source_errors = scan_config_source(config_path)
+        for w in source_warnings:
+            log.warning("config source: %s", w)
+        for e in source_errors:
+            log.error("config source: %s", e)
+        reconcile_errors = await repo.reconcile(merged)
+        for e in reconcile_errors:
+            log.error("config reconcile: %s", e)
+    else:
+        # Legacy/direct-construction path (e.g. this package's tests) —
+        # write-if-not-exists, unchanged from before this feature existed.
+        for p in providers:
+            await repo.seed_provider(p)
+        for pool in cfg.pools:
+            await repo.seed_pool(pool)
+        for t in targets:
+            await repo.seed_target(t)
+
+    # Build managers from the full repository state (seeded/reconciled
+    # config + any prior runtime mutations that survived across restarts in
+    # the backend) — never from the *targets*/*providers* parameters
+    # directly, so a namespace-conflict-rejected or otherwise-not-applied
+    # entity is never silently used to build a live manager.
     all_targets = await repo.list_targets()
+    all_providers = await repo.list_providers()
 
     # Build TokenManager if auth_server is configured.
     token_manager = None
@@ -358,7 +420,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
         TargetManager(
             t,
             pool_store,
-            providers=providers,
+            providers=all_providers,
             proxy_read_timeout=server.proxy_read_timeout,
             debug_quarantine=server.debug_quarantine,
             event_bus=event_bus,
@@ -375,7 +437,7 @@ async def _run(targets, providers, server, cfg=None) -> None:
         runtime_secret=runtime_secret,
         pool_store=pool_store,
         repository=repo,
-        providers=providers,
+        providers=all_providers,
         proxy_read_timeout=server.proxy_read_timeout,
         debug_quarantine=server.debug_quarantine,
         event_bus=event_bus,
@@ -386,8 +448,8 @@ async def _run(targets, providers, server, cfg=None) -> None:
     if server.probe:
         from .prober import IPProber
         prober = IPProber(
-            providers=providers,
-            targets=targets,
+            providers=all_providers,
+            targets=all_targets,
             probe_urls=server.probe_urls,
             interval=server.probe_interval,
             timeout=server.probe_timeout,
@@ -444,6 +506,33 @@ async def _run(targets, providers, server, cfg=None) -> None:
 
         admin_task.add_done_callback(_log_admin_task_failure)
 
+    # --- Optionally start the background config-file poll loop ---
+    # Only meaningful when seeding came from a file source in the first
+    # place; the legacy direct-construction path (config_path is None) has
+    # nothing to poll. server.config_watch.enabled lets an operator pin
+    # file config to load-once-only, same as before this feature existed.
+    config_watch_task = None
+    if config_path is not None and server.config_watch.enabled:
+        from .config_source import compute_source_signature
+
+        initial_signature = compute_source_signature(config_path)
+        config_watch_task = asyncio.create_task(
+            _config_watch_loop(
+                repo, config_path, server.config_watch.interval_seconds,
+                initial_signature, log,
+            ),
+            name="ph:cli:config-watch",
+        )
+
+        def _log_config_watch_task_failure(task: asyncio.Task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                log.error("Config watch loop failed: %s", exc, exc_info=exc)
+
+        config_watch_task.add_done_callback(_log_config_watch_task_failure)
+
     try:
         await proxy.start()
         log.info(
@@ -465,9 +554,53 @@ async def _run(targets, providers, server, cfg=None) -> None:
             admin_uvicorn_server.should_exit = True
             admin_task.cancel()
             await asyncio.gather(admin_task, return_exceptions=True)
+        if config_watch_task is not None:
+            config_watch_task.cancel()
+            await asyncio.gather(config_watch_task, return_exceptions=True)
         if prober:
             await prober.stop()
         await backend.stop()
         await config_store.stop()
+
+
+async def _config_watch_loop(
+    repo,
+    config_path: Path,
+    interval_seconds: float,
+    initial_signature: str,
+    log: logging.Logger,
+) -> None:
+    """Poll *config_path* every *interval_seconds*; re-reconcile on change.
+
+    Cheap steady state: ``compute_source_signature`` is a directory walk +
+    content hash, not a parse — the comparatively expensive
+    ``scan_config_source`` + ``ProxyRepository.reconcile()`` pair only runs
+    when the signature actually differs from the last cycle's.
+    """
+    from .config_source import compute_source_signature, scan_config_source
+
+    last_signature = initial_signature
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            signature = compute_source_signature(config_path)
+        except FileNotFoundError:
+            log.error(
+                "config watch: '%s' no longer exists — skipping this cycle",
+                config_path,
+            )
+            continue
+        if signature == last_signature:
+            continue
+        last_signature = signature
+
+        merged, source_warnings, source_errors = scan_config_source(config_path)
+        for w in source_warnings:
+            log.warning("config watch: %s", w)
+        for e in source_errors:
+            log.error("config watch: %s", e)
+        reconcile_errors = await repo.reconcile(merged)
+        for e in reconcile_errors:
+            log.error("config watch reconcile: %s", e)
 
 

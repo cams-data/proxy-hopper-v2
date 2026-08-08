@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from textwrap import dedent
 
 import aiohttp
 import pytest
@@ -197,3 +198,161 @@ class TestEmbeddedAdmin:
         # Must return promptly on its own — no cancellation needed — since
         # the ImportError path returns before starting the proxy.
         await asyncio.wait_for(_run(targets, [], server), timeout=2.0)
+
+
+async def _target_names(admin_port: int) -> list[str]:
+    query = {"query": "{ targets { name } }"}
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            f"http://127.0.0.1:{admin_port}/graphql", json=query
+        ) as resp:
+            assert resp.status == 200
+            data = await resp.json()
+    return [t["name"] for t in data["data"]["targets"]]
+
+
+def _write(path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(dedent(content))
+
+
+class TestConfigPathSeeding:
+    """CLI-level: _run(config_path=...) seeds via FileConfigSource +
+    ProxyRepository.reconcile() instead of the legacy direct-construction
+    path — see CONFIG_RECONCILER_SCOPE.md Phase 5."""
+
+    @pytest.mark.asyncio
+    async def test_directory_source_seeds_initial_config(self, tmp_path):
+        _write(tmp_path / "providers.yaml", """
+            proxyProviders:
+              - name: prov
+                ipList: ["1.1.1.1:8080"]
+        """)
+        _write(tmp_path / "pools.yaml", """
+            ipPools:
+              - name: pool
+                ipRequests:
+                  - provider: prov
+                    count: 1
+        """)
+        _write(tmp_path / "targets.yaml", """
+            targets:
+              - name: dir-target
+                regex: '.*'
+                ipPool: pool
+        """)
+
+        admin_port = _free_port()
+        server = _make_server(admin=True, admin_host="127.0.0.1", admin_port=admin_port)
+
+        task = asyncio.create_task(_run([], [], server, config_path=tmp_path))
+        try:
+            await _wait_for_port("127.0.0.1", admin_port)
+            assert await _target_names(admin_port) == ["dir-target"]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_single_file_source_via_config_path(self, tmp_path):
+        _write(tmp_path / "config.yaml", """
+            proxyProviders:
+              - name: prov
+                ipList: ["1.1.1.1:8080"]
+            ipPools:
+              - name: pool
+                ipRequests:
+                  - provider: prov
+                    count: 1
+            targets:
+              - name: file-target
+                regex: '.*'
+                ipPool: pool
+        """)
+
+        admin_port = _free_port()
+        server = _make_server(admin=True, admin_host="127.0.0.1", admin_port=admin_port)
+
+        task = asyncio.create_task(
+            _run([], [], server, config_path=tmp_path / "config.yaml")
+        )
+        try:
+            await _wait_for_port("127.0.0.1", admin_port)
+            assert await _target_names(admin_port) == ["file-target"]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+class TestConfigWatchPolling:
+    """The background poll loop -- CONFIG_RECONCILER_SCOPE.md Phase 5."""
+
+    def _write_targets(self, root, names: list[str]) -> None:
+        entries = "\n".join(
+            f"  - name: {n}\n    regex: '.*{n}.*'\n    ipPool: pool" for n in names
+        )
+        _write(root / "config.yaml", f"""
+            proxyProviders:
+              - name: prov
+                ipList: ["1.1.1.1:8080"]
+            ipPools:
+              - name: pool
+                ipRequests:
+                  - provider: prov
+                    count: 1
+            targets:
+        """)
+        # Append targets separately -- easier than fighting dedent's common-
+        # leading-whitespace stripping across two differently-indented blocks.
+        with open(root / "config.yaml", "a") as fh:
+            fh.write(entries + "\n")
+
+    @pytest.mark.asyncio
+    async def test_enabled_watch_picks_up_a_new_target(self, tmp_path):
+        self._write_targets(tmp_path, ["one"])
+        admin_port = _free_port()
+        server = _make_server(
+            admin=True, admin_host="127.0.0.1", admin_port=admin_port,
+            config_watch={"enabled": True, "interval_seconds": 0.1},
+        )
+
+        task = asyncio.create_task(_run([], [], server, config_path=tmp_path))
+        try:
+            await _wait_for_port("127.0.0.1", admin_port)
+            assert await _target_names(admin_port) == ["one"]
+
+            self._write_targets(tmp_path, ["one", "two"])
+
+            deadline = asyncio.get_running_loop().time() + 5.0
+            names: list[str] = []
+            while asyncio.get_running_loop().time() < deadline:
+                names = await _target_names(admin_port)
+                if set(names) == {"one", "two"}:
+                    break
+                await asyncio.sleep(0.05)
+            assert set(names) == {"one", "two"}
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_disabled_watch_never_polls_after_startup(self, tmp_path):
+        self._write_targets(tmp_path, ["one"])
+        admin_port = _free_port()
+        server = _make_server(
+            admin=True, admin_host="127.0.0.1", admin_port=admin_port,
+            config_watch={"enabled": False, "interval_seconds": 0.1},
+        )
+
+        task = asyncio.create_task(_run([], [], server, config_path=tmp_path))
+        try:
+            await _wait_for_port("127.0.0.1", admin_port)
+            assert await _target_names(admin_port) == ["one"]
+
+            self._write_targets(tmp_path, ["one", "two"])
+            await asyncio.sleep(0.5)  # several would-be poll intervals
+
+            assert await _target_names(admin_port) == ["one"]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

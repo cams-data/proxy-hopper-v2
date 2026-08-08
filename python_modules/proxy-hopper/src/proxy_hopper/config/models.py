@@ -391,6 +391,28 @@ class AuthServerConfig(BaseModel):
     expose_proxy_url: bool = Field(default=True)
 
 
+class ConfigWatchConfig(BaseModel):
+    """Controls the live file-config poll loop (see CONFIG_RECONCILER_SCOPE.md).
+
+    YAML key: ``server.configWatch``
+
+    Fields
+    ------
+    enabled
+        Whether the background poll loop starts after the initial reconcile
+        pass. The initial pass always runs regardless of this flag — it's
+        what replaces today's one-shot YAML seeding. Setting this to False
+        makes file-sourced config load-once-only, same as before this
+        feature existed. Default: True.
+    interval_seconds (intervalSeconds)
+        Seconds between poll cycles. Each cycle is a directory walk + content
+        hash of every discovered file — a full re-parse/merge/reconcile only
+        runs when that hash actually changes. Default: 5.0.
+    """
+    enabled: bool = Field(default=True)
+    interval_seconds: float = Field(default=5.0, gt=0)
+
+
 # ---------------------------------------------------------------------------
 # Server config — BaseSettings reads PROXY_HOPPER_* env vars automatically.
 #
@@ -489,6 +511,9 @@ class ServerConfig(BaseSettings):
         Log verbose probe results at DEBUG level.  Default: False.
     debug_backend (debugBackend)
         Log verbose backend storage operations at DEBUG level.  Default: False.
+    config_watch (configWatch)
+        Controls the background file-config poll loop. See
+        ``ConfigWatchConfig``. Default: enabled, 5-second interval.
     """
     model_config = SettingsConfigDict(
         env_prefix="PROXY_HOPPER_",
@@ -523,6 +548,7 @@ class ServerConfig(BaseSettings):
     admin_read_only: bool = False
     prometheus_url: Optional[str] = None
     auth_server: Optional[AuthServerConfig] = None
+    config_watch: ConfigWatchConfig = Field(default_factory=ConfigWatchConfig)
 
     @classmethod
     def settings_customise_sources(

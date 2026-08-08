@@ -393,6 +393,23 @@ class TestServerConfig:
         cfg = load_config(p)
         assert cfg.server.probe_urls == ["https://a.example", "https://b.example"]
 
+    def test_config_watch_defaults(self, tmp_path):
+        p = self._write(tmp_path, self._minimal())
+        cfg = load_config(p)
+        assert cfg.server.config_watch.enabled is True
+        assert cfg.server.config_watch.interval_seconds == 5.0
+
+    def test_config_watch_yaml_block_applied(self, tmp_path):
+        p = self._write(tmp_path, self._minimal(dedent("""
+            server:
+              configWatch:
+                enabled: false
+                intervalSeconds: 30
+        """)))
+        cfg = load_config(p)
+        assert cfg.server.config_watch.enabled is False
+        assert cfg.server.config_watch.interval_seconds == 30.0
+
     def test_metrics_bool_env_var_truthy_values(self, tmp_path, monkeypatch):
         for val in ("true", "True", "1", "yes", "on"):
             monkeypatch.setenv("PROXY_HOPPER_METRICS", val)
