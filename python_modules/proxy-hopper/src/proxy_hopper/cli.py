@@ -274,33 +274,95 @@ def run(
         asyncio.run(_run([], [], server, cfg, config_path=config))
 
 
+def _print_providers_pools_targets(providers, pools, targets) -> None:
+    if providers:
+        click.echo(f"Providers: {len(providers)} defined.")
+        for p in providers:
+            click.echo(f"  {p.name!r}: {len(p.ip_list)} IP(s)"
+                       + (f", region={p.region_tag!r}" if p.region_tag else "")
+                       + (", auth=basic" if p.auth else ", auth=none"))
+    if pools:
+        click.echo(f"Pools: {len(pools)} defined.")
+        for pool in pools:
+            providers_in_pool = [req.provider for req in pool.ip_requests]
+            click.echo(f"  {pool.name!r}: {len(pool.ip_requests)} request(s)"
+                       + (f", providers={providers_in_pool}"))
+    click.echo(f"Config OK — {len(targets)} target(s) defined.")
+    for t in targets:
+        ips = t.resolved_ips
+        click.echo(f"  {t.name!r}: {len(ips)} IP(s), pool={t.pool_name!r}, regex={t.regex!r}")
+
+
 @main.command()
 @click.option("--config", "-c", required=True, envvar="PROXY_HOPPER_CONFIG",
-              type=click.Path(exists=True, path_type=Path))
+              type=click.Path(exists=True, path_type=Path),
+              help="Path to a YAML config file, or a directory of *.yaml/*.yml "
+                   "files to validate as a merged whole.")
 def validate(config: Path) -> None:
-    """Validate a configuration file and exit."""
+    """Validate a configuration file or directory and exit.
+
+    A directory is validated exactly the way it would actually be loaded at
+    runtime: recursive scan + deterministic merge (FileConfigSource), then
+    ProxyRepository.reconcile() against a throwaway in-memory repository --
+    the same code path _run() uses, not a re-implementation of it. This
+    means duplicate-name warnings, per-file parse errors, and unresolvable
+    targets (bad ipPool reference, zero reachable providers) are reported
+    exactly as they'd be handled live, including file attribution.
+    """
+    if config.is_dir():
+        _validate_directory(config)
+        return
+
     try:
         cfg = load_config(config)
-        if cfg.providers:
-            click.echo(f"Providers: {len(cfg.providers)} defined.")
-            for p in cfg.providers:
-                click.echo(f"  {p.name!r}: {len(p.ip_list)} IP(s)"
-                           + (f", region={p.region_tag!r}" if p.region_tag else "")
-                           + (", auth=basic" if p.auth else ", auth=none"))
-        if cfg.pools:
-            click.echo(f"Pools: {len(cfg.pools)} defined.")
-            for pool in cfg.pools:
-                providers_in_pool = [req.provider for req in pool.ip_requests]
-                click.echo(f"  {pool.name!r}: {len(pool.ip_requests)} request(s)"
-                           + (f", providers={providers_in_pool}"))
-        click.echo(f"Config OK — {len(cfg.targets)} target(s) defined.")
-        for t in cfg.targets:
-            ips = t.resolved_ips
-            click.echo(f"  {t.name!r}: {len(ips)} IP(s), pool={t.pool_name!r}, regex={t.regex!r}")
+        _print_providers_pools_targets(cfg.providers, cfg.pools, cfg.targets)
         click.echo(f"Server defaults: host={cfg.server.host}, port={cfg.server.port}, "
                    f"backend={cfg.server.backend}")
     except Exception as exc:
         click.echo(f"Config error: {exc}", err=True)
+        sys.exit(1)
+
+
+def _validate_directory(config: Path) -> None:
+    from .backend.memory import MemoryBackend
+    from .config_source import scan_config_source
+    from .config_store.memory import MemoryConfigStore
+    from .repository import ProxyRepository
+
+    try:
+        merged, warnings, errors = scan_config_source(config)
+    except Exception as exc:
+        click.echo(f"Config error: {exc}", err=True)
+        sys.exit(1)
+
+    for w in warnings:
+        click.echo(f"Warning: {w}")
+    for e in errors:
+        click.echo(f"Error: {e}", err=True)
+
+    async def _reconcile_into_throwaway_repo():
+        backend = MemoryBackend()
+        await backend.start()
+        config_store = MemoryConfigStore()
+        await config_store.start()
+        repo = ProxyRepository(config_store=config_store, backend=backend)
+        try:
+            reconcile_errors = await repo.reconcile(merged)
+            providers = await repo.list_providers()
+            pools = await repo.list_pools()
+            targets = await repo.list_targets()
+        finally:
+            await backend.stop()
+            await config_store.stop()
+        return reconcile_errors, providers, pools, targets
+
+    reconcile_errors, providers, pools, targets = asyncio.run(_reconcile_into_throwaway_repo())
+    for e in reconcile_errors:
+        click.echo(f"Error: {e}", err=True)
+
+    _print_providers_pools_targets(providers, pools, targets)
+
+    if errors or reconcile_errors:
         sys.exit(1)
 
 
