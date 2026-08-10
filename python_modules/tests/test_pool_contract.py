@@ -15,6 +15,9 @@ import time
 
 import pytest
 
+from proxy_hopper.identity.identity import Identity
+from proxy_hopper.pool import IdentityQueue
+
 
 class TestAcquire:
     async def test_returns_uuid_and_identity(self, pool):
@@ -182,3 +185,119 @@ class TestGetStatus:
         await backend.quarantine_add(pool._config.name, identity.address, time.time() + 9999)
         status = await pool.get_status()
         assert identity.address in status["quarantined_ips"]
+
+
+class TestReconcileOnStart:
+    """Covers the Phase 1/2 reconcile-on-start fix -- see CONFIG_RECONCILER_SCOPE.md §6.
+
+    The ``pool`` fixture already exercises the plain "fresh backend, no
+    prior state" happy path (every TestAcquire/TestGetStatus test depends on
+    it seeding both configured addresses) so it isn't repeated here.
+    """
+
+    def _preexisting_identity(self, address: str, uuid: str) -> dict:
+        return Identity(address=address, headers={}, cookies_enabled=False).to_dict()
+
+    async def test_leaves_already_registered_address_untouched(self, backend, target_config):
+        existing_uuid = "pre-existing-uuid"
+        await backend.identity_write(
+            target_config.name, existing_uuid, self._preexisting_identity("1.2.3.4:8080", existing_uuid)
+        )
+        await backend.ip_set(target_config.name, "1.2.3.4:8080", existing_uuid)
+        await backend.push_identity_uuid(target_config.name, existing_uuid)
+
+        queue = IdentityQueue(target_config, backend)
+        await queue.start()
+        try:
+            # Untouched: same UUID as before start(), no churn.
+            assert await backend.ip_get(target_config.name, "1.2.3.4:8080") == existing_uuid
+            # Missing address gets a freshly created identity.
+            new_uuid = await backend.ip_get(target_config.name, "5.6.7.8:8080")
+            assert new_uuid is not None
+            assert new_uuid != existing_uuid
+        finally:
+            await queue.stop()
+
+    async def test_address_no_longer_in_config_is_retired(self, backend, target_config):
+        # An address the backend knows about but that isn't in this config
+        # at all (e.g. it was removed from the target's provider/pool).
+        await backend.identity_write(
+            target_config.name, "stale-uuid", self._preexisting_identity("9.9.9.9:8080", "stale-uuid")
+        )
+        await backend.ip_set(target_config.name, "9.9.9.9:8080", "stale-uuid")
+        await backend.push_identity_uuid(target_config.name, "stale-uuid")
+
+        queue = IdentityQueue(target_config, backend)
+        await queue.start()
+        try:
+            assert await backend.retire_check(target_config.name, "9.9.9.9:8080") is True
+            # Configured addresses were still seeded normally.
+            assert await backend.ip_get(target_config.name, "1.2.3.4:8080") is not None
+            assert await backend.ip_get(target_config.name, "5.6.7.8:8080") is not None
+        finally:
+            await queue.stop()
+
+    async def test_no_op_when_backend_already_matches_config(self, backend, target_config):
+        uuids = {}
+        for address in ("1.2.3.4:8080", "5.6.7.8:8080"):
+            uuid = f"uuid-{address}"
+            await backend.identity_write(target_config.name, uuid, self._preexisting_identity(address, uuid))
+            await backend.ip_set(target_config.name, address, uuid)
+            await backend.push_identity_uuid(target_config.name, uuid)
+            uuids[address] = uuid
+
+        queue = IdentityQueue(target_config, backend)
+        await queue.start()
+        try:
+            for address, uuid in uuids.items():
+                assert await backend.ip_get(target_config.name, address) == uuid
+        finally:
+            await queue.stop()
+
+    async def test_skips_reconcile_when_lock_already_held(self, backend, target_config):
+        # Another instance is mid-reconcile -- simulated by pre-holding the
+        # lock before this queue's start() ever gets a chance to compete.
+        held = await backend.reconcile_lock_acquire(target_config.name, "rival-instance", 30)
+        assert held is True
+
+        queue = IdentityQueue(target_config, backend)
+        await queue.start()
+        try:
+            # Lost the race -> trusts the winner, does not seed anything itself.
+            assert await backend.list_addresses(target_config.name) == []
+        finally:
+            await queue.stop()
+            await backend.reconcile_lock_release(target_config.name, "rival-instance")
+
+    async def test_reconciles_once_lock_is_free_again(self, backend, target_config):
+        held = await backend.reconcile_lock_acquire(target_config.name, "rival-instance", 30)
+        assert held is True
+        await backend.reconcile_lock_release(target_config.name, "rival-instance")
+
+        queue = IdentityQueue(target_config, backend)
+        await queue.start()
+        try:
+            assert set(await backend.list_addresses(target_config.name)) == {
+                "1.2.3.4:8080",
+                "5.6.7.8:8080",
+            }
+        finally:
+            await queue.stop()
+
+    async def test_exception_mid_reconcile_propagates_and_releases_lock(
+        self, backend, target_config, monkeypatch
+    ):
+        queue = IdentityQueue(target_config, backend)
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("simulated backend blip")
+
+        monkeypatch.setattr(queue, "_create_identity", _boom)
+
+        with pytest.raises(RuntimeError, match="simulated backend blip"):
+            await queue.start()
+
+        # Lock must not be left held after the failure.
+        reacquired = await backend.reconcile_lock_acquire(target_config.name, "someone-else", 30)
+        assert reacquired is True
+        await backend.reconcile_lock_release(target_config.name, "someone-else")

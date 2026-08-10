@@ -74,6 +74,11 @@ _SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
     "adminHost": "admin_host",
     "adminReadOnly": "admin_read_only",
     "authServer": "auth_server",
+    "configWatch": "config_watch",
+}
+
+_CONFIG_WATCH_CAMEL_TO_SNAKE: dict[str, str] = {
+    "intervalSeconds": "interval_seconds",
 }
 
 _AUTH_SERVER_CAMEL_TO_SNAKE: dict[str, str] = {
@@ -158,7 +163,7 @@ def _normalise_provider(raw: dict) -> dict:
 
 
 def _normalise_server(raw: dict) -> dict:
-    from .models import AuthServerConfig
+    from .models import AuthServerConfig, ConfigWatchConfig
     out: dict = {}
     for key, value in raw.items():
         out[_SERVER_CAMEL_TO_SNAKE.get(key, key)] = value
@@ -171,6 +176,12 @@ def _normalise_server(raw: dict) -> dict:
             for k, v in out["auth_server"].items()
         }
         out["auth_server"] = AuthServerConfig(**normalised_auth)
+    if "config_watch" in out and isinstance(out["config_watch"], dict):
+        normalised_watch = {
+            _CONFIG_WATCH_CAMEL_TO_SNAKE.get(k, k): v
+            for k, v in out["config_watch"].items()
+        }
+        out["config_watch"] = ConfigWatchConfig(**normalised_watch)
     return out
 
 

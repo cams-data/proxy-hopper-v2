@@ -22,6 +22,7 @@ import pytest
 
 from proxy_hopper.backend.memory import MemoryBackend
 from proxy_hopper.config import IpPool, IpRequest, ProxyProvider, ResolvedIP, TargetConfig
+from proxy_hopper.config_source import MergedFileConfig, MergedPool, MergedProvider, MergedTargetSpec
 from proxy_hopper.config_store.base import ConfigStore
 from proxy_hopper.config_store.memory import MemoryConfigStore
 from proxy_hopper.repository import ProxyRepository
@@ -146,3 +147,261 @@ class TestCascade:
         # landed in durable storage, not an intermediate cache.
         entity = await config_store.get("target", "t")
         assert entity.data["resolved_ips"][0]["host"] == "9.9.9.9"
+
+
+# ---------------------------------------------------------------------------
+# ProxyRepository.reconcile() -- Phase 4, CONFIG_RECONCILER_SCOPE.md §5
+# ---------------------------------------------------------------------------
+
+def _merged(providers=None, pools=None, target_specs=None) -> MergedFileConfig:
+    return MergedFileConfig(
+        providers=providers or [],
+        pools=pools or [],
+        target_specs=target_specs or [],
+    )
+
+
+def _std_scenario(target_static: bool = True) -> tuple[MergedFileConfig, ProxyProvider, IpPool]:
+    """A provider + pool + target that resolve cleanly together."""
+    provider = ProxyProvider(name="prov", ip_list=["1.1.1.1:8080"], static=True)
+    pool = IpPool(name="pool", ip_requests=[IpRequest(provider="prov", count=5)], static=True)
+    target_fields = {"name": "t1", "regex": ".*", "static": target_static}
+    merged = _merged(
+        providers=[MergedProvider(provider=provider, source_file="a.yaml")],
+        pools=[MergedPool(pool=pool, source_file="a.yaml")],
+        target_specs=[MergedTargetSpec(fields=target_fields, pool_ref="pool", source_file="a.yaml")],
+    )
+    return merged, provider, pool
+
+
+async def _collect_events(repo) -> tuple[asyncio.Task, list]:
+    events: list = []
+
+    async def collect():
+        async with repo.subscribe_changes() as evts:
+            async for e in evts:
+                events.append(e)
+
+    task = asyncio.create_task(collect())
+    await asyncio.sleep(0)
+    return task, events
+
+
+async def _stop_collecting(task: asyncio.Task) -> None:
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
+class TestReconcileCreate:
+    async def test_new_static_provider_created_and_published(self, repo, config_store):
+        provider = ProxyProvider(name="prov", ip_list=["1.1.1.1:8080"], static=True)
+        merged = _merged(providers=[MergedProvider(provider=provider, source_file="providers.yaml")])
+
+        task, events = await _collect_events(repo)
+        errors = await repo.reconcile(merged)
+        await _stop_collecting(task)
+
+        assert errors == []
+        got = await repo.get_provider("prov")
+        assert got is not None and got.ip_list == ["1.1.1.1:8080"]
+        entity = await config_store.get("provider", "prov")
+        assert entity.source_file == "providers.yaml"
+        assert len(events) == 1
+        assert events[0].entity == "provider"
+        assert events[0].type == "add"
+        assert events[0].name == "prov"
+
+    async def test_provider_pool_target_created_together(self, repo):
+        merged, _, _ = _std_scenario()
+        errors = await repo.reconcile(merged)
+
+        assert errors == []
+        target = await repo.get_target("t1")
+        assert target is not None
+        assert {ip.address for ip in target.resolved_ips} == {"1.1.1.1:8080"}
+
+
+class TestReconcileUpdate:
+    async def test_provider_ip_change_updates_target_and_publishes_update_events(self, repo):
+        merged1, provider, pool = _std_scenario()
+        await repo.reconcile(merged1)
+
+        changed_provider = provider.model_copy(update={"ip_list": ["9.9.9.9:8080"]})
+        merged2 = _merged(
+            providers=[MergedProvider(provider=changed_provider, source_file="a.yaml")],
+            pools=[MergedPool(pool=pool, source_file="a.yaml")],
+            target_specs=[MergedTargetSpec(
+                fields={"name": "t1", "regex": ".*", "static": True},
+                pool_ref="pool", source_file="a.yaml",
+            )],
+        )
+
+        task, events = await _collect_events(repo)
+        errors = await repo.reconcile(merged2)
+        await _stop_collecting(task)
+
+        assert errors == []
+        target = await repo.get_target("t1")
+        assert target.resolved_ips[0].host == "9.9.9.9"
+
+        target_events = [e for e in events if e.entity == "target" and e.name == "t1"]
+        assert len(target_events) == 1 and target_events[0].type == "update"
+        provider_events = [e for e in events if e.entity == "provider" and e.name == "prov"]
+        assert len(provider_events) == 1 and provider_events[0].type == "update"
+
+
+class TestReconcileRemove:
+    async def test_static_target_absent_from_merge_is_removed(self, repo):
+        merged1, provider, pool = _std_scenario()
+        await repo.reconcile(merged1)
+        assert await repo.get_target("t1") is not None
+
+        merged2 = _merged(
+            providers=[MergedProvider(provider=provider, source_file="a.yaml")],
+            pools=[MergedPool(pool=pool, source_file="a.yaml")],
+            target_specs=[],
+        )
+
+        task, events = await _collect_events(repo)
+        errors = await repo.reconcile(merged2)
+        await _stop_collecting(task)
+
+        assert errors == []
+        assert await repo.get_target("t1") is None
+        remove_events = [e for e in events if e.entity == "target" and e.type == "remove"]
+        assert len(remove_events) == 1 and remove_events[0].name == "t1"
+
+    async def test_non_static_entity_is_never_auto_removed(self, repo):
+        merged1, provider, pool = _std_scenario(target_static=False)
+        await repo.reconcile(merged1)
+        assert await repo.get_target("t1") is not None
+
+        merged2 = _merged(
+            providers=[MergedProvider(provider=provider, source_file="a.yaml")],
+            pools=[MergedPool(pool=pool, source_file="a.yaml")],
+            target_specs=[],
+        )
+        errors = await repo.reconcile(merged2)
+        assert errors == []
+        assert await repo.get_target("t1") is not None
+
+
+class TestReconcileNamespaceConflict:
+    async def test_file_cannot_claim_name_owned_by_admin_created_entity(self, repo):
+        admin_target = TargetConfig(
+            name="admin-t", regex="admin-owned", pool_name="whatever",
+            resolved_ips=[ResolvedIP(host="1.2.3.4", port=8080)],
+        )
+        await repo.add_target(admin_target)  # static=False by default -> admin-owned
+
+        merged = _merged(target_specs=[MergedTargetSpec(
+            fields={"name": "admin-t", "regex": "file-owned", "static": True},
+            pool_ref="does-not-matter", source_file="conflict.yaml",
+        )])
+
+        task, events = await _collect_events(repo)
+        errors = await repo.reconcile(merged)
+        await _stop_collecting(task)
+
+        assert len(errors) == 1
+        assert "admin-t" in errors[0]
+        assert "conflict.yaml" in errors[0]
+        still_there = await repo.get_target("admin-t")
+        assert still_there.regex == "admin-owned"
+        assert events == []
+
+    async def test_file_cannot_claim_provider_name_owned_by_admin(self, repo):
+        await repo.add_provider(ProxyProvider(name="admin-p", ip_list=["1.1.1.1:8080"]))
+
+        merged = _merged(providers=[MergedProvider(
+            provider=ProxyProvider(name="admin-p", ip_list=["9.9.9.9:8080"], static=True),
+            source_file="conflict.yaml",
+        )])
+        errors = await repo.reconcile(merged)
+
+        assert len(errors) == 1
+        assert "admin-p" in errors[0] and "conflict.yaml" in errors[0]
+        still_there = await repo.get_provider("admin-p")
+        assert still_there.ip_list == ["1.1.1.1:8080"]
+
+
+class TestReconcileNoOp:
+    async def test_unchanged_merge_writes_and_publishes_nothing(self, repo):
+        merged1, _, _ = _std_scenario()
+        await repo.reconcile(merged1)
+
+        # Fresh-but-equal model instances -- proves the diff is by value,
+        # not by object identity.
+        merged2, _, _ = _std_scenario()
+
+        task, events = await _collect_events(repo)
+        errors = await repo.reconcile(merged2)
+        await _stop_collecting(task)
+
+        assert errors == []
+        assert events == []
+
+    async def test_non_static_entity_untouched_even_if_file_field_changes(self, repo):
+        merged1, provider, pool = _std_scenario(target_static=False)
+        await repo.reconcile(merged1)
+        assert (await repo.get_target("t1")).regex == ".*"
+
+        merged2 = _merged(
+            providers=[MergedProvider(provider=provider, source_file="a.yaml")],
+            pools=[MergedPool(pool=pool, source_file="a.yaml")],
+            target_specs=[MergedTargetSpec(
+                fields={"name": "t1", "regex": "changed", "static": False},
+                pool_ref="pool", source_file="a.yaml",
+            )],
+        )
+        errors = await repo.reconcile(merged2)
+        assert errors == []
+        assert (await repo.get_target("t1")).regex == ".*"
+
+
+class TestReconcileEmptyResultGuard:
+    async def test_empty_merge_on_populated_store_trips_guard(self, repo):
+        merged, _, _ = _std_scenario()
+        await repo.reconcile(merged)
+
+        errors = await repo.reconcile(_merged())
+
+        assert len(errors) == 1
+        assert "empty" in errors[0].lower()
+        assert await repo.get_target("t1") is not None
+        assert await repo.get_provider("prov") is not None
+        assert await repo.get_pool("pool") is not None
+
+    async def test_empty_merge_on_empty_store_is_not_an_error(self, repo):
+        errors = await repo.reconcile(_merged())
+        assert errors == []
+
+
+class TestReconcileUnresolvableTarget:
+    async def test_unknown_pool_reference_is_skipped_not_fatal(self, repo):
+        provider = ProxyProvider(name="prov", ip_list=["1.1.1.1:8080"], static=True)
+        merged = _merged(
+            providers=[MergedProvider(provider=provider, source_file="a.yaml")],
+            target_specs=[MergedTargetSpec(
+                fields={"name": "bad", "regex": ".*", "static": True},
+                pool_ref="does-not-exist", source_file="a.yaml",
+            )],
+        )
+        errors = await repo.reconcile(merged)
+
+        assert len(errors) == 1
+        assert "bad" in errors[0] and "does-not-exist" in errors[0]
+        assert await repo.get_target("bad") is None
+        # The provider still gets created -- one bad target doesn't block others.
+        assert await repo.get_provider("prov") is not None
+
+
+class TestReconcileSourceFile:
+    async def test_source_file_round_trips_through_the_configured_store(self, repo, config_store):
+        merged, _, _ = _std_scenario()
+        await repo.reconcile(merged)
+
+        for entity_type, name in (("provider", "prov"), ("pool", "pool"), ("target", "t1")):
+            entity = await config_store.get(entity_type, name)
+            assert entity.source_file == "a.yaml"

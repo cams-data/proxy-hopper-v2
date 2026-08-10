@@ -4,11 +4,22 @@ This layer owns all decisions that involve policy:
   - Should this IP be quarantined? (failures >= threshold)
   - How long to wait before returning an identity after use? (min_request_interval)
   - When does quarantine end? (quarantine_time seconds)
-  - Which addresses need identities seeded on startup?
+  - Which addresses need identities seeded, added, or retired on startup?
 
 The pool queue stores UUID strings rather than raw IP addresses.  Each UUID
 maps to a full ``Identity`` object in the Backend KV, allowing all HA instances
 to share consistent identity state (fingerprint headers, cookies, request count).
+
+Startup reconcile
+------------------
+``start()`` diffs the backend's currently-registered addresses against
+``config.resolved_ips`` on *every* start, not just the first process to ever
+start this target — closes a staleness bug where only the first-ever starter
+seeded identities, so a config change picked up by a restarted/redeployed
+process was silently ignored because the backend already had "some" state.
+A short-lived lock (``reconcile-lock``, not the old permanent ``init`` claim)
+serialises concurrent starts of the same target; a start that loses the lock
+race skips its own reconcile and trusts the winner, rather than blocking.
 
 Key schema (owned by IPPoolStore)
 ----------------------------------
@@ -16,7 +27,9 @@ ph:{target}:pool              LIST    — UUID strings, BLPOP to acquire
 ph:{target}:identity:{uuid}   KV      — full identity JSON
 ph:{target}:ip:{address}      KV      — active UUID for this address
 ph:{target}:retired:{address} KV      — "1" if address is retired
-ph:{target}:init              KV      — SETNX startup race guard
+ph:{target}:init              KV      — SETNX startup race guard (unused by
+                                         this class as of the reconcile above)
+ph:{target}:reconcile-lock    Lock    — mutex serialising concurrent start() reconciles
 ph:{target}:failures:{addr}   KV      — consecutive failure counter
 ph:{target}:quarantine        ZSET    — address → release timestamp
 
@@ -51,6 +64,9 @@ from .pool_store import IPPoolStore
 logger = get_logger(__name__)
 
 _QUARANTINE_SWEEP_INTERVAL = 5.0  # seconds between quarantine expiry checks
+_RECONCILE_LOCK_TTL = 30  # seconds — long enough for a slow reconcile pass,
+                          # short enough that a crashed holder doesn't wedge
+                          # the next start() for long
 
 
 class PinnedAcquireError(Exception):
@@ -84,22 +100,53 @@ class IdentityQueue:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Seed identities (if we win the init race) and start the sweep task."""
-        first = await self._backend.claim_init(self._config.name)
-        if first:
-            for ip in self._config.resolved_ips:
-                await self._create_identity(ip.address)
-            if self._debug:
-                logger.debug(
-                    "IdentityQueue '%s': seeded %d identit%s",
-                    self._config.name,
-                    len(self._config.resolved_ips),
-                    "y" if len(self._config.resolved_ips) == 1 else "ies",
-                )
+        """Reconcile backend state against config (if we win the lock) and start the sweep task.
+
+        Diffs currently-registered addresses against ``config.resolved_ips``
+        on every call, not just the first ever — see the module docstring's
+        "Startup reconcile" section. If another start() for this target is
+        already reconciling, this call skips its own reconcile and trusts
+        the winner rather than waiting.
+
+        Exceptions raised mid-reconcile propagate out of this method (the
+        lock is still released via ``finally``) rather than being swallowed
+        here — callers that need retry/crash-loop behavior on failure get it
+        for free by not catching this.
+        """
+        lock_token = str(uuid4())
+        got_lock = await self._backend.reconcile_lock_acquire(
+            self._config.name, lock_token, _RECONCILE_LOCK_TTL
+        )
+        if got_lock:
+            try:
+                current = set(await self._backend.list_addresses(self._config.name))
+                configured = [ip.address for ip in self._config.resolved_ips]
+                wanted = set(configured)
+                # Preserve config-declared order for creation (a plain set
+                # difference has arbitrary iteration order, which would make
+                # FIFO acquire order on a fresh backend non-deterministic).
+                to_add = [addr for addr in configured if addr not in current]
+                to_remove = current - wanted
+                for address in to_add:
+                    await self._create_identity(address)
+                for address in to_remove:
+                    await self.retire_address(address)
+                if to_add or to_remove:
+                    logger.info(
+                        "IdentityQueue '%s': reconciled on start — added %d, retired %d",
+                        self._config.name, len(to_add), len(to_remove),
+                    )
+                elif self._debug:
+                    logger.debug(
+                        "IdentityQueue '%s': reconciled on start — already up to date",
+                        self._config.name,
+                    )
+            finally:
+                await self._backend.reconcile_lock_release(self._config.name, lock_token)
         else:
             if self._debug:
                 logger.debug(
-                    "IdentityQueue '%s': skipping seed — another instance already initialised",
+                    "IdentityQueue '%s': skipping reconcile — another instance is already reconciling",
                     self._config.name,
                 )
 

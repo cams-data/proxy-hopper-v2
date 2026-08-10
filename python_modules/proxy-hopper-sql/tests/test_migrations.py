@@ -14,7 +14,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from proxy_hopper_sql import migrations
 
-_EXPECTED_COLUMNS = {"entity_type", "name", "data", "static", "mutable", "updated_at"}
+_EXPECTED_COLUMNS = {
+    "entity_type", "name", "data", "static", "mutable", "updated_at", "source_file",
+}
 
 
 def _url(tmp_path, name: str = "config.db") -> str:

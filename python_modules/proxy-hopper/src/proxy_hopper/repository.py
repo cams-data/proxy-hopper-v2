@@ -50,7 +50,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import AsyncIterator, Literal, Optional
+from typing import TYPE_CHECKING, AsyncIterator, Literal, Optional
 
 from .backend.base import Backend
 from .config import (
@@ -65,6 +65,9 @@ from .config import (
     _parse_duration,
 )
 from .config_store.base import ConfigStore
+
+if TYPE_CHECKING:
+    from .config_source import MergedFileConfig, MergedTargetSpec
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +537,293 @@ class ProxyRepository:
             static=pool.static, mutable=pool.mutable,
         )
         logger.debug("ProxyRepository: seeded pool '%s' (static=%s)", pool.name, pool.static)
+
+    # ------------------------------------------------------------------
+    # File reconcile — CONFIG_RECONCILER_SCOPE.md §5
+    # ------------------------------------------------------------------
+
+    async def reconcile(self, merged: "MergedFileConfig") -> list[str]:
+        """Diff *merged* (from ``FileConfigSource.scan_config_source``)
+        against ``ConfigStore`` and apply creates/updates/removes for static
+        entities — the live-reload equivalent of ``seed_*``, safe to call
+        repeatedly (every poll cycle, not just at startup).
+
+        Bypasses the "static entities reject admin-API writes" guard on
+        purpose: that guard exists to stop the *admin API* from touching
+        file-owned config, not to stop the file source that owns it. The
+        opposite direction is still enforced — a merged entity can never
+        claim a name already owned by a non-static (admin-created) entity;
+        see ``_reconcile_simple_entities``/target handling below.
+
+        Non-static entries present in the merge (``static: false`` in YAML)
+        get the same one-time "write if not already present, then never
+        touched again" treatment ``seed_*`` already gives them — once
+        created they're presumed to be under admin-API governance, matching
+        ``seed_*``'s existing behavior. This isn't spelled out verbatim in
+        §5 (which focuses on the ``static: true`` path) but is required for
+        Phase 5 to replace ``seed_*`` outright without silently dropping
+        support for YAML-seeded-then-API-owned entities.
+
+        Returns a list of human-readable error strings (namespace conflicts,
+        unresolvable targets, an empty-result guard trip) — never raises for
+        a per-entity problem, mirroring ``scan_config_source``'s own
+        collect-don't-raise style. Callers (Phase 5's poll loop) should log
+        these; nothing here relies on the caller doing so.
+        """
+        if merged.is_empty:
+            existing_static_count = 0
+            for entity_type in ("provider", "pool", "target"):
+                entities = await self._config_store.list(entity_type)
+                existing_static_count += sum(1 for e in entities if e.static)
+            if existing_static_count > 0:
+                msg = (
+                    f"reconcile: merged config is empty but ConfigStore holds "
+                    f"{existing_static_count} existing static entit"
+                    f"{'y' if existing_static_count == 1 else 'ies'} across "
+                    "provider/pool/target — treating this as a read failure "
+                    "(bad mount, empty volume mid-swap, etc.), not applying "
+                    "this cycle. Nothing was removed."
+                )
+                logger.error("ProxyRepository: %s", msg)
+                return [msg]
+            return []
+
+        errors: list[str] = []
+        errors += await self._reconcile_simple_entities(
+            "provider",
+            [(m.provider, m.source_file) for m in merged.providers],
+            _provider_to_dict,
+        )
+        errors += await self._reconcile_simple_entities(
+            "pool",
+            [(m.pool, m.source_file) for m in merged.pools],
+            _pool_to_dict,
+        )
+        errors += await self._reconcile_targets(merged.target_specs)
+        return errors
+
+    async def _reconcile_simple_entities(
+        self,
+        entity_type: str,
+        entities: list[tuple],
+        to_dict,
+    ) -> list[str]:
+        """Shared create/update/remove diff loop for providers and pools.
+
+        *entities* is a list of (model, source_file) pairs, where model has
+        ``.name``/``.static``/``.mutable`` — true of both ``ProxyProvider``
+        and ``IpPool``. Targets don't fit this shape (they need pool
+        resolution before they can even be constructed) and are handled
+        separately by ``_reconcile_targets``.
+        """
+        errors: list[str] = []
+        seen_names: set[str] = set()
+
+        for model, source_file in entities:
+            name = model.name
+            seen_names.add(name)
+            existing = await self._config_store.get(entity_type, name)
+
+            if not model.static:
+                # seed_*'s write-if-not-exists semantics: create once, then
+                # never touched again regardless of further file edits.
+                if existing is None:
+                    await self._config_store.set(
+                        entity_type, name, to_dict(model),
+                        static=model.static, mutable=model.mutable,
+                        source_file=source_file,
+                    )
+                    await self._publish(ChangeEvent(entity=entity_type, type="add", name=name))
+                    logger.info(
+                        "ProxyRepository: reconcile created non-static %s '%s' from '%s'",
+                        entity_type, name, source_file,
+                    )
+                continue
+
+            if existing is not None and not existing.static:
+                msg = (
+                    f"{entity_type} '{name}': cannot apply from '{source_file}' — "
+                    "an entity with this name already exists and is not static "
+                    "(admin-owned); leaving it untouched"
+                )
+                errors.append(msg)
+                logger.error("ProxyRepository: %s", msg)
+                continue
+
+            candidate_data = to_dict(model)
+            if existing is None:
+                await self._config_store.set(
+                    entity_type, name, candidate_data,
+                    static=model.static, mutable=model.mutable,
+                    source_file=source_file,
+                )
+                await self._publish(ChangeEvent(entity=entity_type, type="add", name=name))
+                logger.info(
+                    "ProxyRepository: reconcile created %s '%s' from '%s'",
+                    entity_type, name, source_file,
+                )
+            elif (
+                existing.data != candidate_data
+                or existing.static != model.static
+                or existing.mutable != model.mutable
+                or existing.source_file != source_file
+            ):
+                await self._config_store.set(
+                    entity_type, name, candidate_data,
+                    static=model.static, mutable=model.mutable,
+                    source_file=source_file,
+                )
+                await self._publish(ChangeEvent(entity=entity_type, type="update", name=name))
+                logger.info(
+                    "ProxyRepository: reconcile updated %s '%s' from '%s'",
+                    entity_type, name, source_file,
+                )
+            # else: unchanged — zero writes, zero events.
+
+        for entity in await self._config_store.list(entity_type):
+            if entity.static and entity.name not in seen_names:
+                await self._config_store.delete(entity_type, entity.name)
+                await self._publish(ChangeEvent(entity=entity_type, type="remove", name=entity.name))
+                logger.info(
+                    "ProxyRepository: reconcile removed %s '%s' (absent from merged config)",
+                    entity_type, entity.name,
+                )
+
+        return errors
+
+    async def _reconcile_targets(self, specs: list["MergedTargetSpec"]) -> list[str]:
+        """Create/update/remove targets, resolving each spec's pool reference
+        fresh against the (already-reconciled) provider/pool state.
+
+        Deliberately does not call ``_cascade_provider``/``_cascade_pool`` —
+        those are the admin-API mutation path's incremental-recompute
+        helpers. Reconcile instead does one full pass recomputing every
+        target's ``resolved_ips`` from scratch every call (same
+        ``_resolve_pool_ips`` those cascades use internally) and only
+        writes on an actual diff. This produces identical end state to
+        cascading through every changed provider/pool, without the risk of
+        cascade and this method's own diff-and-write disagreeing about
+        which targets need touching — one code path decides, not two.
+        """
+        errors: list[str] = []
+        seen_names: set[str] = set()
+        provider_map = await self._build_provider_map()
+
+        for spec in specs:
+            name = spec.fields["name"]
+            seen_names.add(name)
+            is_static = spec.fields.get("static", True)
+            existing = await self._config_store.get("target", name)
+
+            if not is_static:
+                if existing is None:
+                    candidate = await self._build_target_candidate(spec, provider_map, errors)
+                    if candidate is not None:
+                        await self._config_store.set(
+                            "target", name, _target_to_dict(candidate),
+                            static=candidate.static, mutable=candidate.mutable,
+                            source_file=spec.source_file,
+                        )
+                        await self._publish(ChangeEvent(entity="target", type="add", name=name))
+                        logger.info(
+                            "ProxyRepository: reconcile created non-static target '%s' from '%s'",
+                            name, spec.source_file,
+                        )
+                continue
+
+            if existing is not None and not existing.static:
+                msg = (
+                    f"target '{name}': cannot apply from '{spec.source_file}' — "
+                    "an entity with this name already exists and is not static "
+                    "(admin-owned); leaving it untouched"
+                )
+                errors.append(msg)
+                logger.error("ProxyRepository: %s", msg)
+                continue
+
+            candidate = await self._build_target_candidate(spec, provider_map, errors)
+            if candidate is None:
+                continue  # unresolvable -- error already recorded
+
+            candidate_data = _target_to_dict(candidate)
+            if existing is None:
+                await self._config_store.set(
+                    "target", name, candidate_data,
+                    static=candidate.static, mutable=candidate.mutable,
+                    source_file=spec.source_file,
+                )
+                await self._publish(ChangeEvent(entity="target", type="add", name=name))
+                logger.info(
+                    "ProxyRepository: reconcile created target '%s' from '%s'",
+                    name, spec.source_file,
+                )
+            elif (
+                existing.data != candidate_data
+                or existing.static != candidate.static
+                or existing.mutable != candidate.mutable
+                or existing.source_file != spec.source_file
+            ):
+                await self._config_store.set(
+                    "target", name, candidate_data,
+                    static=candidate.static, mutable=candidate.mutable,
+                    source_file=spec.source_file,
+                )
+                await self._publish(ChangeEvent(entity="target", type="update", name=name))
+                logger.info(
+                    "ProxyRepository: reconcile updated target '%s' from '%s'",
+                    name, spec.source_file,
+                )
+            # else: unchanged — zero writes, zero events.
+
+        for entity in await self._config_store.list("target"):
+            if entity.static and entity.name not in seen_names:
+                await self._config_store.delete("target", entity.name)
+                await self._publish(ChangeEvent(entity="target", type="remove", name=entity.name))
+                logger.info(
+                    "ProxyRepository: reconcile removed target '%s' (absent from merged config)",
+                    entity.name,
+                )
+
+        return errors
+
+    async def _build_target_candidate(
+        self,
+        spec: "MergedTargetSpec",
+        provider_map: dict[str, ProxyProvider],
+        errors: list[str],
+    ) -> Optional[TargetConfig]:
+        """Resolve *spec* into a full TargetConfig, or None + an appended
+        error if it can't be resolved (unknown pool, zero resolvable IPs,
+        or a field-level validation failure e.g. bad regex)."""
+        name = spec.fields["name"]
+        pool = await self.get_pool(spec.pool_ref)
+        if pool is None:
+            msg = (
+                f"target '{name}' (from '{spec.source_file}') references "
+                f"unknown ipPool '{spec.pool_ref}' — skipping"
+            )
+            errors.append(msg)
+            logger.error("ProxyRepository: %s", msg)
+            return None
+
+        default_port = spec.fields.get("default_proxy_port", 8080)
+        resolved_ips = _resolve_pool_ips(pool, provider_map, default_port)
+        if not resolved_ips:
+            msg = (
+                f"target '{name}' (from '{spec.source_file}') resolved to zero IPs "
+                f"(pool '{spec.pool_ref}' has no reachable provider) — skipping"
+            )
+            errors.append(msg)
+            logger.error("ProxyRepository: %s", msg)
+            return None
+
+        try:
+            return TargetConfig(pool_name=spec.pool_ref, resolved_ips=resolved_ips, **spec.fields)
+        except Exception as exc:
+            msg = f"target '{name}' (from '{spec.source_file}') failed validation: {exc} — skipping"
+            errors.append(msg)
+            logger.error("ProxyRepository: %s", msg)
+            return None
 
     # ------------------------------------------------------------------
     # Pub/sub change subscription
